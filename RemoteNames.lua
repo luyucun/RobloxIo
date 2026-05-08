@@ -1,0 +1,49 @@
+--[[
+脚本名字: RemoteNames
+脚本文件: RemoteNames.lua
+脚本类型: ModuleScript
+Studio放置路径: ReplicatedStorage/Shared/RemoteNames
+]]
+
+local RemoteNames = {
+    RootFolder = "Events",
+    SystemEventsFolder = "SystemEvents",
+    BattleEventsFolder = "BattleEvents",
+    System = {
+        PlayerStateSync = "PlayerStateSync",
+        RequestPlayerStateSync = "RequestPlayerStateSync",
+        ArenaTransitionFeedback = "ArenaTransitionFeedback",
+        DeathFeedback = "DeathFeedback",
+        StudioBotCommand = "StudioBotCommand",
+        LevelUpFeedback = "LevelUpFeedback",
+        PortalJoinPrompt = "PortalJoinPrompt",
+        RequestJoinBattle = "RequestJoinBattle",
+        RequestRebirth = "RequestRebirth",
+        RebirthFeedback = "RebirthFeedback",
+        RequestDefeatedAction = "RequestDefeatedAction",
+        RequestPotionAction = "RequestPotionAction",
+        PotionFeedback = "PotionFeedback",
+        SpecialEventSync = "SpecialEventSync",
+        RequestSpecialEventSync = "RequestSpecialEventSync",
+        GroupRewardPrompt = "GroupRewardPrompt",
+        RequestGroupReward = "RequestGroupReward",
+        GroupRewardFeedback = "GroupRewardFeedback",
+        PromptGroupJoin = "PromptGroupJoin",
+    },
+    Battle = {
+        PickupFeedback = "PickupFeedback",
+        ExperienceFeedback = "ExperienceFeedback",
+        LocalMonsterKilled = "LocalMonsterKilled",
+        LocalMonsterHitPlayer = "LocalMonsterHitPlayer",
+        WeaponStateSync = "WeaponStateSync",
+        CombatFeedback = "CombatFeedback",
+        BuffFeedback = "BuffFeedback",
+        BossFeedback = "BossFeedback",
+        LeaderboardSync = "LeaderboardSync",
+        ArenaProgressSync = "ArenaProgressSync",
+        NukeCinematic = "NukeCinematic",
+        NukeLocalMonsterSweep = "NukeLocalMonsterSweep",
+    },
+}
+
+return RemoteNames
