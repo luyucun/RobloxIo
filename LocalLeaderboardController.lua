@@ -10,6 +10,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
+local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
     if sharedFolder then
@@ -245,6 +247,11 @@ function LocalLeaderboardController:_applyVisibilityFromState()
     end
 
     local shouldShow = self._latestPlayerState and self._latestPlayerState.isInArena == true
+    if ModalUiController:IsAnyOpen() then
+        ModalUiController:SetRestoredVisible(self._root, shouldShow == true)
+        self._root.Visible = false
+        return
+    end
     self._root.Visible = shouldShow == true
     if shouldShow then
         self:_setCollapsed(self._isCollapsed)

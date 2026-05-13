@@ -114,6 +114,14 @@ local function findVisualWeaponTemplate(folder, templateName)
     return nil
 end
 
+local function resolveVisualTemplateName(weaponData, tierConfig)
+    local visualTemplateName = weaponData and weaponData.visualTemplateName
+    if visualTemplateName and tostring(visualTemplateName) ~= "" then
+        return tostring(visualTemplateName)
+    end
+    return tierConfig and tierConfig.TemplateName or nil
+end
+
 local function resolveAuraPart(instance)
     if not instance then
         return nil
@@ -154,6 +162,14 @@ local function getRuntimeWeaponsFolder()
         return nil
     end
     return findChildOfClass(runtimeRoot, WeaponTierConfig.RuntimeFolderName, "Folder")
+end
+
+local function getWeaponOrbitSpeed()
+    return tonumber(GameConfig.WEAPON and GameConfig.WEAPON.OrbitSpeed) or 2.8
+end
+
+local function getWeaponOrbitDistance()
+    return 6
 end
 
 local function getRuntimeWeaponParts(weaponsFolder)
@@ -220,7 +236,7 @@ function WeaponFxController:_getLocalWeaponFolder()
     return folder
 end
 
-function WeaponFxController:_resolveTemplate(tierName)
+function WeaponFxController:_resolveTemplate(tierName, visualTemplateName)
     local tierConfig = WeaponTierConfig.Tiers[tostring(tierName or "")]
     if not tierConfig then
         return nil, nil
@@ -228,7 +244,8 @@ function WeaponFxController:_resolveTemplate(tierName)
 
     local modelRoot = findChildOfClass(ReplicatedStorage, WeaponTierConfig.ModelRootFolderName, "Folder")
     local weaponFolder = findChildOfClass(modelRoot, WeaponTierConfig.WeaponFolderName, "Folder")
-    return findVisualWeaponTemplate(weaponFolder, tierConfig.TemplateName), tierConfig
+    local resolvedTemplateName = tostring(visualTemplateName or tierConfig.TemplateName)
+    return findVisualWeaponTemplate(weaponFolder, resolvedTemplateName) or findVisualWeaponTemplate(weaponFolder, tierConfig.TemplateName), tierConfig
 end
 
 function WeaponFxController:_configureLocalWeapon(instance)
@@ -275,9 +292,7 @@ end
 
 function WeaponFxController:_clearLocalWeapons()
     for _, weaponState in ipairs(self._localWeaponStates) do
-        if weaponState.Instance and weaponState.Instance.Parent then
-            weaponState.Instance:Destroy()
-        end
+        self:_destroyLocalWeaponState(weaponState)
     end
     self._localWeaponStates = {}
 
@@ -285,6 +300,12 @@ function WeaponFxController:_clearLocalWeapons()
         for _, child in ipairs(self._localWeaponFolder:GetChildren()) do
             child:Destroy()
         end
+    end
+end
+
+function WeaponFxController:_destroyLocalWeaponState(weaponState)
+    if weaponState and weaponState.Instance and weaponState.Instance.Parent then
+        weaponState.Instance:Destroy()
     end
 end
 
@@ -303,23 +324,49 @@ function WeaponFxController:_buildDistributedAngles(weaponCount, anchorAngle)
     return angles
 end
 
+function WeaponFxController:_buildVisualIdentity(weaponTier, templateName)
+    return tostring(weaponTier or "None") .. ":" .. tostring(templateName or "")
+end
+
+function WeaponFxController:_updateLocalWeaponState(weaponState, weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle)
+    weaponState.SlotIndex = weaponIndex
+    weaponState.Tier = weaponTier
+    weaponState.TemplateName = templateName
+    weaponState.VisualIdentity = visualIdentity
+    weaponState.CurrentAngle = currentAngle or weaponState.CurrentAngle or 0
+    weaponState.OrbitSpeed = getWeaponOrbitSpeed()
+    weaponState.OrbitDirection = normalizeOrbitDirection((weaponData and weaponData.orbitDirection) or weaponState.OrbitDirection)
+    weaponState.Damage = tonumber(weaponData and weaponData.damage) or tonumber(tierConfig and tierConfig.Damage) or weaponState.Damage or 0
+    weaponState.IconImage = tostring((weaponData and weaponData.visualIconImage) or (weaponData and weaponData.iconImage) or weaponState.IconImage or (tierConfig and tierConfig.IconImage) or WeaponTierConfig.GetIconImageForTier(weaponTier))
+    weaponState.AuraRadius = tonumber(weaponData and weaponData.auraRadius) or weaponState.AuraRadius or 0
+end
+
+function WeaponFxController:_createLocalWeaponState(weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle, previousDirection)
+    local template
+    template, tierConfig = self:_resolveTemplate(weaponTier, templateName)
+    if not tierConfig then
+        return nil
+    end
+
+    local localWeapon = template and template:Clone() or self:_createFallbackWeapon(weaponTier)
+    localWeapon.Name = string.format("Local_%s_%02d", tostring(templateName or tierConfig.TemplateName or weaponTier), weaponIndex)
+    localWeapon.Parent = self:_getLocalWeaponFolder()
+    stripRuntimeOnlyDescendants(localWeapon)
+    self:_configureLocalWeapon(localWeapon)
+
+    local weaponState = {
+        Instance = localWeapon,
+        HitPart = resolveAuraPart(localWeapon) or (localWeapon:IsA("Model") and localWeapon.PrimaryPart or nil) or (localWeapon:IsA("BasePart") and localWeapon or nil),
+        OrbitDirection = previousDirection,
+    }
+    self:_updateLocalWeaponState(weaponState, weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle)
+    return weaponState
+end
+
 function WeaponFxController:_rebuildLocalWeapons(payload)
     local tierName = tostring(payload and payload.weaponTier or "None")
     local weaponCount = math.max(0, math.floor(tonumber(payload and payload.weaponCount) or 0))
     local weaponPayload = payload and payload.weapons or {}
-    local signature = string.format("%s:%d", tierName, weaponCount)
-    if signature == self._lastWeaponSignature then
-        for weaponIndex, weaponState in ipairs(self._localWeaponStates) do
-            local weaponData = weaponPayload[weaponIndex]
-            if weaponData then
-                weaponState.OrbitDirection = normalizeOrbitDirection(weaponData.orbitDirection or weaponState.OrbitDirection)
-                weaponState.Damage = tonumber(weaponData.damage) or weaponState.Damage
-                weaponState.AuraRadius = tonumber(weaponData.auraRadius) or weaponState.AuraRadius
-                weaponState.IconImage = tostring(weaponData.iconImage or weaponState.IconImage or WeaponTierConfig.GetIconImageForTier(tierName))
-            end
-        end
-        return
-    end
 
     local previousAngles = {}
     local previousDirections = {}
@@ -331,11 +378,9 @@ function WeaponFxController:_rebuildLocalWeapons(payload)
     local shouldRedistributeAngles = #self._localWeaponStates ~= weaponCount
     local redistributedAngles = shouldRedistributeAngles and self:_buildDistributedAngles(weaponCount, previousLeadAngle) or nil
 
-    self._lastWeaponSignature = signature
-    self:_clearLocalWeapons()
-
-    local template, tierConfig = self:_resolveTemplate(tierName)
-    if weaponCount <= 0 or not tierConfig then
+    if weaponCount <= 0 then
+        self._lastWeaponSignature = nil
+        self:_clearLocalWeapons()
         return
     end
 
@@ -345,25 +390,47 @@ function WeaponFxController:_rebuildLocalWeapons(payload)
     end
 
     local angleStep = (math.pi * 2) / math.max(1, weaponCount)
+    local nextWeaponStates = {}
     for weaponIndex = 1, weaponCount do
-        local localWeapon = template and template:Clone() or self:_createFallbackWeapon(tierName)
-        localWeapon.Name = string.format("Local_%s_%02d", tostring(tierConfig.TemplateName or tierName), weaponIndex)
-        localWeapon.Parent = folder
-        stripRuntimeOnlyDescendants(localWeapon)
-        self:_configureLocalWeapon(localWeapon)
+        local weaponData = weaponPayload[weaponIndex]
+        local weaponTier = tostring((weaponData and weaponData.tier) or tierName)
+        local tierConfig = WeaponTierConfig.Tiers[weaponTier]
+        local templateName = resolveVisualTemplateName(weaponData, tierConfig)
+        local visualIdentity = self:_buildVisualIdentity(weaponTier, templateName)
+        local previousState = self._localWeaponStates[weaponIndex]
+        local currentAngle = redistributedAngles and redistributedAngles[weaponIndex] or previousAngles[weaponIndex] or ((weaponIndex - 1) * angleStep)
 
-        table.insert(self._localWeaponStates, {
-            Instance = localWeapon,
-            HitPart = resolveAuraPart(localWeapon) or (localWeapon:IsA("Model") and localWeapon.PrimaryPart or nil) or (localWeapon:IsA("BasePart") and localWeapon or nil),
-            CurrentAngle = redistributedAngles and redistributedAngles[weaponIndex] or previousAngles[weaponIndex] or ((weaponIndex - 1) * angleStep),
-            OrbitRadius = tonumber(tierConfig.OrbitRadius) or 6,
-            OrbitSpeed = tonumber(tierConfig.OrbitSpeed) or 2.8,
-            OrbitDirection = normalizeOrbitDirection((weaponPayload[weaponIndex] and weaponPayload[weaponIndex].orbitDirection) or previousDirections[weaponIndex]),
-            Damage = tonumber(weaponPayload[weaponIndex] and weaponPayload[weaponIndex].damage) or tonumber(tierConfig.Damage) or 0,
-            IconImage = tostring((weaponPayload[weaponIndex] and weaponPayload[weaponIndex].iconImage) or tierConfig.IconImage or WeaponTierConfig.GetIconImageForTier(tierName)),
-            AuraRadius = tonumber(weaponPayload[weaponIndex] and weaponPayload[weaponIndex].auraRadius) or 0,
-        })
+        if not tierConfig then
+            continue
+        end
+
+        if previousState
+            and previousState.Instance
+            and previousState.Instance.Parent
+            and previousState.VisualIdentity == visualIdentity
+        then
+            self:_updateLocalWeaponState(previousState, weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle)
+            nextWeaponStates[weaponIndex] = previousState
+        else
+            self:_destroyLocalWeaponState(previousState)
+            nextWeaponStates[weaponIndex] = self:_createLocalWeaponState(
+                weaponIndex,
+                weaponTier,
+                templateName,
+                visualIdentity,
+                weaponData,
+                tierConfig,
+                currentAngle,
+                previousDirections[weaponIndex]
+            )
+        end
     end
+
+    for index = weaponCount + 1, #self._localWeaponStates do
+        self:_destroyLocalWeaponState(self._localWeaponStates[index])
+    end
+
+    self._localWeaponStates = nextWeaponStates
 end
 
 function WeaponFxController:_calculateOrbitCenter(rootPart)
@@ -371,10 +438,11 @@ function WeaponFxController:_calculateOrbitCenter(rootPart)
 end
 
 function WeaponFxController:_buildWeaponCFrame(centerPosition, weaponState)
+    local orbitDistance = getWeaponOrbitDistance()
     local offset = Vector3.new(
-        math.cos(weaponState.CurrentAngle) * weaponState.OrbitRadius,
+        math.cos(weaponState.CurrentAngle) * orbitDistance,
         GameConfig.WEAPON.OrbitHeight,
-        math.sin(weaponState.CurrentAngle) * weaponState.OrbitRadius
+        math.sin(weaponState.CurrentAngle) * orbitDistance
     )
     local position = centerPosition + offset
     local outward = Vector3.new(offset.X, 0, offset.Z)
@@ -401,6 +469,7 @@ function WeaponFxController:_updateLocalWeaponTransforms(deltaTime)
     local centerPosition = self:_calculateOrbitCenter(rootPart)
     for _, weaponState in ipairs(self._localWeaponStates) do
         if weaponState.Instance and weaponState.Instance.Parent then
+            weaponState.OrbitSpeed = getWeaponOrbitSpeed()
             weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
             setWorldCFrame(weaponState.Instance, self:_buildWeaponCFrame(centerPosition, weaponState))
         end

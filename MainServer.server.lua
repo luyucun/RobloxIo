@@ -70,7 +70,12 @@ local PotionService = requireServerModule("PotionService")
 local SpecialEventService = requireServerModule("SpecialEventService")
 local GMCommandService = requireServerModule("GMCommandService")
 local GroupRewardService = requireServerModule("GroupRewardService")
+local WeaponUnlockRewardService = requireServerModule("WeaponUnlockRewardService")
+local BadgeAwardService = requireServerModule("BadgeAwardService")
 local ArenaProgressService = requireServerModule("ArenaProgressService")
+local WheelService = requireServerModule("WheelService")
+local SkinService = requireServerModule("SkinService")
+local SubscriptionService = requireServerModule("SubscriptionService")
 
 Players.RespawnTime = GameConfig.RESPAWN.DeathRecoverySeconds
 Players.CharacterAutoLoads = false
@@ -113,6 +118,7 @@ local function ensureStudioBots()
 end
 
 RemoteEventService:Init()
+BadgeAwardService:Init()
 PlayerStateService:Init({
     RemoteEventService = RemoteEventService,
 })
@@ -125,10 +131,33 @@ PotionService:Init({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
 })
+WheelService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    PotionService = PotionService,
+    RebirthService = RebirthService,
+    HealthService = HealthService,
+})
+SkinService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+})
+SubscriptionService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    BadgeAwardService = BadgeAwardService,
+})
 GroupRewardService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     PotionService = PotionService,
+    RebirthService = RebirthService,
+})
+WeaponUnlockRewardService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
 })
 BotService:Init({
@@ -140,6 +169,7 @@ ArenaService:Init({
     WeaponService = WeaponService,
     RemoteEventService = RemoteEventService,
     BotService = BotService,
+    RebirthService = RebirthService,
 })
 WeaponService:Init({
     PlayerStateService = PlayerStateService,
@@ -180,6 +210,7 @@ LocalMonsterRewardService:Init({
     ExperienceOrbService = ExperienceOrbService,
     HealthService = HealthService,
     RemoteEventService = RemoteEventService,
+    RebirthService = RebirthService,
 })
 MonsterService:Init({
     PlayerStateService = PlayerStateService,
@@ -187,6 +218,7 @@ MonsterService:Init({
     HealthService = HealthService,
     ExperienceOrbService = ExperienceOrbService,
     BuffService = BuffService,
+    PotionService = PotionService,
 })
 BossService:Init({
     MonsterService = MonsterService,
@@ -207,35 +239,63 @@ NukeService:Init({
     RemoteEventService = RemoteEventService,
     MonsterService = MonsterService,
     ExperienceOrbService = ExperienceOrbService,
+    LocalMonsterRewardService = LocalMonsterRewardService,
 })
 SpecialEventService:Init({
     RemoteEventService = RemoteEventService,
+    BossService = BossService,
 })
 GMCommandService:Init({
     SpecialEventService = SpecialEventService,
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
+    BotService = BotService,
+    HealthService = HealthService,
 })
 PlayerStateService:BindSystems({
     WeaponService = WeaponService,
+    WeaponUnlockRewardService = WeaponUnlockRewardService,
     LeaderboardService = LeaderboardService,
     RebirthService = RebirthService,
     ArenaProgressService = ArenaProgressService,
+    HealthService = HealthService,
+    SubscriptionService = SubscriptionService,
 })
 RebirthService:BindSystems({
     HealthService = HealthService,
     RespawnService = RespawnService,
     NukeService = NukeService,
     PotionService = PotionService,
+    WheelService = WheelService,
 })
 PotionService:BindSystems({
     RebirthService = RebirthService,
+})
+WheelService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    PotionService = PotionService,
+    RebirthService = RebirthService,
+    SkinService = SkinService,
+    HealthService = HealthService,
+})
+SkinService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+})
+SubscriptionService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    BadgeAwardService = BadgeAwardService,
 })
 BotService:BindSystems({
     ArenaService = ArenaService,
     WeaponService = WeaponService,
     RespawnService = RespawnService,
     ExperienceOrbService = ExperienceOrbService,
+})
+MonsterService:BindSystems({
+    BuffService = BuffService,
+    PotionService = PotionService,
 })
 
 local function onPlayerAdded(player)
@@ -246,6 +306,9 @@ local function onPlayerAdded(player)
 
     PlayerStateService:OnPlayerAdded(player)
     RebirthService:OnPlayerAdded(player)
+    WheelService:OnPlayerAdded(player)
+    SkinService:OnPlayerAdded(player)
+    SubscriptionService:OnPlayerAdded(player)
     LeaderboardService:OnPlayerAdded(player)
     SpecialEventService:OnPlayerAdded(player)
     ArenaProgressService:OnPlayerAdded(player)
@@ -258,7 +321,9 @@ local function onPlayerAdded(player)
                 RespawnService:CompleteArenaRevive(player)
             else
                 ArenaService:TeleportPlayerToSpawnLocation(player)
-                PlayerStateService:PushState(player)
+                if not RebirthService.IsPlayerLoaded or RebirthService:IsPlayerLoaded(player) then
+                    PlayerStateService:PushState(player)
+                end
             end
             ensureStudioBots()
         end)
@@ -275,10 +340,21 @@ end
 
 local function onPlayerRemoving(player)
     WeaponService:ClearPlayerWeapons(player)
+    if LocalMonsterRewardService.OnPlayerRemoving then
+        LocalMonsterRewardService:OnPlayerRemoving(player)
+    end
     if RespawnService.OnPlayerRemoving then
         RespawnService:OnPlayerRemoving(player)
     end
+    if HealthService.OnPlayerRemoving then
+        HealthService:OnPlayerRemoving(player)
+    end
+    WeaponUnlockRewardService:OnPlayerRemoving(player)
     GroupRewardService:OnPlayerRemoving(player)
+    WheelService:OnPlayerRemoving(player)
+    SkinService:OnPlayerRemoving(player)
+    SubscriptionService:OnPlayerRemoving(player)
+    BadgeAwardService:OnPlayerRemoving(player)
     RebirthService:OnPlayerRemoving(player)
     LeaderboardService:OnPlayerRemoving(player)
     PlayerStateService:OnPlayerRemoving(player)

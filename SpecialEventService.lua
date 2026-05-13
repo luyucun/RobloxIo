@@ -3,7 +3,7 @@
 脚本文件: SpecialEventService.lua
 脚本类型: ModuleScript
 Studio放置路径: ServerScriptService/Services/SpecialEventService
-说明: V2.2 特殊事件服务端排期与同步；本版本不生成 Boss，只同步事件表现状态。
+说明: V2.8 特殊事件服务端排期、同步与事件 Boss 刷新。
 ]]
 
 local Players = game:GetService("Players")
@@ -44,6 +44,7 @@ SpecialEventService._activeEvent = nil
 SpecialEventService._futureEvents = {}
 SpecialEventService._recentEventIds = {}
 SpecialEventService._sequenceIndex = 0
+SpecialEventService._bossService = nil
 
 local function cloneEventConfig(eventConfig, startClock)
     if not eventConfig then
@@ -58,6 +59,9 @@ local function cloneEventConfig(eventConfig, startClock)
         scenePath = eventConfig.ScenePath,
         textLabelName = eventConfig.TextLabelName,
         durationSeconds = durationSeconds,
+        bossSourceId = eventConfig.BossSourceId,
+        bossDefinitionId = eventConfig.BossDefinitionId,
+        bossCount = math.max(0, math.floor(tonumber(eventConfig.BossCount) or 0)),
         startClock = startClock,
         endClock = startClock + durationSeconds,
     }
@@ -139,6 +143,19 @@ function SpecialEventService:_buildNextScheduledEvent(startClock)
     return scheduledEvent
 end
 
+function SpecialEventService:_spawnBossesForEvent(scheduledEvent)
+    if not (self._bossService and type(self._bossService.SpawnBossesForEvent) == "function") then
+        return 0
+    end
+
+    return self._bossService:SpawnBossesForEvent({
+        EventId = scheduledEvent and scheduledEvent.id or nil,
+        BossSourceId = scheduledEvent and scheduledEvent.bossSourceId or nil,
+        BossDefinitionId = scheduledEvent and scheduledEvent.bossDefinitionId or nil,
+        BossCount = scheduledEvent and scheduledEvent.bossCount or 0,
+    })
+end
+
 function SpecialEventService:_ensureFutureEvents()
     local intervalSeconds = self:_getSpawnIntervalSeconds()
     local targetCount = math.max(0, math.floor(tonumber(SpecialEventConfig.FutureDisplayCount) or 2))
@@ -175,6 +192,7 @@ function SpecialEventService:_startNextEvent()
     self._activeEvent = nextEvent
     self._nextStartClock = nowClock + self:_getSpawnIntervalSeconds()
     self:_ensureFutureEvents()
+    self:_spawnBossesForEvent(nextEvent)
     self:BroadcastState()
 end
 
@@ -224,6 +242,7 @@ function SpecialEventService:StartEventById(eventId)
     self._futureEvents = {}
     self._nextStartClock = nowClock + self:_getSpawnIntervalSeconds()
     self:_ensureFutureEvents()
+    self:_spawnBossesForEvent(activeEvent)
     self:BroadcastState()
     return true, activeEvent
 end
@@ -266,6 +285,7 @@ end
 function SpecialEventService:Init(dependencies)
     self._specialEventSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("SpecialEventSync") or nil
     self._requestSpecialEventSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestSpecialEventSync") or nil
+    self._bossService = dependencies and dependencies.BossService or nil
     self._startedAtClock = os.clock()
     self._nextStartClock = self._startedAtClock + self:_getSpawnIntervalSeconds()
     self._activeEvent = nil

@@ -1,0 +1,246 @@
+--[[
+脚本名字: WeaponUnlockRewardService
+脚本文件: WeaponUnlockRewardService.lua
+脚本类型: ModuleScript
+Studio放置路径: ServerScriptService/Services/WeaponUnlockRewardService
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ActorUtils = require(script.Parent:WaitForChild("ActorUtils"))
+
+local function requireSharedModule(moduleName)
+    local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+    if sharedFolder then
+        local moduleInShared = sharedFolder:FindFirstChild(moduleName)
+        if moduleInShared and moduleInShared:IsA("ModuleScript") then
+            return require(moduleInShared)
+        end
+    end
+
+    local moduleInRoot = ReplicatedStorage:FindFirstChild(moduleName)
+    if moduleInRoot and moduleInRoot:IsA("ModuleScript") then
+        return require(moduleInRoot)
+    end
+
+    error(string.format(
+        "[WeaponUnlockRewardService] 缺少共享模块 %s（应放在 ReplicatedStorage/Shared 或 ReplicatedStorage 根目录）",
+        tostring(moduleName or "")
+    ))
+end
+
+local GameConfig = requireSharedModule("GameConfig")
+local WeaponTierConfig = requireSharedModule("WeaponTierConfig")
+
+local WeaponUnlockRewardService = {}
+
+WeaponUnlockRewardService._playerStateService = nil
+WeaponUnlockRewardService._rebirthService = nil
+WeaponUnlockRewardService._weaponUnlockPromptEvent = nil
+WeaponUnlockRewardService._requestWeaponUnlockRewardEvent = nil
+WeaponUnlockRewardService._weaponUnlockRewardFeedbackEvent = nil
+WeaponUnlockRewardService._claimingByUserId = {}
+
+local function getRewardDiamonds()
+    return math.max(0, math.floor(tonumber(GameConfig.WEAPON_UNLOCK and GameConfig.WEAPON_UNLOCK.RewardDiamonds) or 0))
+end
+
+local function getTierConfig(tierIndex)
+    local tierName = WeaponTierConfig.Order[math.max(1, math.floor(tonumber(tierIndex) or 1))]
+    return tierName, tierName and WeaponTierConfig.Tiers[tierName] or nil
+end
+
+local function buildPromptPayload(tierIndex)
+    local tierName, tierConfig = getTierConfig(tierIndex)
+    if not tierConfig then
+        return nil
+    end
+
+    return {
+        eventType = "Show",
+        tier = tierName,
+        tierIndex = tierIndex,
+        unlockLevel = WeaponTierConfig.GetUnlockLevelForTierIndex(tierIndex),
+        weaponName = WeaponTierConfig.GetDisplayNameForTier(tierName),
+        weaponIcon = WeaponTierConfig.GetIconImageForTier(tierName),
+        damage = math.max(0, math.floor(tonumber(tierConfig.Damage) or 0)),
+        rewardDiamonds = getRewardDiamonds(),
+        timestamp = os.clock(),
+    }
+end
+
+local function containsTier(queue, tierIndex)
+    for _, queuedTierIndex in ipairs(queue or {}) do
+        if math.floor(tonumber(queuedTierIndex) or 0) == tierIndex then
+            return true
+        end
+    end
+    return false
+end
+
+local function getFirstQueuedTier(queue)
+    return math.floor(tonumber(queue and queue[1]) or 0)
+end
+
+local function removeTier(queue, tierIndex)
+    local result = {}
+    local removed = false
+    for _, queuedTierIndex in ipairs(queue or {}) do
+        local resolvedTierIndex = math.floor(tonumber(queuedTierIndex) or 0)
+        if resolvedTierIndex == tierIndex and removed == false then
+            removed = true
+        elseif resolvedTierIndex > 0 then
+            table.insert(result, resolvedTierIndex)
+        end
+    end
+    return result, removed
+end
+
+function WeaponUnlockRewardService:_firePrompt(player, tierIndex)
+    if not (self._weaponUnlockPromptEvent and player and player.Parent) then
+        return
+    end
+
+    local payload = buildPromptPayload(tierIndex)
+    if payload then
+        self._weaponUnlockPromptEvent:FireClient(player, payload)
+    end
+end
+
+function WeaponUnlockRewardService:_fireFeedback(player, eventType, message, tierIndex)
+    if not (self._weaponUnlockRewardFeedbackEvent and player and player.Parent) then
+        return
+    end
+
+    self._weaponUnlockRewardFeedbackEvent:FireClient(player, {
+        eventType = eventType,
+        message = message,
+        tierIndex = tierIndex,
+        rewardDiamonds = getRewardDiamonds(),
+        timestamp = os.clock(),
+    })
+end
+
+function WeaponUnlockRewardService:SyncPendingPrompt(player)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return
+    end
+
+    local rewards = self._playerStateService:GetWeaponUnlockRewards(player)
+    local tierIndex = rewards.PendingQueue and rewards.PendingQueue[1] or nil
+    if tierIndex then
+        self:_firePrompt(player, tierIndex)
+    end
+end
+
+function WeaponUnlockRewardService:HandleLevelChanged(player, previousLevel, newLevel)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false
+    end
+    if not (self._rebirthService and self._rebirthService.IsPlayerLoaded and self._rebirthService:IsPlayerLoaded(player)) then
+        return false
+    end
+
+    local previousTierIndex = self._playerStateService:GetMaxUnlockedWeaponTierIndexForLevel(previousLevel)
+    local newTierIndex = self._playerStateService:GetMaxUnlockedWeaponTierIndexForLevel(newLevel)
+    if newTierIndex <= previousTierIndex then
+        return false
+    end
+
+    local rewards = self._playerStateService:GetWeaponUnlockRewards(player)
+    local didQueue = false
+    for tierIndex = previousTierIndex + 1, newTierIndex do
+        local key = tostring(tierIndex)
+        if tierIndex > 1 and rewards.ClaimedTiers[key] ~= true and not containsTier(rewards.PendingQueue, tierIndex) then
+            table.insert(rewards.PendingQueue, tierIndex)
+            didQueue = true
+        end
+    end
+
+    if didQueue then
+        table.sort(rewards.PendingQueue)
+        self._playerStateService:SetWeaponUnlockRewards(player, rewards)
+        if self._rebirthService then
+            self._rebirthService:MarkDirty(player)
+        end
+        self:SyncPendingPrompt(player)
+    end
+    return didQueue
+end
+
+function WeaponUnlockRewardService:Claim(player, requestedTierIndex)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false, "ServiceUnavailable"
+    end
+    if not (self._rebirthService and self._rebirthService.IsPlayerLoaded and self._rebirthService:IsPlayerLoaded(player)) then
+        self:_fireFeedback(player, "Failed", "DataLoading", requestedTierIndex)
+        return false, "DataLoading"
+    end
+
+    local userId = player.UserId
+    if self._claimingByUserId[userId] then
+        return false, "Busy"
+    end
+    self._claimingByUserId[userId] = true
+
+    local rewards = self._playerStateService:GetWeaponUnlockRewards(player)
+    local tierIndex = math.floor(tonumber(requestedTierIndex) or tonumber(rewards.PendingQueue and rewards.PendingQueue[1]) or 0)
+    local key = tostring(tierIndex)
+    local state = self._playerStateService:GetState(player)
+    local maxUnlockedTierIndex = self._playerStateService:GetMaxUnlockedWeaponTierIndexForLevel(state.HighestLevelReached or state.Level)
+    local currentQueuedTierIndex = getFirstQueuedTier(rewards.PendingQueue)
+
+    if tierIndex <= 1 or tierIndex ~= currentQueuedTierIndex or rewards.ClaimedTiers[key] == true or not containsTier(rewards.PendingQueue, tierIndex) or tierIndex > maxUnlockedTierIndex then
+        self._claimingByUserId[userId] = nil
+        self:_fireFeedback(player, "Failed", "InvalidTier", tierIndex)
+        return false, "InvalidTier"
+    end
+
+    local nextQueue, didRemove = removeTier(rewards.PendingQueue, tierIndex)
+    if not didRemove then
+        self._claimingByUserId[userId] = nil
+        self:_fireFeedback(player, "Failed", "InvalidTier", tierIndex)
+        return false, "InvalidTier"
+    end
+
+    rewards.PendingQueue = nextQueue
+    rewards.ClaimedTiers[key] = true
+    self._playerStateService:SetWeaponUnlockRewards(player, rewards)
+    self._playerStateService:_addDiamondsWithoutPush(player, getRewardDiamonds())
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(player)
+    end
+
+    self._claimingByUserId[userId] = nil
+    self:_fireFeedback(player, "Success", "Claimed", tierIndex)
+    task.delay(0.35, function()
+        if player and player.Parent then
+            self._playerStateService:PushState(player)
+            self:SyncPendingPrompt(player)
+        end
+    end)
+    return true
+end
+
+function WeaponUnlockRewardService:Init(dependencies)
+    self._playerStateService = dependencies and dependencies.PlayerStateService or nil
+    self._rebirthService = dependencies and dependencies.RebirthService or nil
+    self._weaponUnlockPromptEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("WeaponUnlockPrompt") or nil
+    self._requestWeaponUnlockRewardEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestWeaponUnlockReward") or nil
+    self._weaponUnlockRewardFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("WeaponUnlockRewardFeedback") or nil
+    self._claimingByUserId = {}
+
+    if self._requestWeaponUnlockRewardEvent then
+        self._requestWeaponUnlockRewardEvent.OnServerEvent:Connect(function(player, tierIndex)
+            self:Claim(player, tierIndex)
+        end)
+    end
+end
+
+function WeaponUnlockRewardService:OnPlayerRemoving(player)
+    if player then
+        self._claimingByUserId[player.UserId] = nil
+    end
+end
+
+return WeaponUnlockRewardService

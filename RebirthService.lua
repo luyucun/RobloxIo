@@ -36,6 +36,8 @@ end
 
 local GameConfig = requireSharedModule("GameConfig")
 local PotionConfig = requireSharedModule("PotionConfig")
+local WheelConfig = requireSharedModule("WheelConfig")
+local SkinConfig = requireSharedModule("SkinConfig")
 
 local RebirthService = {}
 
@@ -46,9 +48,12 @@ RebirthService._healthService = nil
 RebirthService._respawnService = nil
 RebirthService._nukeService = nil
 RebirthService._potionService = nil
+RebirthService._wheelService = nil
 RebirthService._dataStore = nil
 RebirthService._dirtyByUserId = {}
 RebirthService._loadedByUserId = {}
+RebirthService._loadStateByUserId = {}
+RebirthService._loadRetryClockByUserId = {}
 RebirthService._heartbeatConnection = nil
 RebirthService._nextSaveClock = 0
 
@@ -97,6 +102,70 @@ local function normalizeSavedData(data)
         end
     end
 
+    local subscriptionClaims = {}
+    local savedSubscriptionClaims = type(data.subscriptionClaims) == "table" and data.subscriptionClaims or data.SubscriptionClaims
+    if type(savedSubscriptionClaims) == "table" then
+        for subscriptionId, utcDay in pairs(savedSubscriptionClaims) do
+            local key = tostring(subscriptionId or "")
+            local day = tostring(utcDay or "")
+            if key ~= "" and day ~= "" then
+                subscriptionClaims[key] = day
+            end
+        end
+    end
+
+    local ownedSkins = {}
+    local savedOwnedSkins = type(data.ownedSkins) == "table" and data.ownedSkins or data.OwnedSkins
+    if type(savedOwnedSkins) == "table" then
+        for skinKey, owned in pairs(savedOwnedSkins) do
+            local skinId = owned == true and math.floor(tonumber(skinKey) or 0) or math.floor(tonumber(owned) or 0)
+            if skinId > 0 and SkinConfig.GetSkin(skinId) and (owned == true or tonumber(owned) ~= nil) then
+                ownedSkins[tostring(skinId)] = true
+            end
+        end
+    end
+
+    local equippedSkinId = math.floor(tonumber(data.equippedSkinId) or tonumber(data.EquippedSkinId) or 0)
+    if equippedSkinId <= 0 or not (SkinConfig.GetSkin(equippedSkinId) and ownedSkins[tostring(equippedSkinId)] == true) then
+        equippedSkinId = nil
+    end
+
+    local function normalizeWeaponUnlockRewards(rewards)
+        if type(rewards) ~= "table" then
+            return nil
+        end
+
+        local normalized = {
+            ClaimedTiers = {},
+            PendingQueue = {},
+        }
+        local claimedTiers = rewards.claimedTiers or rewards.ClaimedTiers or rewards.claimed or rewards.Claimed
+        if type(claimedTiers) == "table" then
+            for tierKey, claimed in pairs(claimedTiers) do
+                local tierIndex = math.floor(tonumber(tierKey) or tonumber(claimed) or 0)
+                if tierIndex > 0 and (claimed == true or tonumber(claimed) ~= nil) then
+                    normalized.ClaimedTiers[tostring(tierIndex)] = true
+                end
+            end
+        end
+
+        local pendingQueue = rewards.pendingQueue or rewards.PendingQueue or rewards.pendingTiers or rewards.PendingTiers
+        if type(pendingQueue) == "table" then
+            local seen = {}
+            for _, pendingTier in ipairs(pendingQueue) do
+                local tierIndex = math.floor(tonumber(pendingTier) or 0)
+                local key = tostring(tierIndex)
+                if tierIndex > 1 and normalized.ClaimedTiers[key] ~= true and seen[key] ~= true then
+                    seen[key] = true
+                    table.insert(normalized.PendingQueue, tierIndex)
+                end
+            end
+            table.sort(normalized.PendingQueue)
+        end
+
+        return normalized
+    end
+
     local function normalizeSavedActivePotion(activePotion, fallbackPotionId)
         if type(activePotion) ~= "table" then
             return nil
@@ -137,8 +206,13 @@ local function normalizeSavedData(data)
 
     return rebirth, rebirthScore, highestLevelReached, {
         diamonds = math.max(0, math.floor(tonumber(data.diamonds) or tonumber(data.Diamonds) or 0)),
+        wheelSpins = math.max(0, math.floor(tonumber(data.wheelSpins) or tonumber(data.WheelSpins) or 0)),
         potions = potions,
         groupRewards = groupRewards,
+        subscriptionClaims = subscriptionClaims,
+        ownedSkins = ownedSkins,
+        equippedSkinId = equippedSkinId,
+        weaponUnlockRewards = normalizeWeaponUnlockRewards(data.weaponUnlockRewards or data.WeaponUnlockRewards),
         activePotions = activePotions,
         activePotion = legacyActivePotion,
     }
@@ -166,9 +240,25 @@ function RebirthService:MarkDirty(actor)
     end
 
     local userId = getUserId(actor)
-    if userId > 0 then
+    if userId > 0 and self:CanWritePersistentProgress(actor) then
         self._dirtyByUserId[userId] = true
     end
+end
+
+function RebirthService:IsPlayerLoaded(player)
+    local userId = getUserId(player)
+    if userId <= 0 then
+        return false
+    end
+    return self._loadStateByUserId[userId] == "Loaded"
+end
+
+function RebirthService:CanWritePersistentProgress(player)
+    local userId = getUserId(player)
+    if userId <= 0 then
+        return false
+    end
+    return self._loadStateByUserId[userId] == "Loaded"
 end
 
 function RebirthService:_loadPlayer(player)
@@ -181,10 +271,12 @@ function RebirthService:_loadPlayer(player)
         return
     end
     self._loadedByUserId[userId] = true
+    self._loadStateByUserId[userId] = "Pending"
 
     if not self._dataStore then
         self._playerStateService:SetRebirthData(player, 0, 0, GameConfig.PLAYER.BaseLevel, {})
-        self._dirtyByUserId[userId] = nil
+        self._loadStateByUserId[userId] = "Loaded"
+        self._loadRetryClockByUserId[userId] = nil
         return
     end
 
@@ -193,16 +285,25 @@ function RebirthService:_loadPlayer(player)
     end)
     if not success then
         warn("[RebirthService] 读取 Rebirth 数据失败: " .. tostring(player.Name))
+        self._loadedByUserId[userId] = nil
+        self._loadStateByUserId[userId] = "LoadFailed"
+        self._loadRetryClockByUserId[userId] = os.clock() + 5
         return
     end
 
     local rebirth, rebirthScore, highestLevelReached, savedProgress = normalizeSavedData(data)
     self._playerStateService:SetRebirthData(player, rebirth, rebirthScore, highestLevelReached, savedProgress)
     self._dirtyByUserId[userId] = nil
+    self._loadStateByUserId[userId] = "Loaded"
+    self._loadRetryClockByUserId[userId] = nil
 end
 
 function RebirthService:_savePlayer(player)
     if not (player and self._dataStore and self._playerStateService) then
+        return false
+    end
+
+    if not self:CanWritePersistentProgress(player) then
         return false
     end
 
@@ -212,8 +313,13 @@ function RebirthService:_savePlayer(player)
         rebirthScore = math.max(0, math.floor(tonumber(state.RebirthScore) or 0)),
         highestLevelReached = math.max(1, math.floor(tonumber(state.HighestLevelReached) or GameConfig.PLAYER.BaseLevel)),
         diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0)),
+        wheelSpins = math.max(0, math.floor(tonumber(state.WheelSpins) or 0)),
         potions = state.Potions or {},
         groupRewards = state.GroupRewards or {},
+        subscriptionClaims = state.SubscriptionClaims or {},
+        ownedSkins = state.OwnedSkins or {},
+        equippedSkinId = state.EquippedSkinId,
+        weaponUnlockRewards = state.WeaponUnlockRewards or {},
         activePotions = self._playerStateService:GetActivePotions(player),
         activePotion = self._playerStateService:GetActivePotion(player),
         updatedAt = os.time(),
@@ -243,6 +349,16 @@ end
 
 function RebirthService:_step()
     local now = os.clock()
+    for userId, retryClock in pairs(self._loadRetryClockByUserId) do
+        if retryClock and now >= retryClock then
+            local player = Players:GetPlayerByUserId(userId)
+            if player then
+                self:_loadPlayer(player)
+            else
+                self._loadRetryClockByUserId[userId] = nil
+            end
+        end
+    end
     if now < self._nextSaveClock then
         return
     end
@@ -253,6 +369,10 @@ end
 
 function RebirthService:TryRebirth(player, options)
     if not (player and player.Parent and self._playerStateService) then
+        return false
+    end
+    if not self:CanWritePersistentProgress(player) then
+        self:_fireFeedback(player, "Failed", "DataLoading")
         return false
     end
 
@@ -273,17 +393,24 @@ function RebirthService:_processDoubleLevel(player)
     if not (player and player.Parent and self._playerStateService) then
         return false
     end
+    if not self:CanWritePersistentProgress(player) then
+        return false
+    end
 
     local multiplier = GameConfig.MONETIZATION and GameConfig.MONETIZATION.DoubleLevelMultiplier or 2
     local success, newLevel = self._playerStateService:ApplyLevelMultiplier(player, multiplier)
     if success then
         print(string.format("[RebirthService] Double level granted to %s, newLevel=%d", player.Name, newLevel))
+        return true
     end
-    return true
+    return false
 end
 
 function RebirthService:_processNuke(player)
     if not (player and player.Parent and self._nukeService) then
+        return false
+    end
+    if not self:CanWritePersistentProgress(player) then
         return false
     end
 
@@ -300,29 +427,65 @@ function RebirthService:_processRevenge(player)
     end
 
     local defeatRecord = self._respawnService:GetDefeatRecord(player)
-    self._respawnService:RevivePlayer(player)
-
-    local killerUserId = defeatRecord and tonumber(defeatRecord.killerUserId) or nil
-    if killerUserId and killerUserId > 0 and self._healthService then
-        local killerPlayer = Players:GetPlayerByUserId(killerUserId)
-        if killerPlayer then
-            local didKill = false
-            if self._healthService.KillActor then
-                didKill = select(2, self._healthService:KillActor(killerPlayer, player))
-            else
-                didKill = select(2, self._healthService:ApplyWeaponDamage(killerPlayer, GameConfig.MONETIZATION.NukeDamage, player))
-            end
-            if didKill then
-                print(string.format("[RebirthService] Revenge granted to %s against %s", player.Name, killerPlayer.Name))
-            end
-        end
+    if self._respawnService.IsCurrentDefeatRecord
+        and not self._respawnService:IsCurrentDefeatRecord(player, defeatRecord)
+    then
+        return false
+    end
+    local state = self._playerStateService and self._playerStateService:GetState(player) or nil
+    if not (state and state.Alive == false and defeatRecord and defeatRecord.deathSerial) then
+        return false
     end
 
+    local killerUserId = defeatRecord and tonumber(defeatRecord.killerUserId) or nil
+    if not (killerUserId and killerUserId > 0 and self._healthService) then
+        return false
+    end
+
+    local killerPlayer = Players:GetPlayerByUserId(killerUserId)
+    if not killerPlayer then
+        return false
+    end
+
+    local didKill = false
+    if self._healthService.KillActor then
+        didKill = select(2, self._healthService:KillActor(killerPlayer, player))
+    else
+        didKill = select(2, self._healthService:ApplyWeaponDamage(killerPlayer, GameConfig.MONETIZATION.NukeDamage, player))
+    end
+    if not didKill then
+        return false
+    end
+
+    self._respawnService:RevivePlayer(player)
+    print(string.format("[RebirthService] Revenge granted to %s against %s", player.Name, killerPlayer.Name))
     return true
+end
+
+function RebirthService:_processWheelPurchase(player, productId)
+    if not (player and player.Parent and self._wheelService and self._wheelService.GrantPurchasedSpins) then
+        return false
+    end
+    if not self:CanWritePersistentProgress(player) then
+        return false
+    end
+
+    return self._wheelService:GrantPurchasedSpins(player, productId)
 end
 
 function RebirthService:_processReceipt(receiptInfo)
     local productId = receiptInfo.ProductId
+    local wheelPurchase = WheelConfig.GetPurchaseByProductId(productId)
+    if wheelPurchase then
+        local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
+        if not player then
+            return Enum.ProductPurchaseDecision.NotProcessedYet
+        end
+
+        local success = self:_processWheelPurchase(player, productId)
+        return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
+    end
+
     local potion = PotionConfig.GetPotionByProductId(productId)
     if potion then
         local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
@@ -382,6 +545,7 @@ function RebirthService:BindSystems(dependencies)
     self._respawnService = dependencies and dependencies.RespawnService or self._respawnService
     self._nukeService = dependencies and dependencies.NukeService or self._nukeService
     self._potionService = dependencies and dependencies.PotionService or self._potionService
+    self._wheelService = dependencies and dependencies.WheelService or self._wheelService
 end
 
 function RebirthService:Init(dependencies)
@@ -392,8 +556,11 @@ function RebirthService:Init(dependencies)
     self._respawnService = dependencies.RespawnService or self._respawnService
     self._nukeService = dependencies.NukeService or self._nukeService
     self._potionService = dependencies.PotionService or self._potionService
+    self._wheelService = dependencies.WheelService or self._wheelService
     self._dirtyByUserId = {}
     self._loadedByUserId = {}
+    self._loadStateByUserId = {}
+    self._loadRetryClockByUserId = {}
     self._nextSaveClock = os.clock() + math.max(5, tonumber(GameConfig.REBIRTH.AutoSaveIntervalSeconds) or 30)
 
     local isStudio = RunService:IsStudio()
@@ -443,6 +610,8 @@ function RebirthService:OnPlayerRemoving(player)
     local userId = getUserId(player)
     self._dirtyByUserId[userId] = nil
     self._loadedByUserId[userId] = nil
+    self._loadStateByUserId[userId] = nil
+    self._loadRetryClockByUserId[userId] = nil
 end
 
 return RebirthService

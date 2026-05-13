@@ -9,6 +9,7 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/ClientEventCo
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local function requireSharedModule(moduleName)
@@ -44,6 +45,9 @@ ClientEventController._latestLeaderboard = nil
 ClientEventController._latestFeedbackByName = {}
 ClientEventController._localOrbFolder = nil
 ClientEventController._localOrbs = {}
+
+local LEVEL_UP_TEXT_SLIDE_OFFSET = UDim2.fromScale(0, 0.35)
+local LEVEL_UP_TEXT_TWEEN_INFO = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -353,6 +357,42 @@ function ClientEventController:_playSound(soundName, soundId)
     sound:Play()
 end
 
+local function animateLevelUpText(effect)
+    local billboard = effect:FindFirstChild("Billboard", true)
+    local bg = billboard and billboard:FindFirstChild("Bg")
+    local label = bg and bg:FindFirstChild("LevelUp")
+    if not (label and label:IsA("TextLabel")) then
+        return
+    end
+
+    local originalPosition = label.Position
+    local originalTextTransparency = label.TextTransparency
+    local stroke = label:FindFirstChildWhichIsA("UIStroke")
+    local originalStrokeTransparency = stroke and stroke.Transparency or nil
+
+    label.Position = UDim2.new(
+        originalPosition.X.Scale + LEVEL_UP_TEXT_SLIDE_OFFSET.X.Scale,
+        originalPosition.X.Offset + LEVEL_UP_TEXT_SLIDE_OFFSET.X.Offset,
+        originalPosition.Y.Scale + LEVEL_UP_TEXT_SLIDE_OFFSET.Y.Scale,
+        originalPosition.Y.Offset + LEVEL_UP_TEXT_SLIDE_OFFSET.Y.Offset
+    )
+    label.TextTransparency = 1
+    if stroke then
+        stroke.Transparency = 1
+    end
+
+    TweenService:Create(label, LEVEL_UP_TEXT_TWEEN_INFO, {
+        Position = originalPosition,
+        TextTransparency = originalTextTransparency,
+    }):Play()
+
+    if stroke then
+        TweenService:Create(stroke, LEVEL_UP_TEXT_TWEEN_INFO, {
+            Transparency = originalStrokeTransparency,
+        }):Play()
+    end
+end
+
 function ClientEventController:_spawnLevelUpEffect()
     local character = self._localPlayer and self._localPlayer.Character
     local rootPart = getCharacterRoot(self._localPlayer)
@@ -410,6 +450,8 @@ function ClientEventController:_spawnLevelUpEffect()
     weld.Parent = effect
 
     effect.Parent = character
+    animateLevelUpText(effect)
+
     task.delay(math.max(0.1, tonumber(effectConfig.DurationSeconds) or 3), function()
         if effect and effect.Parent then
             effect:Destroy()

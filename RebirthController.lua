@@ -8,10 +8,11 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/RebirthContro
 
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
-local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
+
+local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -53,11 +54,6 @@ RebirthController._redPointVisible = false
 RebirthController._panelTweens = {}
 RebirthController._panelAnimationSerial = 0
 RebirthController._isPanelOpen = false
-RebirthController._blurEffect = nil
-RebirthController._blurOriginalEnabled = nil
-RebirthController._isBlurApplied = false
-RebirthController._hiddenUiOriginalVisibleByNode = {}
-RebirthController._isModalApplied = false
 
 local HOVER_SCALE = 1.05
 local PRESS_SCALE = 0.93
@@ -117,20 +113,6 @@ local function findDescendant(parent, name)
     return parent:FindFirstChild(name, true)
 end
 
-local function findBlurEffect()
-    local blur = Lighting:FindFirstChild("Blur")
-    if blur and blur:IsA("BlurEffect") then
-        return blur
-    end
-
-    blur = Lighting:FindFirstChild("Blur", true)
-    if blur and blur:IsA("BlurEffect") then
-        return blur
-    end
-
-    return nil
-end
-
 local function setText(textObject, value)
     if textObject and (textObject:IsA("TextLabel") or textObject:IsA("TextButton") or textObject:IsA("TextBox")) then
         textObject.Text = tostring(value)
@@ -161,9 +143,8 @@ local function getRequiredScore(rebirth)
     return GameConfig.GetRequiredRebirthScore(rebirth)
 end
 
-local function getMultiplier(rebirth, extraBonus)
-    local rebirthBonus = GameConfig.GetRebirthExperienceBonus(rebirth)
-    return 1 + rebirthBonus + math.max(0, tonumber(extraBonus) or 0)
+local function getRebirthMultiplier(rebirth)
+    return 1 + GameConfig.GetRebirthExperienceBonus(rebirth)
 end
 
 local function offsetPosition(position, offsetX)
@@ -208,75 +189,6 @@ function RebirthController:_notify(message)
     end)
 end
 
-function RebirthController:_applyBlur()
-    if self._isBlurApplied then
-        return
-    end
-
-    self._blurEffect = findBlurEffect()
-    if self._blurEffect then
-        self._blurOriginalEnabled = self._blurEffect.Enabled
-        self._blurEffect.Enabled = true
-    else
-        self._blurOriginalEnabled = nil
-    end
-    self._isBlurApplied = true
-end
-
-function RebirthController:_restoreBlur()
-    if not self._isBlurApplied then
-        return
-    end
-
-    if self._blurEffect and self._blurEffect.Parent and self._blurOriginalEnabled ~= nil then
-        self._blurEffect.Enabled = self._blurOriginalEnabled == true
-    end
-
-    self._blurEffect = nil
-    self._blurOriginalEnabled = nil
-    self._isBlurApplied = false
-end
-
-function RebirthController:_applyModalUi()
-    if self._isModalApplied then
-        return
-    end
-
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-    if self._mainGui and self._panel and self._panel:IsA("GuiObject") then
-        for _, child in ipairs(self._mainGui:GetChildren()) do
-            if child:IsA("GuiObject")
-                and child ~= self._panel
-                and not child:IsAncestorOf(self._panel)
-                and not self._panel:IsAncestorOf(child)
-            then
-                self._hiddenUiOriginalVisibleByNode[child] = child.Visible
-                child.Visible = false
-            end
-        end
-    end
-
-    self:_applyBlur()
-    self._isModalApplied = true
-end
-
-function RebirthController:_restoreModalUi()
-    if not self._isModalApplied then
-        self:_restoreBlur()
-        return
-    end
-
-    for guiObject, originalVisible in pairs(self._hiddenUiOriginalVisibleByNode) do
-        if guiObject and guiObject.Parent and guiObject:IsA("GuiObject") then
-            guiObject.Visible = originalVisible == true
-        end
-    end
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-
-    self:_restoreBlur()
-    self._isModalApplied = false
-end
-
 function RebirthController:_ensureMainGuiEnabled()
     if not self._mainGui then
         return
@@ -305,7 +217,7 @@ function RebirthController:_setPanelOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isPanelOpen = false
-            self:_restoreModalUi()
+            ModalUiController:Release("Rebirth")
         end
         return
     end
@@ -316,8 +228,8 @@ function RebirthController:_setPanelOpen(isOpen, immediate)
     self._isPanelOpen = isOpen == true
 
     if self._isPanelOpen then
-        self:_applyModalUi()
         self:_ensureMainGuiEnabled()
+        ModalUiController:Acquire("Rebirth", self._panel)
         self._panel.Visible = true
         if not uiScale or immediate == true then
             if uiScale then
@@ -359,7 +271,7 @@ function RebirthController:_setPanelOpen(isOpen, immediate)
             uiScale.Scale = 1
         end
         self._panel.Visible = false
-        self:_restoreModalUi()
+        ModalUiController:Release("Rebirth")
         return
     end
 
@@ -387,7 +299,7 @@ function RebirthController:_setPanelOpen(isOpen, immediate)
         uiScale.Scale = 1
         self._panel.Visible = false
         table.clear(self._panelTweens)
-        self:_restoreModalUi()
+        ModalUiController:Release("Rebirth")
     end)
 end
 
@@ -607,8 +519,8 @@ function RebirthController:_updateUi()
     local rebirthScore = math.max(0, math.floor(tonumber(state.rebirthScore) or 0))
     local requiredScore = math.max(1, math.floor(tonumber(state.nextRebirthScore) or getRequiredScore(rebirth)))
     local nextRebirth = rebirth + 1
-    local currentMultiplier = tonumber(state.totalExperienceMultiplier) or getMultiplier(rebirth, state.extraExperienceBonus)
-    local nextMultiplier = getMultiplier(nextRebirth, state.extraExperienceBonus)
+    local currentRebirthMultiplier = getRebirthMultiplier(rebirth)
+    local nextRebirthMultiplier = getRebirthMultiplier(nextRebirth)
 
     if self._leftEntry then
         setText(self._leftEntry:FindFirstChild("Time", true), "[" .. formatInteger(rebirth) .. "]")
@@ -625,8 +537,8 @@ function RebirthController:_updateUi()
 
         local reward2 = findDescendant(self._panel, "Reward2")
         if reward2 then
-            setText(reward2:FindFirstChild("Num1", true), formatMultiplier(currentMultiplier))
-            setText(reward2:FindFirstChild("Num2", true), formatMultiplier(nextMultiplier))
+            setText(reward2:FindFirstChild("Num1", true), formatMultiplier(currentRebirthMultiplier))
+            setText(reward2:FindFirstChild("Num2", true), formatMultiplier(nextRebirthMultiplier))
         end
 
         local progressBg = findDescendant(self._panel, "ProgressBg")
@@ -680,7 +592,12 @@ function RebirthController:_bindUi(silent)
     end
 
     self:_disconnectButtonBindings()
-    self:_setPanelOpen(false, true)
+    if self._isPanelOpen then
+        ModalUiController:Acquire("Rebirth", self._panel)
+        self._panel.Visible = true
+    else
+        self:_setPanelOpen(false, true)
+    end
 
     local openButton = self._leftEntry:FindFirstChild("TextButton", true)
     local closeButton = self._panel:FindFirstChild("CloseButton", true)

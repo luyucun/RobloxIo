@@ -7,9 +7,10 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/WeaponIndexCo
 ]]
 
 local Players = game:GetService("Players")
-local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+
+local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -49,10 +50,6 @@ WeaponIndexController._bindRetryQueued = false
 WeaponIndexController._panelTweens = {}
 WeaponIndexController._panelAnimationSerial = 0
 WeaponIndexController._isPanelOpen = false
-WeaponIndexController._hiddenUiOriginalVisibleByNode = {}
-WeaponIndexController._blurEffect = nil
-WeaponIndexController._blurOriginalEnabled = nil
-WeaponIndexController._isModalApplied = false
 WeaponIndexController._generatedRowsByTier = {}
 WeaponIndexController._layoutConnection = nil
 
@@ -110,20 +107,6 @@ local function findMainGui(localPlayer)
     return playerGui:FindFirstChild("Main") or playerGui:FindFirstChild("Main", true)
 end
 
-local function findBlurEffect()
-    local blur = Lighting:FindFirstChild("Blur")
-    if blur and blur:IsA("BlurEffect") then
-        return blur
-    end
-
-    blur = Lighting:FindFirstChild("Blur", true)
-    if blur and blur:IsA("BlurEffect") then
-        return blur
-    end
-
-    return nil
-end
-
 local function setText(parent, childName, value)
     local textObject = parent and parent:FindFirstChild(childName, true) or nil
     if textObject and (textObject:IsA("TextLabel") or textObject:IsA("TextButton") or textObject:IsA("TextBox")) then
@@ -160,6 +143,16 @@ local function updateCanvasSize(scrollingFrame)
     if layout then
         scrollingFrame.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y)
     end
+end
+
+local function isGeneratedWeaponRow(instance)
+    if not instance then
+        return false
+    end
+    if instance:GetAttribute(GENERATED_ROW_ATTRIBUTE) == true then
+        return true
+    end
+    return string.match(tostring(instance.Name or ""), "^WeaponIndex_%d+$") ~= nil
 end
 
 local function playTween(binding, tweenKey, target, tweenInfo, goal)
@@ -209,56 +202,6 @@ function WeaponIndexController:_nextPanelAnimationSerial()
     return self._panelAnimationSerial
 end
 
-function WeaponIndexController:_applyModalUi()
-    if self._isModalApplied then
-        return
-    end
-
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-    if self._mainGui then
-        for _, child in ipairs(self._mainGui:GetChildren()) do
-            if child:IsA("GuiObject")
-                and child ~= self._panel
-                and not child:IsAncestorOf(self._panel)
-                and not self._panel:IsAncestorOf(child)
-            then
-                self._hiddenUiOriginalVisibleByNode[child] = child.Visible
-                child.Visible = false
-            end
-        end
-    end
-
-    self._blurEffect = findBlurEffect()
-    if self._blurEffect then
-        self._blurOriginalEnabled = self._blurEffect.Enabled
-        self._blurEffect.Enabled = true
-    else
-        self._blurOriginalEnabled = nil
-    end
-    self._isModalApplied = true
-end
-
-function WeaponIndexController:_restoreModalUi()
-    if not self._isModalApplied then
-        return
-    end
-
-    for guiObject, originalVisible in pairs(self._hiddenUiOriginalVisibleByNode) do
-        if guiObject and guiObject.Parent and guiObject:IsA("GuiObject") then
-            guiObject.Visible = originalVisible == true
-        end
-    end
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-
-    if self._blurEffect and self._blurEffect.Parent and self._blurOriginalEnabled ~= nil then
-        self._blurEffect.Enabled = self._blurOriginalEnabled == true
-    end
-
-    self._blurEffect = nil
-    self._blurOriginalEnabled = nil
-    self._isModalApplied = false
-end
-
 function WeaponIndexController:_getHighestLevelReached()
     local state = self._latestState or {}
     local level = tonumber(state.highestLevelReached) or tonumber(state.level) or 1
@@ -272,7 +215,7 @@ function WeaponIndexController:_clearGeneratedRows()
     end
 
     for _, child in ipairs(self._scrollingFrame:GetChildren()) do
-        if child:GetAttribute(GENERATED_ROW_ATTRIBUTE) == true then
+        if isGeneratedWeaponRow(child) then
             child:Destroy()
         end
     end
@@ -351,7 +294,7 @@ function WeaponIndexController:_setPanelOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isPanelOpen = false
-            self:_restoreModalUi()
+            ModalUiController:Release("WeaponIndex")
         end
         return
     end
@@ -362,7 +305,7 @@ function WeaponIndexController:_setPanelOpen(isOpen, immediate)
     self._isPanelOpen = isOpen == true
 
     if self._isPanelOpen then
-        self:_applyModalUi()
+        ModalUiController:Acquire("WeaponIndex", self._panel)
         if not next(self._generatedRowsByTier) then
             self:_buildWeaponRows()
             self:_bindCanvasResize()
@@ -411,7 +354,7 @@ function WeaponIndexController:_setPanelOpen(isOpen, immediate)
             uiScale.Scale = 1
         end
         self._panel.Visible = false
-        self:_restoreModalUi()
+        ModalUiController:Release("WeaponIndex")
         return
     end
 
@@ -439,7 +382,7 @@ function WeaponIndexController:_setPanelOpen(isOpen, immediate)
         uiScale.Scale = 1
         self._panel.Visible = false
         table.clear(self._panelTweens)
-        self:_restoreModalUi()
+        ModalUiController:Release("WeaponIndex")
     end)
 end
 
@@ -628,7 +571,12 @@ function WeaponIndexController:_bindUi(silent)
     end
 
     self:_disconnectButtonBindings()
-    self:_setPanelOpen(false, true)
+    if self._isPanelOpen then
+        ModalUiController:Acquire("WeaponIndex", self._panel)
+        self._panel.Visible = true
+    else
+        self:_setPanelOpen(false, true)
+    end
     self:_buildWeaponRows()
     self:_bindCanvasResize()
 

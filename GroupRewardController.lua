@@ -7,10 +7,11 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/GroupRewardCo
 ]]
 
 local GroupService = game:GetService("GroupService")
-local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+
+local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -44,18 +45,18 @@ GroupRewardController._mainGui = nil
 GroupRewardController._panel = nil
 GroupRewardController._claimButton = nil
 GroupRewardController._claimedLabel = nil
+GroupRewardController._topRightEntry = nil
+GroupRewardController._topRightEntryButton = nil
 GroupRewardController._groupRewardPromptEvent = nil
 GroupRewardController._requestGroupRewardEvent = nil
 GroupRewardController._groupRewardFeedbackEvent = nil
 GroupRewardController._promptGroupJoinEvent = nil
+GroupRewardController._playerStateSyncEvent = nil
+GroupRewardController._requestStateSyncEvent = nil
 GroupRewardController._isOpen = false
 GroupRewardController._isClaiming = false
 GroupRewardController._isClaimed = false
 GroupRewardController._bindRetryQueued = false
-GroupRewardController._hiddenUiOriginalVisibleByNode = {}
-GroupRewardController._blurEffect = nil
-GroupRewardController._blurOriginalEnabled = nil
-GroupRewardController._isModalApplied = false
 GroupRewardController._panelTweens = {}
 GroupRewardController._panelAnimationSerial = 0
 
@@ -107,14 +108,6 @@ local function findMainGui(localPlayer)
     return playerGui:FindFirstChild("Main") or playerGui:FindFirstChild("Main", true)
 end
 
-local function findBlurEffect()
-    local blur = Lighting:FindFirstChild("Blur")
-    if blur and blur:IsA("BlurEffect") then
-        return blur
-    end
-    return nil
-end
-
 local function getConfiguredGroupId()
     return math.floor(tonumber(GameConfig.GROUP_REWARD and GameConfig.GROUP_REWARD.GroupId) or 0)
 end
@@ -122,6 +115,19 @@ end
 local function isJoinedStatus(status)
     return status == Enum.GroupMembershipStatus.AlreadyMember
         or status == Enum.GroupMembershipStatus.Joined
+end
+
+local function hasCurrentGroupReward(groupRewards)
+    if type(groupRewards) ~= "table" then
+        return false
+    end
+
+    local groupId = getConfiguredGroupId()
+    if groupId <= 0 then
+        return false
+    end
+
+    return groupRewards[tostring(groupId)] == true or groupRewards[groupId] == true
 end
 
 local function playTween(binding, tweenKey, target, tweenInfo, goal)
@@ -161,12 +167,13 @@ function GroupRewardController:_applyButtonState(binding)
     })
 end
 
-function GroupRewardController:_bindButton(button, onActivated)
+function GroupRewardController:_bindButton(button, onActivated, scaleTarget)
     if not (button and button:IsA("GuiButton")) then
         return
     end
 
-    local uiScale = ensureUiScale(button)
+    local resolvedScaleTarget = (scaleTarget and scaleTarget:IsA("GuiObject")) and scaleTarget or button
+    local uiScale = ensureUiScale(resolvedScaleTarget)
     if not uiScale then
         return
     end
@@ -248,56 +255,6 @@ function GroupRewardController:_nextPanelAnimationSerial()
     return self._panelAnimationSerial
 end
 
-function GroupRewardController:_applyModalUi()
-    if self._isModalApplied then
-        return
-    end
-
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-    if self._mainGui then
-        for _, child in ipairs(self._mainGui:GetChildren()) do
-            if child:IsA("GuiObject")
-                and child ~= self._panel
-                and not child:IsAncestorOf(self._panel)
-                and not self._panel:IsAncestorOf(child)
-            then
-                self._hiddenUiOriginalVisibleByNode[child] = child.Visible
-                child.Visible = false
-            end
-        end
-    end
-
-    self._blurEffect = findBlurEffect()
-    if self._blurEffect then
-        self._blurOriginalEnabled = self._blurEffect.Enabled
-        self._blurEffect.Enabled = true
-    else
-        self._blurOriginalEnabled = nil
-    end
-
-    self._isModalApplied = true
-end
-
-function GroupRewardController:_restoreModalUi()
-    if not self._isModalApplied then
-        return
-    end
-
-    for guiObject, originalVisible in pairs(self._hiddenUiOriginalVisibleByNode) do
-        if guiObject and guiObject.Parent and guiObject:IsA("GuiObject") then
-            guiObject.Visible = originalVisible == true
-        end
-    end
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-
-    if self._blurEffect and self._blurEffect.Parent and self._blurOriginalEnabled ~= nil then
-        self._blurEffect.Enabled = self._blurOriginalEnabled == true
-    end
-    self._blurEffect = nil
-    self._blurOriginalEnabled = nil
-    self._isModalApplied = false
-end
-
 function GroupRewardController:_applyClaimState()
     if self._claimButton and self._claimButton:IsA("GuiObject") then
         self._claimButton.Visible = self._isClaimed ~= true
@@ -311,12 +268,33 @@ function GroupRewardController:_applyClaimState()
     end
 end
 
+function GroupRewardController:_applyTopRightEntryState()
+    if self._topRightEntry and self._topRightEntry:IsA("GuiObject") then
+        local shouldShow = self._isClaimed ~= true
+        self._topRightEntry.Visible = shouldShow
+        ModalUiController:SetRestoredVisible(self._topRightEntry, shouldShow)
+    end
+end
+
+function GroupRewardController:_openPanelFromEntry()
+    if not (self._panel and self._panel.Parent) then
+        if not self:_bindUi(true) then
+            self:_queueBindRetry()
+            return
+        end
+    end
+
+    self:_applyClaimState()
+    self:_applyTopRightEntryState()
+    self:_setOpen(true)
+end
+
 function GroupRewardController:_setOpen(isOpen, immediate)
     if not self._panel then
         if isOpen ~= true then
             self._isOpen = false
             self:_cancelPanelTweens()
-            self:_restoreModalUi()
+            ModalUiController:Release("GroupReward")
         end
         return
     end
@@ -327,7 +305,7 @@ function GroupRewardController:_setOpen(isOpen, immediate)
     local rootScale = ensureUiScale(self._panel)
     if self._isOpen then
         self:_applyClaimState()
-        self:_applyModalUi()
+        ModalUiController:Acquire("GroupReward", self._panel)
         self._panel.Visible = true
         if rootScale then
             rootScale.Scale = OPEN_FROM_SCALE
@@ -363,7 +341,7 @@ function GroupRewardController:_setOpen(isOpen, immediate)
             rootScale.Scale = 1
         end
         self._panel.Visible = false
-        self:_restoreModalUi()
+        ModalUiController:Release("GroupReward")
         return
     end
 
@@ -391,7 +369,7 @@ function GroupRewardController:_setOpen(isOpen, immediate)
         rootScale.Scale = 1
         self._panel.Visible = false
         table.clear(self._panelTweens)
-        self:_restoreModalUi()
+        ModalUiController:Release("GroupReward")
     end)
 end
 
@@ -472,6 +450,7 @@ function GroupRewardController:_handleFeedback(payload)
         self._isClaimed = true
         self._isClaiming = false
         self:_applyClaimState()
+        self:_applyTopRightEntryState()
     elseif eventType == "NotInGroup" then
         self:_promptJoinGroup()
     else
@@ -514,8 +493,21 @@ function GroupRewardController:_bindUi(silent)
     self:_disconnectButtonBindings()
     self._claimButton = self._panel:FindFirstChild("Claim")
     self._claimedLabel = self._panel:FindFirstChild("Claimed")
+    local topRightGui = mainGui:FindFirstChild("TopRightGui")
+    self._topRightEntry = topRightGui and topRightGui:FindFirstChild("GroupReward") or nil
+    if not (self._topRightEntry and self._topRightEntry:IsA("GuiObject")) then
+        self._topRightEntry = nil
+        self._topRightEntryButton = nil
+    else
+        self._topRightEntryButton = self._topRightEntry:FindFirstChild("Button", true)
+        if not (self._topRightEntryButton and self._topRightEntryButton:IsA("GuiButton")) then
+            self._topRightEntryButton = nil
+        end
+    end
+
     self:_setOpen(false, true)
     self:_applyClaimState()
+    self:_applyTopRightEntryState()
 
     local closeButton = self._panel:FindFirstChild("CloseButton", true)
     self:_bindButton(closeButton, function()
@@ -529,7 +521,22 @@ function GroupRewardController:_bindUi(silent)
         self:_checkMembershipAndClaim()
     end)
 
+    self:_bindButton(self._topRightEntryButton, function()
+        self:_openPanelFromEntry()
+    end, self._topRightEntry)
+
     return true
+end
+
+function GroupRewardController:_handlePlayerState(payload)
+    if type(payload) ~= "table" or type(payload.groupRewards) ~= "table" then
+        self:_applyTopRightEntryState()
+        return
+    end
+
+    self._isClaimed = hasCurrentGroupReward(payload.groupRewards)
+    self:_applyClaimState()
+    self:_applyTopRightEntryState()
 end
 
 function GroupRewardController:Init(dependencies)
@@ -545,12 +552,16 @@ function GroupRewardController:Init(dependencies)
     self._requestGroupRewardEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestGroupReward)
     self._groupRewardFeedbackEvent = systemEventsFolder:WaitForChild(RemoteNames.System.GroupRewardFeedback)
     self._promptGroupJoinEvent = systemEventsFolder:WaitForChild(RemoteNames.System.PromptGroupJoin)
+    self._playerStateSyncEvent = systemEventsFolder:WaitForChild(RemoteNames.System.PlayerStateSync)
+    self._requestStateSyncEvent = systemEventsFolder:FindFirstChild(RemoteNames.System.RequestPlayerStateSync)
 
     self:_bindUi(false)
 
     table.insert(self._connections, self._groupRewardPromptEvent.OnClientEvent:Connect(function(payload)
         if type(payload) == "table" then
             self._isClaimed = payload.claimed == true
+            self:_applyClaimState()
+            self:_applyTopRightEntryState()
         end
         if self:_bindUi(true) then
             self:_setOpen(true)
@@ -566,6 +577,14 @@ function GroupRewardController:Init(dependencies)
     table.insert(self._connections, self._promptGroupJoinEvent.OnClientEvent:Connect(function()
         self:_promptJoinGroupOnly()
     end))
+
+    table.insert(self._connections, self._playerStateSyncEvent.OnClientEvent:Connect(function(payload)
+        self:_handlePlayerState(payload)
+    end))
+
+    if self._requestStateSyncEvent and self._requestStateSyncEvent:IsA("RemoteEvent") then
+        self._requestStateSyncEvent:FireServer()
+    end
 end
 
 return GroupRewardController

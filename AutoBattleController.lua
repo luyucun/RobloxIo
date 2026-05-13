@@ -33,6 +33,7 @@ end
 
 local GameConfig = requireSharedModule("GameConfig")
 local RemoteNames = requireSharedModule("RemoteNames")
+local ModalUiController = nil
 
 local AutoBattleController = {}
 
@@ -52,10 +53,8 @@ AutoBattleController._bindRetryQueued = false
 AutoBattleController._lastMoveToClock = 0
 AutoBattleController._lastMoveToPosition = nil
 AutoBattleController._autoTargetId = nil
-AutoBattleController._autoTargetInRangeSinceClock = nil
 AutoBattleController._nextAutoTargetRefreshClock = 0
 AutoBattleController._lastAutoTargetSwitchClock = 0
-AutoBattleController._isAutoHoldingRange = false
 AutoBattleController._excludedAutoTargetUntilById = {}
 AutoBattleController._autoPath = nil
 AutoBattleController._autoPathWaypoints = nil
@@ -65,6 +64,7 @@ AutoBattleController._autoPathDestination = nil
 AutoBattleController._autoPathBlocked = false
 AutoBattleController._autoPathBlockedConnection = nil
 AutoBattleController._nextAutoPathComputeClock = 0
+AutoBattleController._autoPathRecomputeAttempts = 0
 AutoBattleController._lastProgressCheckClock = 0
 AutoBattleController._lastProgressCheckPosition = nil
 AutoBattleController._lastProgressCheckDistance = nil
@@ -76,16 +76,14 @@ AutoBattleController._isAutoButtonPressed = false
 
 local MOVE_TO_REFRESH_SECONDS = 0.12
 local MOVE_TO_POSITION_EPSILON = 1.5
-local AUTO_TARGET_REFRESH_SECONDS = 0.25
-local AUTO_TARGET_SWITCH_COOLDOWN_SECONDS = 0.5
-local AUTO_TARGET_IN_RANGE_SETTLE_SECONDS = 0.2
-local AUTO_STOP_RANGE_BUFFER = 1.5
-local AUTO_RESUME_RANGE_BUFFER = 4
+local AUTO_TARGET_REFRESH_SECONDS = 0.12
+local AUTO_TARGET_SWITCH_COOLDOWN_SECONDS = 0.18
 local AUTO_STUCK_CHECK_INTERVAL_SECONDS = 0.8
 local AUTO_STUCK_MIN_MOVE_DISTANCE = 1.2
 local AUTO_STUCK_MIN_DISTANCE_PROGRESS = 0.75
 local AUTO_BLOCKED_TARGET_COOLDOWN_SECONDS = 2.5
 local AUTO_PATH_RECOMPUTE_SECONDS = 0.75
+local AUTO_PATH_MAX_RECOMPUTE_ATTEMPTS = 2
 local AUTO_PATH_TARGET_RECOMPUTE_DISTANCE = 8
 local AUTO_PATH_WAYPOINT_REACHED_DISTANCE = 3
 local AUTO_PATH_WAYPOINT_SPACING = 5
@@ -147,6 +145,27 @@ local function ensureUiScale(guiObject)
     return uiScale
 end
 
+local function getModalUiController()
+    if ModalUiController ~= nil then
+        return ModalUiController
+    end
+
+    local parent = script.Parent
+    local moduleScript = parent and parent:FindFirstChild("ModalUiController")
+    if not (moduleScript and moduleScript:IsA("ModuleScript")) then
+        return nil
+    end
+
+    local ok, controller = pcall(require, moduleScript)
+    if ok then
+        ModalUiController = controller
+        return ModalUiController
+    end
+
+    warn(string.format("[AutoBattleController] ModalUiController load failed: %s", tostring(controller)))
+    return nil
+end
+
 local function getCharacterController(localPlayer)
     local character = localPlayer and localPlayer.Character
     if not character then
@@ -180,6 +199,21 @@ local function getPlanarDistance(positionA, positionB)
     return math.sqrt((deltaX * deltaX) + (deltaZ * deltaZ))
 end
 
+local function getPlanarUnitVector(positionA, positionB)
+    if not (typeof(positionA) == "Vector3" and typeof(positionB) == "Vector3") then
+        return nil, nil
+    end
+
+    local deltaX = positionB.X - positionA.X
+    local deltaZ = positionB.Z - positionA.Z
+    local magnitude = math.sqrt((deltaX * deltaX) + (deltaZ * deltaZ))
+    if magnitude <= 1e-6 then
+        return nil, nil
+    end
+
+    return deltaX / magnitude, deltaZ / magnitude
+end
+
 local function getActiveExcludedIds(excludedUntilById, now)
     local excludedIds = nil
     for targetId, excludedUntil in pairs(excludedUntilById) do
@@ -199,7 +233,14 @@ end
 
 function AutoBattleController:_updateBottomVisibility()
     if self._bottomRoot and self._bottomRoot:IsA("GuiObject") then
-        self._bottomRoot.Visible = self:_isActiveInArena() == true
+        local shouldShow = self:_isActiveInArena() == true
+        local modalUiController = getModalUiController()
+        if modalUiController and modalUiController:IsAnyOpen() then
+            modalUiController:SetRestoredVisible(self._bottomRoot, shouldShow)
+            self._bottomRoot.Visible = false
+            return
+        end
+        self._bottomRoot.Visible = shouldShow
     end
 end
 
@@ -266,10 +307,9 @@ end
 
 function AutoBattleController:_resetAutoTargetState()
     self._autoTargetId = nil
-    self._autoTargetInRangeSinceClock = nil
     self._nextAutoTargetRefreshClock = 0
     self._lastAutoTargetSwitchClock = 0
-    self._isAutoHoldingRange = false
+    self._autoPathRecomputeAttempts = 0
     table.clear(self._excludedAutoTargetUntilById)
     self:_resetAutoPathState()
     self:_resetProgressCheckState()
@@ -277,9 +317,8 @@ end
 
 function AutoBattleController:_clearAutoTargetSelection()
     self._autoTargetId = nil
-    self._autoTargetInRangeSinceClock = nil
     self._nextAutoTargetRefreshClock = 0
-    self._isAutoHoldingRange = false
+    self._autoPathRecomputeAttempts = 0
     self:_resetAutoPathState()
     self:_resetProgressCheckState()
 end
@@ -292,8 +331,7 @@ function AutoBattleController:_setAutoTargetId(targetId, now)
     self._autoTargetId = targetId
     self._lastAutoTargetSwitchClock = now or os.clock()
     self._nextAutoTargetRefreshClock = (now or os.clock()) + AUTO_TARGET_REFRESH_SECONDS
-    self._autoTargetInRangeSinceClock = nil
-    self._isAutoHoldingRange = false
+    self._autoPathRecomputeAttempts = 0
     self:_resetAutoPathState()
     self:_resetProgressCheckState()
 end
@@ -323,12 +361,26 @@ function AutoBattleController:_resetAutoPathState()
     self._nextAutoPathComputeClock = 0
 end
 
+function AutoBattleController:_clearAutoPathForRetry()
+    self:_disconnectAutoPathBlocked()
+    self._autoPath = nil
+    self._autoPathWaypoints = nil
+    self._autoPathWaypointIndex = 0
+    self._autoPathTargetId = nil
+    self._autoPathDestination = nil
+    self._autoPathBlocked = false
+    self._nextAutoPathComputeClock = 0
+    self._lastMoveToClock = 0
+    self._lastMoveToPosition = nil
+end
+
 function AutoBattleController:_excludeCurrentAutoTarget()
     if not self._autoTargetId then
         return
     end
 
     self._excludedAutoTargetUntilById[self._autoTargetId] = os.clock() + AUTO_BLOCKED_TARGET_COOLDOWN_SECONDS
+    self._autoPathRecomputeAttempts = 0
     self:_clearAutoTargetSelection()
 end
 
@@ -341,6 +393,7 @@ function AutoBattleController:_stopMovement()
     self._isAutoMoving = false
     self._lastMoveToClock = 0
     self._lastMoveToPosition = nil
+    self._autoPathRecomputeAttempts = 0
     self:_resetAutoPathState()
     self:_resetProgressCheckState()
 end
@@ -365,11 +418,11 @@ function AutoBattleController:_getWeaponReach(weaponState)
         return nil
     end
 
-    local orbitRadius = math.max(0, tonumber(weaponState.OrbitRadius) or 0)
+    local orbitDistance = 6
     local auraReach = math.max(0, tonumber(weaponState.AuraRadius) or 0)
     local hitPartReach = getPartCollisionReach(weaponState.HitPart)
     local collisionReach = math.max(GameConfig.COMBAT.WeaponHitRadiusMin, auraReach, hitPartReach)
-    return orbitRadius + collisionReach
+    return orbitDistance + collisionReach
 end
 
 function AutoBattleController:_calculateWeaponRange()
@@ -437,18 +490,9 @@ function AutoBattleController:_findAutoTarget(rootPosition)
     end
 
     local distance = getPlanarDistance(rootPosition, target.position)
-    if distance <= attackRange then
-        self._autoTargetInRangeSinceClock = self._autoTargetInRangeSinceClock or now
-    else
-        self._autoTargetInRangeSinceClock = nil
-    end
-
     local canRefreshTarget = now >= (self._nextAutoTargetRefreshClock or 0)
     local canSwitchTarget = now - (self._lastAutoTargetSwitchClock or 0) >= AUTO_TARGET_SWITCH_COOLDOWN_SECONDS
-    local hasSettledInRange = self._autoTargetInRangeSinceClock
-        and now - self._autoTargetInRangeSinceClock >= AUTO_TARGET_IN_RANGE_SETTLE_SECONDS
-
-    if distance <= attackRange and canRefreshTarget and canSwitchTarget and hasSettledInRange then
+    if distance <= attackRange and canRefreshTarget and canSwitchTarget then
         local nextTarget = self._localMonsterController:FindNearestAliveMonsterOutsideWeaponRange(rootPosition, weaponRange, excludedIds)
         if nextTarget and nextTarget.id ~= target.id then
             local nextAttackRange = self:_calculateAttackRange(nextTarget, weaponRange)
@@ -464,6 +508,28 @@ function AutoBattleController:_findAutoTarget(rootPosition)
     end
 
     return target, attackRange
+end
+
+function AutoBattleController:_getAutoMovePosition(rootPosition, target, attackRange, distance)
+    if not (typeof(rootPosition) == "Vector3" and target and typeof(target.position) == "Vector3") then
+        return nil
+    end
+
+    if (tonumber(distance) or math.huge) > (tonumber(attackRange) or 0) then
+        return Vector3.new(target.position.X, rootPosition.Y, target.position.Z)
+    end
+
+    local directionX, directionZ = getPlanarUnitVector(rootPosition, target.position)
+    if not directionX then
+        directionX, directionZ = 1, 0
+    end
+
+    local pushDistance = math.max(8, (tonumber(attackRange) or 0) + 4)
+    return Vector3.new(
+        rootPosition.X + (directionX * pushDistance),
+        rootPosition.Y,
+        rootPosition.Z + (directionZ * pushDistance)
+    )
 end
 
 function AutoBattleController:_moveTo(humanoid, targetPosition)
@@ -565,6 +631,21 @@ function AutoBattleController:_followAutoPath(humanoid, rootPart, target)
     return true
 end
 
+function AutoBattleController:_retryAutoPath(humanoid, rootPart, target)
+    if not (humanoid and rootPart and target) then
+        return false
+    end
+
+    self._autoPathRecomputeAttempts += 1
+    self:_clearAutoPathForRetry()
+    if self._autoPathRecomputeAttempts > AUTO_PATH_MAX_RECOMPUTE_ATTEMPTS then
+        return false
+    end
+
+    return self:_computeAutoPath(rootPart.Position, target, true)
+        and self:_followAutoPath(humanoid, rootPart, target)
+end
+
 function AutoBattleController:_isAutoMovementStuck(rootPosition, target, distance)
     if not (target and typeof(rootPosition) == "Vector3") then
         self:_resetProgressCheckState()
@@ -625,24 +706,19 @@ function AutoBattleController:_stepAutoBattle()
     end
 
     local distance = getPlanarDistance(rootPart.Position, target.position)
-    if self._isAutoHoldingRange then
-        if distance <= attackRange + AUTO_RESUME_RANGE_BUFFER then
-            self:_stopMovement()
+    if self._autoPathWaypoints then
+        if self:_isAutoMovementStuck(rootPart.Position, target, distance) then
+            if self:_retryAutoPath(humanoid, rootPart, target) then
+                return
+            end
+            self:_excludeCurrentAutoTarget()
             return
         end
-        self._isAutoHoldingRange = false
-    elseif not self._isAutoMoving and distance <= attackRange then
-        self._isAutoHoldingRange = true
-        self:_stopMovement()
-        return
-    elseif self._isAutoMoving and distance <= math.max(0, attackRange - AUTO_STOP_RANGE_BUFFER) then
-        self._isAutoHoldingRange = true
-        self:_stopMovement()
-        return
-    end
 
-    if self._autoPathWaypoints then
         if self:_followAutoPath(humanoid, rootPart, target) then
+            return
+        end
+        if self:_retryAutoPath(humanoid, rootPart, target) then
             return
         end
         self:_excludeCurrentAutoTarget()
@@ -650,14 +726,22 @@ function AutoBattleController:_stepAutoBattle()
     end
 
     if self:_isAutoMovementStuck(rootPart.Position, target, distance) then
-        if self:_computeAutoPath(rootPart.Position, target, true) and self:_followAutoPath(humanoid, rootPart, target) then
+        self._autoPathRecomputeAttempts = 0
+        if self:_retryAutoPath(humanoid, rootPart, target) then
             return
         end
         self:_excludeCurrentAutoTarget()
         return
     end
 
-    self:_moveTo(humanoid, Vector3.new(target.position.X, rootPart.Position.Y, target.position.Z))
+    local movePosition = self:_getAutoMovePosition(rootPart.Position, target, attackRange, distance)
+    if not movePosition then
+        self:_stopMovement()
+        return
+    end
+
+    self:_moveTo(humanoid, movePosition)
+    self._autoPathRecomputeAttempts = 0
 end
 
 function AutoBattleController:_queueBindRetry()

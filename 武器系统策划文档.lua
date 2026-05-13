@@ -15,31 +15,28 @@
 4.服务端武器是判定真值；客户端视觉仅负责本地表现。
 
 二、等级到武器映射
-1.当前共有 100 个武器档位：T1-T100。
-2.模板统一命名为 `Weapon001` 到 `Weapon100`。
+1.当前正式开放 43 个武器档位：T1-T43。
+2.模板统一命名为 `Weapon001` 到 `Weapon043`。
 3.每档最多 10 把。
-4.每 10 级切换下一档武器：
-- Lv1-Lv10：T1，数量等于 `Level`。
-- Lv11-Lv20：T2，数量等于 `Level - 10`。
-- Lv91-Lv100：T10，数量等于 `Level - 90`。
-5.当前 `GameConfig.PLAYER.MaxSupportedLevel = 100`，所以基础版本正式支持到 T10/10；`Weapon001` 到 `Weapon100` 仍作为完整资源模板保留，方便后续继续放开等级上限。
+4.Lv1-Lv9 逐步增加 T1 数量，Lv10 起保持总数 10 把，跨档时逐把替换为下一档武器：
+- Lv1-Lv10：T1，数量等于 `Level`，最多 10 把。
+- Lv11-Lv19：逐步把 T1 替换为 T2，例如 Lv11 = 9 把 T1 + 1 把 T2，Lv19 = 1 把 T1 + 9 把 T2。
+- Lv20：10 把 T2；Lv21 起逐步把 T2 替换为 T3，后续档位同理。
+5.当前 `GameConfig.PLAYER.MaxSupportedLevel = 430`，所以正式成长支持到 T43/10。
 6.`WeaponTierConfig.ResolveLoadoutForLevel(level)` 是唯一等级映射函数。
 
 三、基础武器数值
-1.当前所有武器数值由 `WeaponTierConfig` 循环生成。
-2.临时伤害线性递增：
-`Damage = TierIndex * 10`
-3.临时基础血量配置线性递增：
-`MaxHealth = TierIndex * 20`
-4.环绕半径从 6 开始，每档 +0.04，最高 10。
-5.环绕速度从 2.8 开始，每档 -0.01，最低 1.6。
-6.示例：
-- T1 / Weapon001：伤害 10，基础血量 20，环绕半径 6，环绕速度 2.8。
-- T2 / Weapon002：伤害 20，基础血量 40，环绕半径 6.04，环绕速度 2.79。
-- T10 / Weapon010：伤害 100，基础血量 200，环绕半径 6.36，环绕速度 2.71。
-- T50 / Weapon050：伤害 500，基础血量 1000。
-- T100 / Weapon100：伤害 1000，基础血量 2000，环绕半径 9.96，环绕速度 1.81。
-7.说明：当前武器对拼不使用武器血量扣减，MaxHealth 只是配置字段和同步属性，不是当前胜负公式。
+1.当前所有武器数值由 `IO_BaseBalanceDraft.xlsx / 武器数值` 同步到 `WeaponTierConfig`。
+2.正式伤害线性递增：
+`Damage = TierIndex * 5`
+3.武器不再配置基础血量、当前血量或环绕半径。
+4.环绕速度统一读取 `GameConfig.WEAPON.OrbitSpeed`，当前为 2.8，不再按武器档位单独配置。
+5.示例：
+- T1 / Weapon001：伤害 5。
+- T2 / Weapon002：伤害 10。
+- T10 / Weapon010：伤害 50。
+- T43 / Weapon043：伤害 215。
+6.说明：当前武器对拼不使用武器血量扣减，胜负只看 TierIndex；武器运行时属性也不再写入 MaxHealth / CurrentHealth。
 
 四、运行时生成与表现
 1.服务端运行时容器：`workspace.Runtime.Weapons`。

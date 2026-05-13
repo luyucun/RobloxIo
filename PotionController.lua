@@ -6,13 +6,14 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/PotionControl
 说明: 绑定 V2.1.1 药水界面、购买/使用按钮、倒计时和总经验倍率显示。
 ]]
 
-local Lighting = game:GetService("Lighting")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local SocialService = game:GetService("SocialService")
 local TweenService = game:GetService("TweenService")
+
+local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -66,11 +67,6 @@ PotionController._deferredBindQueued = false
 PotionController._panelTweens = {}
 PotionController._panelAnimationSerial = 0
 PotionController._isPanelOpen = false
-PotionController._blurEffect = nil
-PotionController._blurOriginalEnabled = nil
-PotionController._isBlurApplied = false
-PotionController._hiddenUiOriginalVisibleByNode = {}
-PotionController._isModalApplied = false
 
 local BUFF_SLOTS = {
     { Name = "Buff1Bg", PotionId = 1001 },
@@ -131,20 +127,6 @@ local function findMainGui(localPlayer)
     end
 
     return playerGui:FindFirstChild("Main") or playerGui:FindFirstChild("Main", true)
-end
-
-local function findBlurEffect()
-    local blur = Lighting:FindFirstChild("Blur")
-    if blur and blur:IsA("BlurEffect") then
-        return blur
-    end
-
-    blur = Lighting:FindFirstChild("Blur", true)
-    if blur and blur:IsA("BlurEffect") then
-        return blur
-    end
-
-    return nil
 end
 
 local function setText(textObject, value)
@@ -250,75 +232,6 @@ local function playTween(binding, tweenKey, target, tweenInfo, goal)
     tween:Play()
 end
 
-function PotionController:_applyBlur()
-    if self._isBlurApplied then
-        return
-    end
-
-    self._blurEffect = findBlurEffect()
-    if self._blurEffect then
-        self._blurOriginalEnabled = self._blurEffect.Enabled
-        self._blurEffect.Enabled = true
-    else
-        self._blurOriginalEnabled = nil
-    end
-    self._isBlurApplied = true
-end
-
-function PotionController:_restoreBlur()
-    if not self._isBlurApplied then
-        return
-    end
-
-    if self._blurEffect and self._blurEffect.Parent and self._blurOriginalEnabled ~= nil then
-        self._blurEffect.Enabled = self._blurOriginalEnabled == true
-    end
-
-    self._blurEffect = nil
-    self._blurOriginalEnabled = nil
-    self._isBlurApplied = false
-end
-
-function PotionController:_applyModalUi()
-    if self._isModalApplied then
-        return
-    end
-
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-    if self._mainGui and self._panel and self._panel:IsA("GuiObject") then
-        for _, child in ipairs(self._mainGui:GetChildren()) do
-            if child:IsA("GuiObject")
-                and child ~= self._panel
-                and not child:IsAncestorOf(self._panel)
-                and not self._panel:IsAncestorOf(child)
-            then
-                self._hiddenUiOriginalVisibleByNode[child] = child.Visible
-                child.Visible = false
-            end
-        end
-    end
-
-    self:_applyBlur()
-    self._isModalApplied = true
-end
-
-function PotionController:_restoreModalUi()
-    if not self._isModalApplied then
-        self:_restoreBlur()
-        return
-    end
-
-    for guiObject, originalVisible in pairs(self._hiddenUiOriginalVisibleByNode) do
-        if guiObject and guiObject.Parent and guiObject:IsA("GuiObject") then
-            guiObject.Visible = originalVisible == true
-        end
-    end
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-
-    self:_restoreBlur()
-    self._isModalApplied = false
-end
-
 function PotionController:_ensureMainGuiEnabled()
     if not self._mainGui then
         return
@@ -347,7 +260,7 @@ function PotionController:_setPanelOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isPanelOpen = false
-            self:_restoreModalUi()
+            ModalUiController:Release("Potion")
         end
         return
     end
@@ -358,8 +271,8 @@ function PotionController:_setPanelOpen(isOpen, immediate)
     self._isPanelOpen = isOpen == true
 
     if self._isPanelOpen then
-        self:_applyModalUi()
         self:_ensureMainGuiEnabled()
+        ModalUiController:Acquire("Potion", self._panel)
         self._panel.Visible = true
         if not uiScale or immediate == true then
             if uiScale then
@@ -401,7 +314,7 @@ function PotionController:_setPanelOpen(isOpen, immediate)
             uiScale.Scale = 1
         end
         self._panel.Visible = false
-        self:_restoreModalUi()
+        ModalUiController:Release("Potion")
         return
     end
 
@@ -429,7 +342,7 @@ function PotionController:_setPanelOpen(isOpen, immediate)
         uiScale.Scale = 1
         self._panel.Visible = false
         table.clear(self._panelTweens)
-        self:_restoreModalUi()
+        ModalUiController:Release("Potion")
     end)
 end
 
@@ -950,8 +863,9 @@ function PotionController:_bindUi(silent)
 
     self:_disconnectButtonBindings()
     table.clear(self._buffBindings)
-    if hasPotionPanel and hasPotionEntry then
-        self:_setPanelOpen(false, true)
+    if self._isPanelOpen and hasPotionPanel then
+        ModalUiController:Acquire("Potion", self._panel)
+        self._panel.Visible = true
     else
         self:_setPanelOpen(false, true)
     end

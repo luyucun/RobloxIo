@@ -28,6 +28,9 @@ SpecialEventConfig.Events = {
         ScenePath = "ReplicatedStorage/EventScene/Hacker",
         TextLabelName = "HackerEvent",
         DurationSeconds = 180,
+        BossSourceId = "1001",
+        BossDefinitionId = "2001",
+        BossCount = 2,
     },
     [102] = {
         Id = 102,
@@ -36,6 +39,9 @@ SpecialEventConfig.Events = {
         ScenePath = "ReplicatedStorage/EventScene/Lava",
         TextLabelName = "LavaEvent",
         DurationSeconds = 180,
+        BossSourceId = "1002",
+        BossDefinitionId = "2002",
+        BossCount = 2,
     },
     [103] = {
         Id = 103,
@@ -44,6 +50,9 @@ SpecialEventConfig.Events = {
         ScenePath = "ReplicatedStorage/EventScene/Heart",
         TextLabelName = "HeartEvent",
         DurationSeconds = 180,
+        BossSourceId = "1003",
+        BossDefinitionId = "2003",
+        BossCount = 2,
     },
     [104] = {
         Id = 104,
@@ -52,6 +61,9 @@ SpecialEventConfig.Events = {
         ScenePath = "ReplicatedStorage/EventScene/Diamond",
         TextLabelName = "DiamondEvent",
         DurationSeconds = 180,
+        BossSourceId = nil,
+        BossDefinitionId = nil,
+        BossCount = 0,
     },
 }
 

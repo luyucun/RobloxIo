@@ -36,8 +36,8 @@
 - 服务器人数、玩家基础值、经验曲线、场景名、战斗判定、小怪、Boss、Buff、排行榜、经济、重生和 Studio Bot 配置。
 - `DATASTORE` 统一控制持久化环境隔离；Studio 默认只用内存数据，不读写线上 DataStore。
 2.`WeaponTierConfig`
-- T1-T100 武器配置，由代码循环生成。
-- 包含 TemplateName、TemplatePath、Damage、MaxHealth、MaxCount、OrbitRadius、OrbitSpeed。
+- T1-T43 武器配置，由正式武器表同步。
+- 包含 TemplateName、TemplatePath、Damage、MaxCount；武器不再配置 MaxHealth 或环绕半径，环绕速度统一读取 `GameConfig.WEAPON.OrbitSpeed`。
 - `ResolveLoadoutForLevel(level)` 负责等级到武器档位和数量的映射。
 3.`RemoteNames`
 - 集中声明 RemoteEvent 文件夹和事件名。

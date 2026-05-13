@@ -45,6 +45,11 @@ LeaderboardService._killStore = nil
 LeaderboardService._rebirthStore = nil
 LeaderboardService._playtimeBaseByUserId = {}
 LeaderboardService._nameCacheByUserId = {}
+LeaderboardService._readFailureByUserId = {
+    playtime = {},
+    kills = {},
+    rebirth = {},
+}
 LeaderboardService._globalRows = {
     playtime = {},
     kills = {},
@@ -160,7 +165,7 @@ end
 
 function LeaderboardService:_readStoredValue(store, playerOrUserId)
     if not store then
-        return 0
+        return nil, false
     end
 
     local success, value = pcall(function()
@@ -168,9 +173,9 @@ function LeaderboardService:_readStoredValue(store, playerOrUserId)
     end)
     if not success then
         warn("[LeaderboardService] 读取 OrderedDataStore 失败: " .. tostring(playerOrUserId))
-        return 0
+        return nil, false
     end
-    return normalizeValue(value)
+    return normalizeValue(value), true
 end
 
 function LeaderboardService:_writeStoredValue(store, playerOrUserId, value)
@@ -187,6 +192,23 @@ function LeaderboardService:_writeStoredValue(store, playerOrUserId, value)
     return success
 end
 
+function LeaderboardService:_markReadFailure(metricKey, userId, failed)
+    local failureTable = self._readFailureByUserId[metricKey]
+    if not failureTable then
+        return
+    end
+    if failed then
+        failureTable[tonumber(userId) or 0] = true
+    else
+        failureTable[tonumber(userId) or 0] = nil
+    end
+end
+
+function LeaderboardService:_hasReadFailure(metricKey, userId)
+    local failureTable = self._readFailureByUserId[metricKey]
+    return failureTable and failureTable[tonumber(userId) or 0] == true
+end
+
 function LeaderboardService:_loadPlayerTotals(player)
     if not (player and player.Parent) then
         return
@@ -200,11 +222,13 @@ function LeaderboardService:_loadPlayerTotals(player)
         return
     end
 
-    local playtimeSeconds = self:_readStoredValue(self._playtimeStore, player)
-    local totalKills = self:_readStoredValue(self._killStore, player)
-    self._playtimeBaseByUserId[userId] = playtimeSeconds
+    local playtimeSeconds, playtimeReadSuccess = self:_readStoredValue(self._playtimeStore, player)
+    local totalKills, killReadSuccess = self:_readStoredValue(self._killStore, player)
+    self._playtimeBaseByUserId[userId] = playtimeReadSuccess and playtimeSeconds or (self._playtimeBaseByUserId[userId] or 0)
+    self:_markReadFailure("playtime", userId, not playtimeReadSuccess)
+    self:_markReadFailure("kills", userId, not killReadSuccess)
 
-    if self._playerStateService and self._playerStateService.SetTotalPlayerKills then
+    if self._playerStateService and self._playerStateService.SetTotalPlayerKills and killReadSuccess then
         local state = self._playerStateService:GetState(player)
         self._playerStateService:SetTotalPlayerKills(player, math.max(totalKills, normalizeValue(state and state.TotalPlayerKills)))
     end
@@ -218,8 +242,13 @@ function LeaderboardService:_updateGlobalEntry(player, state)
         return
     end
 
-    self:_writeStoredValue(self._playtimeStore, player, self:_getPlaytimeValue(state))
-    self:_writeStoredValue(self._killStore, player, state.TotalPlayerKills)
+    local userId = player.UserId
+    if not self:_hasReadFailure("playtime", userId) then
+        self:_writeStoredValue(self._playtimeStore, player, self:_getPlaytimeValue(state))
+    end
+    if not self:_hasReadFailure("kills", userId) then
+        self:_writeStoredValue(self._killStore, player, state.TotalPlayerKills)
+    end
     self:_writeStoredValue(self._rebirthStore, player, state.Rebirth)
 end
 
@@ -425,6 +454,8 @@ end
 function LeaderboardService:OnPlayerRemoving(player)
     self:SavePlayer(player)
     self._playtimeBaseByUserId[player.UserId] = nil
+    self:_markReadFailure("playtime", player.UserId, false)
+    self:_markReadFailure("kills", player.UserId, false)
     self._dirty = true
 end
 
@@ -436,6 +467,11 @@ function LeaderboardService:Init(dependencies)
     self._nextGlobalSyncClock = os.clock() + 2
     self._playtimeBaseByUserId = {}
     self._nameCacheByUserId = {}
+    self._readFailureByUserId = {
+        playtime = {},
+        kills = {},
+        rebirth = {},
+    }
     self._globalRows = {
         playtime = {},
         kills = {},

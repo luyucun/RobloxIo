@@ -80,6 +80,7 @@ NukeService._arenaService = nil
 NukeService._remoteEventService = nil
 NukeService._monsterService = nil
 NukeService._experienceOrbService = nil
+NukeService._localMonsterRewardService = nil
 NukeService._nukeCinematicEvent = nil
 NukeService._nukeLocalMonsterSweepEvent = nil
 NukeService._queue = {}
@@ -308,34 +309,20 @@ function NukeService:_handleLocalMonsterSweep(player, payload)
         return
     end
 
-    local monsters = payload and payload.monsters
-    if type(monsters) ~= "table" then
+    local tokens = payload and payload.tokens
+    if type(tokens) ~= "table" then
+        if type(payload and payload.monsters) == "table" then
+            warn("[NukeService] 拒绝旧版 local monster sweep payload，缺少 tokens")
+        end
         return
     end
 
-    local remainingCount = math.max(0, math.floor(tonumber(GameConfig.MONSTER.MaxActiveCount) or 0))
-    local totalExperience = 0
-    local totalScore = 0
-    for _, item in ipairs(monsters) do
-        if remainingCount <= 0 then
-            break
-        end
-
-        local definition = MonsterCatalog.GetDefinition(item and item.monsterDefinitionId)
-        if MonsterCatalog.IsNormalMonsterDefinition(definition) then
-            local count = math.min(remainingCount, math.max(0, math.floor(tonumber(item.count) or 0)))
-            if count > 0 then
-                remainingCount -= count
-                totalScore += count * (definition.KillScoreReward or GameConfig.MONSTER.KillScoreReward)
-                totalExperience += count * (
-                    (definition.ExperienceDropCount or GameConfig.MONSTER.ExperienceDropCount)
-                    * (definition.ExperiencePerOrb or GameConfig.MONSTER.ExperiencePerOrb)
-                )
-            end
-        end
+    local consumedCount, totalScore, totalExperience = 0, 0, 0
+    if self._localMonsterRewardService and self._localMonsterRewardService.ConsumeNukeSweepTokens then
+        consumedCount, totalScore, totalExperience = self._localMonsterRewardService:ConsumeNukeSweepTokens(player, tokens)
     end
 
-    if totalScore <= 0 and totalExperience <= 0 then
+    if consumedCount <= 0 and totalScore <= 0 and totalExperience <= 0 then
         return
     end
     session.Consumed = true
@@ -440,6 +427,7 @@ function NukeService:Init(dependencies)
     self._remoteEventService = dependencies and dependencies.RemoteEventService or nil
     self._monsterService = dependencies and dependencies.MonsterService or nil
     self._experienceOrbService = dependencies and dependencies.ExperienceOrbService or nil
+    self._localMonsterRewardService = dependencies and dependencies.LocalMonsterRewardService or nil
     self._nukeCinematicEvent = self._remoteEventService and self._remoteEventService:GetEvent("NukeCinematic") or nil
     self._nukeLocalMonsterSweepEvent = self._remoteEventService and self._remoteEventService:GetEvent("NukeLocalMonsterSweep") or nil
     self._queue = {}

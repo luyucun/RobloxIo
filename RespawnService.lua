@@ -80,6 +80,17 @@ function RespawnService:GetDefeatRecord(player)
     return self._defeatRecordsByUserId[userId]
 end
 
+function RespawnService:IsCurrentDefeatRecord(player, defeatRecord)
+    if not ActorUtils.IsPlayer(player) then
+        return false
+    end
+    local state = self._playerStateService and self._playerStateService:GetState(player) or nil
+    return state
+        and state.Alive == false
+        and defeatRecord
+        and tonumber(defeatRecord.deathSerial) == self:_getDeathSerial(player)
+end
+
 function RespawnService:_setArenaRevivePending(player)
     local userId = getUserId(player)
     if userId > 0 then
@@ -242,23 +253,30 @@ function RespawnService:_onRequestDefeatedAction(player, action)
     end
 
     local normalizedAction = tostring(action or "")
+    local state = self._playerStateService and self._playerStateService:GetState(player) or nil
+    local defeatRecord = self:GetDefeatRecord(player)
+    local currentDeathSerial = self:_getDeathSerial(player)
+    if not (state and state.Alive == false and currentDeathSerial > 0) then
+        return
+    end
+
     if normalizedAction == "Revive" or normalizedAction == "Close" then
         self:RevivePlayer(player)
     elseif normalizedAction == "Revenge" then
-        local defeatRecord = self:GetDefeatRecord(player)
-        if defeatRecord then
-            defeatRecord.revengePending = true
+        if not self:IsCurrentDefeatRecord(player, defeatRecord) then
+            return
         end
+        defeatRecord.revengePending = true
     elseif normalizedAction == "RevengeCancel" then
-        local defeatRecord = self:GetDefeatRecord(player)
-        if defeatRecord then
-            defeatRecord.revengePending = false
-            self:_schedulePlayerRevive(
-                player,
-                math.max(0, (tonumber(defeatRecord.expiresAt) or os.clock()) - os.clock()),
-                defeatRecord.deathSerial
-            )
+        if not self:IsCurrentDefeatRecord(player, defeatRecord) then
+            return
         end
+        defeatRecord.revengePending = false
+        self:_schedulePlayerRevive(
+            player,
+            math.max(0, (tonumber(defeatRecord.expiresAt) or os.clock()) - os.clock()),
+            defeatRecord.deathSerial
+        )
     end
 end
 

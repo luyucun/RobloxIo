@@ -7,6 +7,7 @@ Studio放置路径: ServerScriptService/Services/LocalMonsterRewardService
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
 local ActorUtils = require(script.Parent:WaitForChild("ActorUtils"))
 
@@ -38,11 +39,15 @@ local LocalMonsterRewardService = {}
 LocalMonsterRewardService._playerStateService = nil
 LocalMonsterRewardService._experienceOrbService = nil
 LocalMonsterRewardService._healthService = nil
+LocalMonsterRewardService._rebirthService = nil
+LocalMonsterRewardService._localMonsterSpawnTokenEvent = nil
 LocalMonsterRewardService._localMonsterKilledEvent = nil
 LocalMonsterRewardService._localMonsterHitPlayerEvent = nil
+LocalMonsterRewardService._spawnTokenRequestWindows = {}
 LocalMonsterRewardService._killReportWindows = {}
 LocalMonsterRewardService._hitReportWindows = {}
 LocalMonsterRewardService._recentKillIdsByUserId = {}
+LocalMonsterRewardService._spawnAuthorizationsByUserId = {}
 
 local function getUserId(player)
     return player and player.UserId or 0
@@ -87,6 +92,130 @@ function LocalMonsterRewardService:_consumeRateLimit(bucketByUserId, player, lim
     return true
 end
 
+function LocalMonsterRewardService:_isPlayerLoaded(player)
+    return not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player)
+end
+
+function LocalMonsterRewardService:_pruneAuthorizationsForUserId(userId)
+    local authorizations = self._spawnAuthorizationsByUserId[userId]
+    if not authorizations then
+        return
+    end
+
+    local now = os.clock()
+    for token, authorization in pairs(authorizations) do
+        if not authorization or authorization.Consumed == true or (tonumber(authorization.ExpiresAt) or 0) <= now then
+            authorizations[token] = nil
+        end
+    end
+end
+
+function LocalMonsterRewardService:_getAuthorization(player, token)
+    local userId = getUserId(player)
+    local normalizedToken = tostring(token or "")
+    if userId <= 0 or normalizedToken == "" then
+        return nil
+    end
+
+    self:_pruneAuthorizationsForUserId(userId)
+    local authorizations = self._spawnAuthorizationsByUserId[userId]
+    return authorizations and authorizations[normalizedToken] or nil
+end
+
+function LocalMonsterRewardService:_createAuthorization(player)
+    local userId = getUserId(player)
+    if userId <= 0 then
+        return nil
+    end
+
+    local definition = MonsterCatalog.GetRandomNormalMonsterDefinition()
+        or MonsterCatalog.GetDefinition(GameConfig.MONSTER.MonsterDefinitionId)
+    if not MonsterCatalog.IsNormalMonsterDefinition(definition) then
+        return nil
+    end
+
+    local authorizations = self._spawnAuthorizationsByUserId[userId]
+    if not authorizations then
+        authorizations = {}
+        self._spawnAuthorizationsByUserId[userId] = authorizations
+    end
+
+    local token = HttpService:GenerateGUID(false)
+    local ttlSeconds = math.max(5, tonumber(GameConfig.MONSTER.LocalSpawnTokenTtlSeconds) or 90)
+    authorizations[token] = {
+        Token = token,
+        MonsterDefinitionId = tostring(definition.Id or GameConfig.MONSTER.MonsterDefinitionId),
+        CreatedAt = os.clock(),
+        ExpiresAt = os.clock() + ttlSeconds,
+        Consumed = false,
+    }
+
+    return authorizations[token], definition
+end
+
+function LocalMonsterRewardService:_buildSpawnTokenPayload(authorization, definition)
+    if not (authorization and definition) then
+        return nil
+    end
+
+    return {
+        token = authorization.Token,
+        monsterDefinitionId = authorization.MonsterDefinitionId,
+        templateName = definition.TemplateName,
+        typeName = definition.TypeName,
+        maxHealth = definition.MaxHealth or GameConfig.MONSTER.MaxHealth,
+        attackDamage = definition.AttackDamage or GameConfig.MONSTER.AttackDamage,
+        attackRange = definition.AttackRange or GameConfig.MONSTER.AttackRange,
+        aggroRadius = definition.AggroRadius or GameConfig.MONSTER.AggroRadius,
+        disengageDistance = definition.DisengageDistance or GameConfig.MONSTER.DisengageDistance,
+        contactRadius = definition.ContactRadius or GameConfig.MONSTER.ContactRadius,
+        attackCooldownSeconds = definition.AttackCooldownSeconds or GameConfig.MONSTER.AttackCooldownSeconds,
+        moveSpeed = definition.MoveSpeed or GameConfig.MONSTER.MoveSpeed,
+        expiresAt = authorization.ExpiresAt,
+    }
+end
+
+function LocalMonsterRewardService:_handleSpawnTokenRequest(player, payload)
+    if not (GameConfig.MONSTER.ClientOwnedNormalMonsters and player and player.Parent and self._localMonsterSpawnTokenEvent) then
+        return
+    end
+    if not self:_isPlayerLoaded(player) then
+        self._localMonsterSpawnTokenEvent:FireClient(player, {
+            eventType = "Denied",
+            reason = "DataLoading",
+            timestamp = os.clock(),
+        })
+        return
+    end
+    if not self:_consumeRateLimit(self._spawnTokenRequestWindows, player, GameConfig.MONSTER.LocalSpawnTokenRequestsPerSecond) then
+        self._localMonsterSpawnTokenEvent:FireClient(player, {
+            eventType = "Denied",
+            reason = "RateLimited",
+            timestamp = os.clock(),
+        })
+        return
+    end
+
+    local maxBatchSize = math.max(1, math.floor(tonumber(GameConfig.MONSTER.LocalSpawnTokenRequestBatchSize) or 25))
+    local requestedCount = type(payload) == "table" and math.floor(tonumber(payload.count or payload.Count) or maxBatchSize) or maxBatchSize
+    requestedCount = math.clamp(requestedCount, 1, maxBatchSize)
+
+    local tokens = {}
+    for _ = 1, requestedCount do
+        local authorization, definition = self:_createAuthorization(player)
+        local tokenPayload = self:_buildSpawnTokenPayload(authorization, definition)
+        if tokenPayload then
+            table.insert(tokens, tokenPayload)
+        end
+    end
+
+    self._localMonsterSpawnTokenEvent:FireClient(player, {
+        eventType = "Tokens",
+        tokens = tokens,
+        timestamp = os.clock(),
+    })
+end
+
 function LocalMonsterRewardService:_normalizeDeathPosition(player, deathPosition)
     if typeof(deathPosition) == "Vector3" then
         return deathPosition
@@ -102,7 +231,7 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
     end
 
     local state = self._playerStateService and self._playerStateService:GetState(player) or nil
-    if not isArenaPlayer(state) then
+    if not (isArenaPlayer(state) and self:_isPlayerLoaded(player)) then
         return
     end
 
@@ -110,8 +239,9 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
         return
     end
 
-    local monsterId = tostring(payload and payload.monsterId or "")
-    if monsterId == "" then
+    local token = tostring(payload and payload.token or payload and payload.Token or "")
+    if token == "" then
+        warn("[LocalMonsterRewardService] 拒绝旧版本地怪击杀上报，缺少 token: " .. tostring(player.Name))
         return
     end
 
@@ -124,16 +254,21 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
     end
 
     local duplicateWindowSeconds = pruneRecentKills(recentKills, now)
-    if recentKills[monsterId] then
+    if recentKills[token] then
         return
     end
 
-    local monsterDefinition = MonsterCatalog.GetDefinition(payload and payload.monsterDefinitionId)
-        or MonsterCatalog.GetDefinition(GameConfig.MONSTER.MonsterDefinitionId)
+    local authorization = self:_getAuthorization(player, token)
+    if not (authorization and authorization.Consumed ~= true) then
+        return
+    end
+
+    local monsterDefinition = MonsterCatalog.GetDefinition(authorization.MonsterDefinitionId)
     if not MonsterCatalog.IsNormalMonsterDefinition(monsterDefinition) then
         return
     end
-    recentKills[monsterId] = now + duplicateWindowSeconds
+    authorization.Consumed = true
+    recentKills[token] = now + duplicateWindowSeconds
 
     if self._playerStateService then
         self._playerStateService:AddRebirthScore(
@@ -166,7 +301,7 @@ function LocalMonsterRewardService:_handleLocalMonsterHitPlayer(player, payload)
     end
 
     local state = self._playerStateService and self._playerStateService:GetState(player) or nil
-    if not isArenaPlayer(state) then
+    if not (isArenaPlayer(state) and self:_isPlayerLoaded(player)) then
         return
     end
 
@@ -174,8 +309,18 @@ function LocalMonsterRewardService:_handleLocalMonsterHitPlayer(player, payload)
         return
     end
 
-    local monsterDefinition = MonsterCatalog.GetDefinition(payload and payload.monsterDefinitionId)
-        or MonsterCatalog.GetDefinition(GameConfig.MONSTER.MonsterDefinitionId)
+    local token = tostring(payload and payload.token or payload and payload.Token or "")
+    if token == "" then
+        warn("[LocalMonsterRewardService] 拒绝旧版本地怪碰撞上报，缺少 token: " .. tostring(player.Name))
+        return
+    end
+
+    local authorization = self:_getAuthorization(player, token)
+    if not (authorization and authorization.Consumed ~= true) then
+        return
+    end
+
+    local monsterDefinition = MonsterCatalog.GetDefinition(authorization.MonsterDefinitionId)
     if not MonsterCatalog.IsNormalMonsterDefinition(monsterDefinition) then
         return
     end
@@ -186,15 +331,76 @@ function LocalMonsterRewardService:_handleLocalMonsterHitPlayer(player, payload)
     end
 end
 
+function LocalMonsterRewardService:ConsumeNukeSweepTokens(player, tokens)
+    if not (GameConfig.MONSTER.ClientOwnedNormalMonsters and player and player.Parent and type(tokens) == "table") then
+        return 0, 0
+    end
+    if not self:_isPlayerLoaded(player) then
+        return 0, 0
+    end
+
+    local remainingCount = math.max(0, math.floor(tonumber(GameConfig.MONSTER.MaxActiveCount) or 0))
+    local totalExperience = 0
+    local totalScore = 0
+    local consumedCount = 0
+    local seenTokens = {}
+
+    for _, rawToken in ipairs(tokens) do
+        if remainingCount <= 0 then
+            break
+        end
+
+        local token = tostring(rawToken or "")
+        if token ~= "" and not seenTokens[token] then
+            seenTokens[token] = true
+            local authorization = self:_getAuthorization(player, token)
+            if authorization and authorization.Consumed ~= true then
+                local definition = MonsterCatalog.GetDefinition(authorization.MonsterDefinitionId)
+                if MonsterCatalog.IsNormalMonsterDefinition(definition) then
+                    authorization.Consumed = true
+                    remainingCount -= 1
+                    consumedCount += 1
+                    totalScore += definition.KillScoreReward or GameConfig.MONSTER.KillScoreReward
+                    totalExperience += (definition.ExperienceDropCount or GameConfig.MONSTER.ExperienceDropCount)
+                        * (definition.ExperiencePerOrb or GameConfig.MONSTER.ExperiencePerOrb)
+                end
+            end
+        end
+    end
+
+    return consumedCount, totalScore, totalExperience
+end
+
+function LocalMonsterRewardService:OnPlayerRemoving(player)
+    local userId = getUserId(player)
+    if userId > 0 then
+        self._spawnTokenRequestWindows[userId] = nil
+        self._killReportWindows[userId] = nil
+        self._hitReportWindows[userId] = nil
+        self._recentKillIdsByUserId[userId] = nil
+        self._spawnAuthorizationsByUserId[userId] = nil
+    end
+end
+
 function LocalMonsterRewardService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._experienceOrbService = dependencies.ExperienceOrbService
     self._healthService = dependencies.HealthService
+    self._rebirthService = dependencies.RebirthService
+    self._localMonsterSpawnTokenEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LocalMonsterSpawnToken") or nil
     self._localMonsterKilledEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LocalMonsterKilled") or nil
     self._localMonsterHitPlayerEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LocalMonsterHitPlayer") or nil
+    self._spawnTokenRequestWindows = {}
     self._killReportWindows = {}
     self._hitReportWindows = {}
     self._recentKillIdsByUserId = {}
+    self._spawnAuthorizationsByUserId = {}
+
+    if self._localMonsterSpawnTokenEvent then
+        self._localMonsterSpawnTokenEvent.OnServerEvent:Connect(function(player, payload)
+            self:_handleSpawnTokenRequest(player, payload)
+        end)
+    end
 
     if self._localMonsterKilledEvent then
         self._localMonsterKilledEvent.OnServerEvent:Connect(function(player, payload)

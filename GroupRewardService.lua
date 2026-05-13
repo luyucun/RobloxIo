@@ -90,6 +90,10 @@ function GroupRewardService:_isClaimed(player)
         and self._playerStateService:HasGroupReward(player, getConfiguredGroupId()) == true
 end
 
+function GroupRewardService:_isPlayerLoaded(player)
+    return not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player)
+end
+
 function GroupRewardService:_firePrompt(player)
     if not (player and player.Parent and self._groupRewardPromptEvent) then
         return
@@ -167,6 +171,10 @@ end
 function GroupRewardService:Claim(player)
     if not (player and player.Parent and self._playerStateService and self._potionService) then
         return false, "ServiceUnavailable"
+    end
+    if not self:_isPlayerLoaded(player) then
+        self:_fireFeedback(player, "Failed", "DataLoading")
+        return false, "DataLoading"
     end
 
     local groupId = getConfiguredGroupId()

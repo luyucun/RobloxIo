@@ -34,6 +34,8 @@ end
 local GameConfig = requireSharedModule("GameConfig")
 local WeaponTierConfig = requireSharedModule("WeaponTierConfig")
 local PotionConfig = requireSharedModule("PotionConfig")
+local SkinConfig = requireSharedModule("SkinConfig")
+local SubscriptionConfig = requireSharedModule("SubscriptionConfig")
 
 local PlayerStateService = {}
 
@@ -53,9 +55,12 @@ PlayerStateService._requestStateSyncEvent = nil
 PlayerStateService._levelUpFeedbackEvent = nil
 PlayerStateService._requestStateConnection = nil
 PlayerStateService._weaponService = nil
+PlayerStateService._weaponUnlockRewardService = nil
 PlayerStateService._leaderboardService = nil
 PlayerStateService._rebirthService = nil
 PlayerStateService._arenaProgressService = nil
+PlayerStateService._healthService = nil
+PlayerStateService._subscriptionService = nil
 PlayerStateService._friendBonusRefreshToken = 0
 PlayerStateService._friendBonusLoopToken = 0
 
@@ -73,6 +78,59 @@ end
 
 local function normalizeLevel(value)
     return math.clamp(math.floor(tonumber(value) or GameConfig.PLAYER.BaseLevel), 1, GameConfig.PLAYER.MaxSupportedLevel)
+end
+
+local function ensureLevelGradient(levelLabel, gradientName, colorSequence)
+    local gradient = levelLabel:FindFirstChild(gradientName)
+    if gradient and not gradient:IsA("UIGradient") then
+        gradient:Destroy()
+        gradient = nil
+    end
+
+    if not gradient then
+        gradient = Instance.new("UIGradient")
+        gradient.Name = gradientName
+        gradient.Color = colorSequence
+        gradient.Enabled = false
+        gradient.Parent = levelLabel
+    end
+    return gradient
+end
+
+local function ensureOverheadLevelLabel(root)
+    if not root then
+        return nil
+    end
+
+    local levelLabel = root:FindFirstChild("Level")
+    if levelLabel and not levelLabel:IsA("TextLabel") then
+        levelLabel:Destroy()
+        levelLabel = nil
+    end
+
+    if not levelLabel then
+        levelLabel = Instance.new("TextLabel")
+        levelLabel.Name = "Level"
+        levelLabel.BackgroundTransparency = 1
+        levelLabel.Size = UDim2.new(1, 0, 0, 18)
+        levelLabel.Font = Enum.Font.GothamBold
+        levelLabel.Text = "Lv.1"
+        levelLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        levelLabel.TextSize = 13
+        levelLabel.TextStrokeTransparency = 0.6
+        levelLabel.Parent = root
+    end
+
+    ensureLevelGradient(levelLabel, "High", ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 244, 124)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 89, 89)),
+    }))
+    ensureLevelGradient(levelLabel, "Low", ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(150, 220, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(110, 145, 255)),
+    }))
+
+    return levelLabel
 end
 
 local function normalizePotionInventory(potions)
@@ -104,6 +162,121 @@ local function normalizeGroupRewards(groupRewards)
         end
     end
     return normalized
+end
+
+local function normalizeSubscriptionClaims(subscriptionClaims)
+    local normalized = {}
+    if type(subscriptionClaims) ~= "table" then
+        return normalized
+    end
+
+    for subscriptionId, utcDay in pairs(subscriptionClaims) do
+        local key = tostring(subscriptionId or "")
+        local day = tostring(utcDay or "")
+        if key ~= "" and day ~= "" then
+            normalized[key] = day
+        end
+    end
+    return normalized
+end
+
+local function normalizeOwnedSkins(ownedSkins)
+    local normalized = {}
+    if type(ownedSkins) ~= "table" then
+        return normalized
+    end
+
+    for skinKey, owned in pairs(ownedSkins) do
+        local skinId = owned == true and math.floor(tonumber(skinKey) or 0) or math.floor(tonumber(owned) or 0)
+        if skinId > 0 and SkinConfig.GetSkin(skinId) and (owned == true or tonumber(owned) ~= nil) then
+            normalized[tostring(skinId)] = true
+        end
+    end
+    return normalized
+end
+
+local function normalizeEquippedSkinId(equippedSkinId, ownedSkins)
+    local skinId = math.floor(tonumber(equippedSkinId) or 0)
+    if skinId > 0 and SkinConfig.GetSkin(skinId) and type(ownedSkins) == "table" and ownedSkins[tostring(skinId)] == true then
+        return skinId
+    end
+    return nil
+end
+
+local function copyArray(values)
+    local result = {}
+    if type(values) ~= "table" then
+        return result
+    end
+
+    for _, value in ipairs(values) do
+        table.insert(result, value)
+    end
+    return result
+end
+
+local function copyBooleanMap(values)
+    local result = {}
+    if type(values) ~= "table" then
+        return result
+    end
+
+    for key, value in pairs(values) do
+        if value == true then
+            result[tostring(key)] = true
+        end
+    end
+    return result
+end
+
+local function normalizeWeaponUnlockRewards(rewards)
+    local normalized = {
+        ClaimedTiers = {},
+        PendingQueue = {},
+    }
+    if type(rewards) ~= "table" then
+        return normalized
+    end
+
+    local claimedTiers = rewards.ClaimedTiers or rewards.claimedTiers or rewards.claimed or rewards.Claimed
+    if type(claimedTiers) == "table" then
+        for tierKey, claimed in pairs(claimedTiers) do
+            local tierIndex = math.floor(tonumber(tierKey) or tonumber(claimed) or 0)
+            if tierIndex > 0 and (claimed == true or tonumber(claimed) ~= nil) then
+                normalized.ClaimedTiers[tostring(tierIndex)] = true
+            end
+        end
+    end
+
+    local pendingQueue = rewards.PendingQueue or rewards.pendingQueue or rewards.PendingTiers or rewards.pendingTiers
+    if type(pendingQueue) == "table" then
+        local seenPending = {}
+        for _, pendingTier in ipairs(pendingQueue) do
+            local tierIndex = math.floor(tonumber(pendingTier) or 0)
+            local key = tostring(tierIndex)
+            if tierIndex > 1 and normalized.ClaimedTiers[key] ~= true and seenPending[key] ~= true then
+                seenPending[key] = true
+                table.insert(normalized.PendingQueue, tierIndex)
+            end
+        end
+        table.sort(normalized.PendingQueue)
+    end
+
+    return normalized
+end
+
+local function getMaxUnlockedTierIndexForLevel(level)
+    local loadout = buildWeaponLoadout(level)
+    return math.max(1, math.floor(tonumber(loadout.TierIndex) or 1))
+end
+
+local function buildHandledWeaponUnlockRewardsForLevel(level)
+    local rewards = normalizeWeaponUnlockRewards()
+    local maxTierIndex = getMaxUnlockedTierIndexForLevel(level)
+    for tierIndex = 2, maxTierIndex do
+        rewards.ClaimedTiers[tostring(tierIndex)] = true
+    end
+    return rewards
 end
 
 local function normalizeActivePotion(activePotion, fallbackPotionId)
@@ -178,6 +351,23 @@ local function getHealthFillColor(healthRatio)
     end
 
     return lerpColor(lowColor, midColor, ratio / 0.5)
+end
+
+local function updateOverheadShieldUi(root, shieldState, shouldShowHealthBar)
+    local barBackground = root and root:FindFirstChild("BarBackground")
+    local shield = barBackground and barBackground:FindFirstChild("Shield")
+    if not (shield and shield:IsA("GuiObject")) then
+        return
+    end
+
+    local isActive = shouldShowHealthBar == true and shieldState and shieldState.shieldActive == true
+    local remainingSeconds = math.max(0, math.ceil(tonumber(shieldState and shieldState.shieldRemainingSeconds) or 0))
+    shield.Visible = isActive and remainingSeconds > 0
+
+    local countDownTime = shield:FindFirstChild("CountDownTime")
+    if countDownTime and countDownTime:IsA("TextLabel") then
+        countDownTime.Text = string.format("%dS", remainingSeconds)
+    end
 end
 
 local function ensureCollisionGroup(groupName)
@@ -319,8 +509,13 @@ function PlayerStateService:_applyLevelDerivedState(state)
     state.FriendExperienceBonus = math.max(0, tonumber(state.FriendExperienceBonus) or 0)
     state.FriendCount = math.max(0, math.floor(tonumber(state.FriendCount) or 0))
     state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0))
+    state.WheelSpins = math.max(0, math.floor(tonumber(state.WheelSpins) or 0))
     state.Potions = normalizePotionInventory(state.Potions)
     state.GroupRewards = normalizeGroupRewards(state.GroupRewards)
+    state.SubscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims)
+    state.OwnedSkins = normalizeOwnedSkins(state.OwnedSkins)
+    state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
+    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(state.WeaponUnlockRewards)
     state.ActivePotions = normalizeActivePotions(state.ActivePotions, state.ActivePotion)
     state.ActivePotion = nil
 
@@ -375,8 +570,13 @@ function PlayerStateService:_createDefaultState(actor)
         FriendExperienceBonus = 0,
         FriendCount = 0,
         Diamonds = 0,
+        WheelSpins = 0,
         Potions = {},
         GroupRewards = {},
+        SubscriptionClaims = {},
+        OwnedSkins = {},
+        EquippedSkinId = nil,
+        WeaponUnlockRewards = normalizeWeaponUnlockRewards(),
         ActivePotions = {},
         ActivePotion = nil,
         SessionStartedAt = os.time(),
@@ -410,6 +610,35 @@ function PlayerStateService:_createDefaultOverheadHealthBarTemplate()
     root.BackgroundTransparency = 1
     root.Size = UDim2.fromScale(1, 1)
     root.Parent = billboard
+
+    local levelLabel = Instance.new("TextLabel")
+    levelLabel.Name = "Level"
+    levelLabel.BackgroundTransparency = 1
+    levelLabel.Size = UDim2.new(1, 0, 0, 18)
+    levelLabel.Font = Enum.Font.GothamBold
+    levelLabel.Text = "Lv.1"
+    levelLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    levelLabel.TextSize = 13
+    levelLabel.TextStrokeTransparency = 0.6
+    levelLabel.Parent = root
+
+    local highGradient = Instance.new("UIGradient")
+    highGradient.Name = "High"
+    highGradient.Enabled = false
+    highGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 244, 124)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 89, 89)),
+    })
+    highGradient.Parent = levelLabel
+
+    local lowGradient = Instance.new("UIGradient")
+    lowGradient.Name = "Low"
+    lowGradient.Enabled = false
+    lowGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(150, 220, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(110, 145, 255)),
+    })
+    lowGradient.Parent = levelLabel
 
     local valueLabel = Instance.new("TextLabel")
     valueLabel.Name = "ValueLabel"
@@ -451,6 +680,31 @@ function PlayerStateService:_createDefaultOverheadHealthBarTemplate()
     local fillCorner = Instance.new("UICorner")
     fillCorner.CornerRadius = UDim.new(0, 7)
     fillCorner.Parent = fill
+
+    local shield = Instance.new("ImageLabel")
+    shield.Name = "Shield"
+    shield.AnchorPoint = Vector2.new(1, 0.5)
+    shield.Position = UDim2.new(1, 4, 0.5, 0)
+    shield.Size = UDim2.fromOffset(32, 32)
+    shield.BackgroundTransparency = 1
+    shield.BorderSizePixel = 0
+    shield.Visible = false
+    shield.Parent = barBackground
+
+    local shieldAspect = Instance.new("UIAspectRatioConstraint")
+    shieldAspect.AspectRatio = 1
+    shieldAspect.Parent = shield
+
+    local countDownTime = Instance.new("TextLabel")
+    countDownTime.Name = "CountDownTime"
+    countDownTime.BackgroundTransparency = 1
+    countDownTime.Size = UDim2.fromScale(1, 1)
+    countDownTime.Font = Enum.Font.GothamBold
+    countDownTime.Text = "0S"
+    countDownTime.TextColor3 = Color3.fromRGB(255, 255, 255)
+    countDownTime.TextSize = 12
+    countDownTime.TextStrokeTransparency = 0.45
+    countDownTime.Parent = shield
 
     return billboard
 end
@@ -507,6 +761,8 @@ function PlayerStateService:_ensureOverheadHealthBar(actor)
     billboard = self:_cloneOverheadHealthBar()
     billboard.Name = OVERHEAD_HEALTH_BAR_NAME
     billboard.Adornee = head
+    local root = billboard:FindFirstChild("Root")
+    ensureOverheadLevelLabel(root)
     billboard.Parent = head
 
     return billboard
@@ -521,6 +777,7 @@ function PlayerStateService:UpdateOverheadHealthBar(actor)
 
     local root = billboard:FindFirstChild("Root")
     local valueLabel = root and root:FindFirstChild("ValueLabel")
+    local levelLabel = ensureOverheadLevelLabel(root)
     local barBackground = root and root:FindFirstChild("BarBackground")
     local fill = barBackground and barBackground:FindFirstChild("Fill")
     if not (valueLabel and valueLabel:IsA("TextLabel") and fill and fill:IsA("Frame")) then
@@ -534,7 +791,14 @@ function PlayerStateService:UpdateOverheadHealthBar(actor)
     fill.Size = UDim2.fromScale(healthRatio, 1)
     fill.BackgroundColor3 = getHealthFillColor(healthRatio)
     valueLabel.Text = string.format("%d / %d", currentHealth, maxHealth)
-    billboard.Enabled = state.Alive == true and state.IsInArena == true
+    if levelLabel and levelLabel:IsA("TextLabel") then
+        levelLabel.Text = string.format("Lv.%d", normalizeLevel(state.Level))
+    end
+
+    local shouldShowHealthBar = state.Alive == true and state.IsInArena == true
+    billboard.Enabled = shouldShowHealthBar
+    local shieldState = self._healthService and self._healthService.GetShieldState and self._healthService:GetShieldState(actor) or nil
+    updateOverheadShieldUi(root, shieldState, shouldShowHealthBar)
     return true
 end
 
@@ -564,9 +828,12 @@ function PlayerStateService:Init(dependencies)
     self._friendBonusLoopToken += 1
     local friendBonusLoopToken = self._friendBonusLoopToken
     self._weaponService = dependencies and dependencies.WeaponService or nil
+    self._weaponUnlockRewardService = dependencies and dependencies.WeaponUnlockRewardService or nil
     self._leaderboardService = dependencies and dependencies.LeaderboardService or nil
     self._rebirthService = dependencies and dependencies.RebirthService or nil
     self._arenaProgressService = dependencies and dependencies.ArenaProgressService or nil
+    self._healthService = dependencies and dependencies.HealthService or nil
+    self._subscriptionService = dependencies and dependencies.SubscriptionService or nil
     self._playerStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PlayerStateSync") or nil
     self._requestStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestPlayerStateSync") or nil
     self._levelUpFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LevelUpFeedback") or nil
@@ -578,7 +845,12 @@ function PlayerStateService:Init(dependencies)
 
     if self._requestStateSyncEvent then
         self._requestStateConnection = self._requestStateSyncEvent.OnServerEvent:Connect(function(player)
-            self:PushState(player)
+            if not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player) then
+                self:PushState(player)
+                if self._weaponUnlockRewardService and self._weaponUnlockRewardService.SyncPendingPrompt then
+                    self._weaponUnlockRewardService:SyncPendingPrompt(player)
+                end
+            end
         end)
     end
 
@@ -595,9 +867,12 @@ end
 
 function PlayerStateService:BindSystems(dependencies)
     self._weaponService = dependencies and dependencies.WeaponService or self._weaponService
+    self._weaponUnlockRewardService = dependencies and dependencies.WeaponUnlockRewardService or self._weaponUnlockRewardService
     self._leaderboardService = dependencies and dependencies.LeaderboardService or self._leaderboardService
     self._rebirthService = dependencies and dependencies.RebirthService or self._rebirthService
     self._arenaProgressService = dependencies and dependencies.ArenaProgressService or self._arenaProgressService
+    self._healthService = dependencies and dependencies.HealthService or self._healthService
+    self._subscriptionService = dependencies and dependencies.SubscriptionService or self._subscriptionService
 end
 
 function PlayerStateService:_markArenaProgressDirty()
@@ -621,7 +896,12 @@ end
 function PlayerStateService:OnPlayerAdded(player)
     local state = self:_getOrCreateState(player)
     self:_syncLeaderstats(player, state)
-    self:PushState(player)
+    if not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player) then
+        self:PushState(player)
+        if self._weaponUnlockRewardService and self._weaponUnlockRewardService.SyncPendingPrompt then
+            self._weaponUnlockRewardService:SyncPendingPrompt(player)
+        end
+    end
     self:QueueFriendBonusRefresh()
 end
 
@@ -633,6 +913,23 @@ function PlayerStateService:BuildStatePayload(actor)
     local potionMoveSpeedBonus = self:GetPotionMoveSpeedBonus(actor)
     local friendExperienceBonus = math.max(0, tonumber(state.FriendExperienceBonus) or 0)
     local friendCount = math.max(0, math.floor(tonumber(state.FriendCount) or 0))
+    local weaponUnlockRewards = state.WeaponUnlockRewards or normalizeWeaponUnlockRewards()
+    local ownedSkins = normalizeOwnedSkins(state.OwnedSkins)
+    state.OwnedSkins = ownedSkins
+    state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, ownedSkins)
+    local shieldState = self._healthService and self._healthService.GetShieldState and self._healthService:GetShieldState(actor) or nil
+    local subscriptionActive = self._subscriptionService and (
+        (self._subscriptionService.IsSubscribedCached and self._subscriptionService:IsSubscribedCached(actor) == true)
+        or (not self._subscriptionService.IsSubscribedCached and self._subscriptionService.IsSubscribed and self._subscriptionService:IsSubscribed(actor) == true)
+    ) or false
+    local subscriptionBonus = subscriptionActive and math.max(0, tonumber(SubscriptionConfig.ExperienceBonus) or 0) or 0
+    local subscriptionId = tostring(SubscriptionConfig.SubscriptionId or "")
+    local currentUtcDay = SubscriptionConfig.GetCurrentUtcDay()
+    local subscriptionDailyClaimed = self:HasSubscriptionClaim(actor, subscriptionId, currentUtcDay)
+    local subscriptionDailyClaimAvailable = self._subscriptionService
+        and self._subscriptionService.IsDailyClaimAvailable
+        and self._subscriptionService:IsDailyClaimAvailable(actor) == true
+        or false
     return {
         level = state.Level,
         highestLevelReached = state.HighestLevelReached,
@@ -656,8 +953,21 @@ function PlayerStateService:BuildStatePayload(actor)
         nextRebirthScore = GameConfig.GetRequiredRebirthScore(state.Rebirth),
         rebirthExperienceBonus = GameConfig.GetRebirthExperienceBonus(state.Rebirth),
         diamonds = state.Diamonds,
+        wheelSpins = state.WheelSpins,
         potions = state.Potions,
         groupRewards = state.GroupRewards,
+        subscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims),
+        subscriptionActive = subscriptionActive,
+        subscriptionExperienceBonus = subscriptionBonus,
+        subscriptionDailyClaimed = subscriptionDailyClaimed,
+        subscriptionDailyClaimAvailable = subscriptionDailyClaimAvailable,
+        subscriptionCurrentUtcDay = currentUtcDay,
+        ownedSkins = copyBooleanMap(ownedSkins),
+        equippedSkinId = state.EquippedSkinId,
+        weaponUnlockRewards = {
+            claimedTiers = copyBooleanMap(weaponUnlockRewards.ClaimedTiers or {}),
+            pendingQueue = copyArray(weaponUnlockRewards.PendingQueue or {}),
+        },
         activePotions = activePotions,
         activePotion = activePotion,
         potionExperienceBonus = potionExperienceBonus,
@@ -669,6 +979,9 @@ function PlayerStateService:BuildStatePayload(actor)
         isInArena = state.IsInArena,
         alive = state.Alive,
         buffs = state.Buffs,
+        shieldActive = shieldState and shieldState.shieldActive == true or false,
+        shieldRemainingSeconds = shieldState and shieldState.shieldRemainingSeconds or 0,
+        shieldExpiresAt = shieldState and shieldState.shieldExpiresAt or nil,
         timestamp = os.clock(),
     }
 end
@@ -799,6 +1112,167 @@ function PlayerStateService:AddDiamonds(actor, amount)
     return state.Diamonds
 end
 
+function PlayerStateService:TrySpendDiamonds(actor, amount)
+    local state = self:_getOrCreateState(actor)
+    local cost = math.max(0, math.floor(tonumber(amount) or 0))
+    state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0))
+    if cost <= 0 then
+        return true, state.Diamonds
+    end
+    if state.Diamonds < cost then
+        return false, state.Diamonds
+    end
+
+    state.Diamonds -= cost
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true, state.Diamonds
+end
+
+function PlayerStateService:AddWheelSpins(actor, amount)
+    local state = self:_getOrCreateState(actor)
+    local delta = math.floor(tonumber(amount) or 0)
+    if delta == 0 then
+        state.WheelSpins = math.max(0, math.floor(tonumber(state.WheelSpins) or 0))
+        return state.WheelSpins
+    end
+
+    state.WheelSpins = math.max(0, math.floor(tonumber(state.WheelSpins) or 0) + delta)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return state.WheelSpins
+end
+
+function PlayerStateService:TryConsumeWheelSpin(actor)
+    local state = self:_getOrCreateState(actor)
+    state.WheelSpins = math.max(0, math.floor(tonumber(state.WheelSpins) or 0))
+    if state.WheelSpins <= 0 then
+        return false, state.WheelSpins
+    end
+
+    state.WheelSpins -= 1
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true, state.WheelSpins
+end
+
+function PlayerStateService:GetSubscriptionClaims(actor)
+    local state = self:_getOrCreateState(actor)
+    state.SubscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims)
+    return state.SubscriptionClaims
+end
+
+function PlayerStateService:HasSubscriptionClaim(actor, subscriptionId, utcDay)
+    local claims = self:GetSubscriptionClaims(actor)
+    local key = tostring(subscriptionId or "")
+    local day = tostring(utcDay or "")
+    return key ~= "" and day ~= "" and claims[key] == day
+end
+
+function PlayerStateService:MarkSubscriptionClaim(actor, subscriptionId, utcDay)
+    local key = tostring(subscriptionId or "")
+    local day = tostring(utcDay or "")
+    if key == "" or day == "" then
+        return false
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.SubscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims)
+    state.SubscriptionClaims[key] = day
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
+function PlayerStateService:GetOwnedSkins(actor)
+    local state = self:_getOrCreateState(actor)
+    state.OwnedSkins = normalizeOwnedSkins(state.OwnedSkins)
+    state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
+    return state.OwnedSkins
+end
+
+function PlayerStateService:OwnsSkin(actor, skinId)
+    local ownedSkins = self:GetOwnedSkins(actor)
+    return ownedSkins[tostring(math.floor(tonumber(skinId) or 0))] == true
+end
+
+function PlayerStateService:GrantSkin(actor, skinId)
+    local skin = SkinConfig.GetSkin(skinId)
+    if not skin then
+        return false, "InvalidSkin"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.OwnedSkins = normalizeOwnedSkins(state.OwnedSkins)
+    local key = tostring(skin.Id)
+    local alreadyOwned = state.OwnedSkins[key] == true
+    state.OwnedSkins[key] = true
+    state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true, alreadyOwned and "AlreadyOwned" or "Granted"
+end
+
+function PlayerStateService:EquipSkin(actor, skinId)
+    local skin = SkinConfig.GetSkin(skinId)
+    if not skin then
+        return false, "InvalidSkin"
+    end
+    if not self:OwnsSkin(actor, skin.Id) then
+        return false, "NotOwned"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.EquippedSkinId = skin.Id
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if self._weaponService and self._weaponService.RebuildWeaponsForActor then
+        self._weaponService:RebuildWeaponsForActor(actor)
+    end
+    return true, "Equipped"
+end
+
+function PlayerStateService:ClearEquippedSkin(actor)
+    local state = self:_getOrCreateState(actor)
+    if state.EquippedSkinId == nil then
+        return true
+    end
+
+    state.EquippedSkinId = nil
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if self._weaponService and self._weaponService.RebuildWeaponsForActor then
+        self._weaponService:RebuildWeaponsForActor(actor)
+    end
+    return true
+end
+
+function PlayerStateService:GetEquippedSkinId(actor)
+    local state = self:_getOrCreateState(actor)
+    state.OwnedSkins = normalizeOwnedSkins(state.OwnedSkins)
+    state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
+    return state.EquippedSkinId
+end
+
+function PlayerStateService:GetEquippedSkinConfig(actor)
+    local skinId = self:GetEquippedSkinId(actor)
+    return skinId and SkinConfig.GetSkin(skinId) or nil
+end
+
 function PlayerStateService:_addDiamondsWithoutPush(actor, amount)
     local state = self:_getOrCreateState(actor)
     local delta = math.floor(tonumber(amount) or 0)
@@ -837,7 +1311,8 @@ function PlayerStateService:GetExperienceMultiplier(actor)
     local extraBonus = math.max(0, tonumber(state.ExtraExperienceBonus) or 0)
     local potionBonus = self:GetPotionExperienceBonus(actor)
     local friendBonus = math.max(0, tonumber(state.FriendExperienceBonus) or 0)
-    return math.max(1, 1 + rebirthBonus + extraBonus + potionBonus + friendBonus)
+    local subscriptionBonus = self._subscriptionService and self._subscriptionService.GetExperienceBonus and self._subscriptionService:GetExperienceBonus(actor) or 0
+    return math.max(1, 1 + rebirthBonus + extraBonus + potionBonus + friendBonus + math.max(0, tonumber(subscriptionBonus) or 0))
 end
 
 function PlayerStateService:GetActivePotions(actor)
@@ -1028,14 +1503,27 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
     )
     if type(savedProgress) == "table" then
         state.Diamonds = math.max(0, math.floor(tonumber(savedProgress.diamonds or savedProgress.Diamonds) or 0))
+        state.WheelSpins = math.max(0, math.floor(tonumber(savedProgress.wheelSpins or savedProgress.WheelSpins) or 0))
         state.Potions = normalizePotionInventory(savedProgress.potions or savedProgress.Potions)
         state.GroupRewards = normalizeGroupRewards(savedProgress.groupRewards or savedProgress.GroupRewards)
+        state.SubscriptionClaims = normalizeSubscriptionClaims(savedProgress.subscriptionClaims or savedProgress.SubscriptionClaims)
+        state.OwnedSkins = normalizeOwnedSkins(savedProgress.ownedSkins or savedProgress.OwnedSkins)
+        state.EquippedSkinId = normalizeEquippedSkinId(savedProgress.equippedSkinId or savedProgress.EquippedSkinId, state.OwnedSkins)
+        local savedWeaponUnlockRewards = savedProgress.weaponUnlockRewards or savedProgress.WeaponUnlockRewards
+        if savedWeaponUnlockRewards ~= nil then
+            state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(savedWeaponUnlockRewards)
+        else
+            state.WeaponUnlockRewards = buildHandledWeaponUnlockRewardsForLevel(state.HighestLevelReached)
+        end
         state.ActivePotions = normalizeActivePotions(savedProgress.activePotions or savedProgress.ActivePotions, savedProgress.activePotion or savedProgress.ActivePotion)
         state.ActivePotion = nil
     end
     self:_syncLeaderstats(actor, state)
     self:SyncHumanoidMovement(actor)
     self:PushState(actor)
+    if self._weaponUnlockRewardService and self._weaponUnlockRewardService.SyncPendingPrompt then
+        self._weaponUnlockRewardService:SyncPendingPrompt(actor)
+    end
     if self._leaderboardService then
         self._leaderboardService:MarkDirty()
     end
@@ -1090,6 +1578,26 @@ function PlayerStateService:MarkGroupReward(actor, groupId)
     return true
 end
 
+function PlayerStateService:GetWeaponUnlockRewards(actor)
+    local state = self:_getOrCreateState(actor)
+    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(state.WeaponUnlockRewards)
+    return state.WeaponUnlockRewards
+end
+
+function PlayerStateService:SetWeaponUnlockRewards(actor, rewards)
+    local state = self:_getOrCreateState(actor)
+    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(rewards)
+    return state.WeaponUnlockRewards
+end
+
+function PlayerStateService:BuildHandledWeaponUnlockRewardsForLevel(level)
+    return buildHandledWeaponUnlockRewardsForLevel(level)
+end
+
+function PlayerStateService:GetMaxUnlockedWeaponTierIndexForLevel(level)
+    return getMaxUnlockedTierIndexForLevel(level)
+end
+
 function PlayerStateService:SetRespawnCount(actor, count)
     return self:SetRebirth(actor, count)
 end
@@ -1129,6 +1637,9 @@ function PlayerStateService:_addExperience(actor, amount, requireActiveInArena)
         self:_applyLevelDerivedState(state)
         local healthGain = math.max(0, state.MaxHealth - previousMaxHealth)
         state.CurrentHealth = math.min(state.MaxHealth, state.CurrentHealth + healthGain)
+        if self._weaponUnlockRewardService and self._weaponUnlockRewardService.HandleLevelChanged then
+            self._weaponUnlockRewardService:HandleLevelChanged(actor, previousLevel, state.Level)
+        end
         self:SyncCharacterState(actor)
         if self._weaponService then
             self._weaponService:RebuildWeaponsForActor(actor)
@@ -1169,6 +1680,45 @@ function PlayerStateService:AddExperienceWithMultiplier(actor, amount)
     return didLevelUp, level, experience, totalAmount
 end
 
+function PlayerStateService:SetLevelForStudioCommand(actor, level)
+    local state = self:_getOrCreateState(actor)
+    local previousLevel = math.max(1, math.floor(tonumber(state.Level) or GameConfig.PLAYER.BaseLevel))
+    local targetLevel = math.clamp(
+        math.floor(tonumber(level) or previousLevel),
+        1,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
+    local previousMaxHealth = math.max(1, math.floor(tonumber(state.MaxHealth) or GameConfig.GetMaxHealthForLevel(previousLevel)))
+
+    state.Level = targetLevel
+    state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), targetLevel)
+    state.Experience = math.min(math.max(0, math.floor(tonumber(state.Experience) or 0)), GameConfig.GetNextLevelExperience(targetLevel))
+    self:_applyLevelDerivedState(state)
+    local maxHealthDelta = state.MaxHealth - previousMaxHealth
+    state.CurrentHealth = math.clamp(math.floor(tonumber(state.CurrentHealth) or state.MaxHealth) + maxHealthDelta, 1, state.MaxHealth)
+    self:_syncLeaderstats(actor, state)
+    self:SyncCharacterState(actor)
+    if self._weaponService then
+        self._weaponService:RebuildWeaponsForActor(actor)
+    end
+    if self._weaponUnlockRewardService and self._weaponUnlockRewardService.HandleLevelChanged and targetLevel > previousLevel then
+        self._weaponUnlockRewardService:HandleLevelChanged(actor, previousLevel, targetLevel)
+        self:_fireLevelUpFeedback(actor, previousLevel, targetLevel)
+    end
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    self:PushState(actor)
+    if self._leaderboardService then
+        self._leaderboardService:MarkDirty()
+        if self._leaderboardService.BroadcastNow then
+            self._leaderboardService:BroadcastNow()
+        end
+    end
+    self:_markArenaProgressDirty()
+    return targetLevel, state.Experience
+end
+
 function PlayerStateService:ApplyLevelMultiplier(actor, multiplier)
     local state = self:_getOrCreateState(actor)
     local resolvedMultiplier = math.max(1, tonumber(multiplier) or 1)
@@ -1195,6 +1745,9 @@ function PlayerStateService:ApplyLevelMultiplier(actor, multiplier)
     self:_applyLevelDerivedState(state)
     local healthGain = math.max(0, state.MaxHealth - previousMaxHealth)
     state.CurrentHealth = math.min(state.MaxHealth, state.CurrentHealth + healthGain)
+    if self._weaponUnlockRewardService and self._weaponUnlockRewardService.HandleLevelChanged then
+        self._weaponUnlockRewardService:HandleLevelChanged(actor, previousLevel, state.Level)
+    end
     self:SyncCharacterState(actor)
     if self._weaponService then
         self._weaponService:RebuildWeaponsForActor(actor)
@@ -1263,7 +1816,9 @@ function PlayerStateService:OnCharacterAdded(actor)
     self:SyncCharacterState(actor)
     self:_syncLeaderstats(actor, state)
     self:UpdateOverheadHealthBar(actor)
-    self:PushState(actor)
+    if not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(actor) then
+        self:PushState(actor)
+    end
     if wasInArena then
         self:_markArenaProgressDirty()
     end
@@ -1300,6 +1855,7 @@ function PlayerStateService:SetInArena(actor, isInArena)
         self:SyncCharacterState(actor)
     end
     self:_syncLeaderstats(actor, state)
+    self:UpdateOverheadHealthBar(actor)
     local isActiveInArena = state.IsInArena == true and state.Alive == true
     if wasActiveInArena ~= isActiveInArena then
         self:_markArenaProgressDirty()

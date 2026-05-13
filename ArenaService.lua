@@ -42,6 +42,7 @@ local PORTAL_RANGE_PADDING = 3
 ArenaService._playerStateService = nil
 ArenaService._weaponService = nil
 ArenaService._botService = nil
+ArenaService._rebirthService = nil
 ArenaService._arenaTransitionFeedbackEvent = nil
 ArenaService._portalJoinPromptEvent = nil
 ArenaService._requestJoinBattleEvent = nil
@@ -123,6 +124,7 @@ function ArenaService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._weaponService = dependencies.WeaponService
     self._botService = dependencies.BotService
+    self._rebirthService = dependencies.RebirthService
     self._arenaTransitionFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("ArenaTransitionFeedback") or nil
     self._portalJoinPromptEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PortalJoinPrompt") or nil
     self._requestJoinBattleEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestJoinBattle") or nil
@@ -210,14 +212,51 @@ function ArenaService:_buildTeleportCFrame(actor, targetPosition)
     return CFrame.lookAt(targetPosition, targetPosition + planarLook.Unit)
 end
 
-function ArenaService:_teleportActorToPosition(actor, targetPosition)
+function ArenaService:_getPortalLookAtPosition()
+    if not self._portalModel then
+        return nil
+    end
+
+    local didGetPivot, pivot = pcall(function()
+        return self._portalModel:GetPivot()
+    end)
+    if didGetPivot and pivot then
+        return pivot.Position
+    end
+
+    local didGetBounds, boundsCFrame = pcall(function()
+        local resolvedBoundsCFrame = self._portalModel:GetBoundingBox()
+        return resolvedBoundsCFrame
+    end)
+    if didGetBounds and boundsCFrame then
+        return boundsCFrame.Position
+    end
+
+    return nil
+end
+
+function ArenaService:_buildTeleportCFrameFacingPosition(actor, targetPosition, lookAtPosition)
+    if typeof(lookAtPosition) ~= "Vector3" then
+        return self:_buildTeleportCFrame(actor, targetPosition)
+    end
+
+    local flatLookAt = Vector3.new(lookAtPosition.X, targetPosition.Y, lookAtPosition.Z)
+    local direction = flatLookAt - targetPosition
+    if direction.Magnitude <= 0.001 then
+        return self:_buildTeleportCFrame(actor, targetPosition)
+    end
+
+    return CFrame.lookAt(targetPosition, targetPosition + direction.Unit)
+end
+
+function ArenaService:_teleportActorToPosition(actor, targetPosition, lookAtPosition)
     local character = ActorUtils.GetCharacter(actor)
     local rootPart = ActorUtils.GetRootPart(actor)
     if not (character and rootPart and typeof(targetPosition) == "Vector3") then
         return false
     end
 
-    character:PivotTo(self:_buildTeleportCFrame(actor, targetPosition))
+    character:PivotTo(self:_buildTeleportCFrameFacingPosition(actor, targetPosition, lookAtPosition))
     resetCharacterPhysics(character)
     return true
 end
@@ -483,7 +522,8 @@ function ArenaService:TeleportActorToSpawnLocation(actor)
         self:_getPartSurfaceY(self._spawnLocation) + self:_getActorGroundOffset(actor),
         self._spawnLocation.Position.Z
     )
-    self:_teleportActorToPosition(actor, spawnPosition)
+    local lookAtPosition = ActorUtils.IsPlayer(actor) and self:_getPortalLookAtPosition() or nil
+    self:_teleportActorToPosition(actor, spawnPosition, lookAtPosition)
     self:_fireTransitionFeedback(actor, "ReturnHome", "SpawnLocation")
     return true
 end
@@ -573,6 +613,14 @@ function ArenaService:TryEnterArena(actor, options)
         return false
     end
     if ActorUtils.IsPlayer(actor) and not actor.Parent then
+        return false
+    end
+    if ActorUtils.IsPlayer(actor)
+        and self._rebirthService
+        and self._rebirthService.IsPlayerLoaded
+        and not self._rebirthService:IsPlayerLoaded(actor)
+    then
+        self:_fireTransitionFeedback(actor, "Blocked", "DataLoading")
         return false
     end
     if not self._battlePart then

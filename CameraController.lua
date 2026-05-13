@@ -8,6 +8,8 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/CameraControl
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -30,12 +32,15 @@ local function requireSharedModule(moduleName)
 end
 
 local GameConfig = requireSharedModule("GameConfig")
+local RemoteNames = requireSharedModule("RemoteNames")
 
 local CameraController = {}
 
 CameraController._localPlayer = nil
 CameraController._connections = {}
 CameraController._applySerial = 0
+CameraController._spawnLookSerial = 0
+CameraController._portalCameraBindName = "IOFacePortalCamera"
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -52,6 +57,105 @@ function CameraController:_getConfig()
     local maxZoom = math.max(minZoom, tonumber(cameraConfig.MaxZoomDistance) or 60)
     local defaultZoom = math.clamp(tonumber(cameraConfig.DefaultZoomDistance) or 20, minZoom, maxZoom)
     return minZoom, defaultZoom, maxZoom
+end
+
+local function getCharacterRoot(player)
+    local character = player and player.Character
+    if not character then
+        return nil
+    end
+
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if rootPart and rootPart:IsA("BasePart") then
+        return rootPart
+    end
+
+    local primaryPart = character.PrimaryPart
+    if primaryPart and primaryPart:IsA("BasePart") then
+        return primaryPart
+    end
+
+    return nil
+end
+
+local function resolvePortalPosition()
+    local arenaConfig = GameConfig.ARENA or {}
+    local map = Workspace:FindFirstChild(arenaConfig.MapFolderName or "Map2")
+    local portals = map and map:FindFirstChild(arenaConfig.PortalsFolderName or "Portals")
+    local portal = portals and portals:FindFirstChild(arenaConfig.PortalModelName or "Portal")
+    if not portal then
+        return nil
+    end
+
+    if portal:IsA("Model") then
+        local didGetPivot, pivot = pcall(function()
+            return portal:GetPivot()
+        end)
+        if didGetPivot and pivot then
+            return pivot.Position
+        end
+
+        local didGetBounds, boundsCFrame = pcall(function()
+            local resolvedBoundsCFrame = portal:GetBoundingBox()
+            return resolvedBoundsCFrame
+        end)
+        if didGetBounds and boundsCFrame then
+            return boundsCFrame.Position
+        end
+    elseif portal:IsA("BasePart") then
+        return portal.Position
+    end
+
+    return nil
+end
+
+function CameraController:_faceCameraToPortal()
+    local player = self._localPlayer
+    local camera = Workspace.CurrentCamera
+    local rootPart = getCharacterRoot(player)
+    local portalPosition = resolvePortalPosition()
+    if not (camera and rootPart and portalPosition) then
+        return false
+    end
+
+    local lookTarget = Vector3.new(portalPosition.X, rootPart.Position.Y + 2, portalPosition.Z)
+    local direction = lookTarget - camera.CFrame.Position
+    if direction.Magnitude <= 0.001 then
+        return false
+    end
+
+    camera.CameraType = Enum.CameraType.Custom
+    camera.CameraSubject = player.Character and player.Character:FindFirstChildOfClass("Humanoid") or camera.CameraSubject
+    camera.CFrame = CFrame.lookAt(camera.CFrame.Position, lookTarget)
+    return true
+end
+
+function CameraController:_unbindPortalCameraLook()
+    pcall(function()
+        RunService:UnbindFromRenderStep(self._portalCameraBindName)
+    end)
+end
+
+function CameraController:_scheduleFaceCameraToPortal(delaySeconds)
+    self._spawnLookSerial += 1
+    local spawnLookSerial = self._spawnLookSerial
+
+    task.delay(math.max(0, tonumber(delaySeconds) or 0), function()
+        if self._spawnLookSerial ~= spawnLookSerial then
+            return
+        end
+
+        self:_unbindPortalCameraLook()
+        local endClock = os.clock() + 0.45
+        RunService:BindToRenderStep(self._portalCameraBindName, Enum.RenderPriority.Camera.Value + 1, function()
+            if self._spawnLookSerial ~= spawnLookSerial or os.clock() >= endClock then
+                self:_unbindPortalCameraLook()
+                return
+            end
+
+            self:_faceCameraToPortal()
+        end)
+    end)
 end
 
 function CameraController:_applyZoomSettings()
@@ -85,14 +189,30 @@ end
 function CameraController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._connections)
+    self:_unbindPortalCameraLook()
 
     self:_applyZoomSettings()
+    self:_scheduleFaceCameraToPortal(0.45)
 
     if self._localPlayer then
         table.insert(self._connections, self._localPlayer.CharacterAdded:Connect(function()
             self:_applyZoomSettings()
+            self:_scheduleFaceCameraToPortal(0.45)
         end))
     end
+
+    local eventsFolder = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
+    local systemEventsFolder = eventsFolder:WaitForChild(RemoteNames.SystemEventsFolder)
+    local transitionEvent = systemEventsFolder:WaitForChild(RemoteNames.System.ArenaTransitionFeedback)
+    table.insert(self._connections, transitionEvent.OnClientEvent:Connect(function(payload)
+        if type(payload) ~= "table" then
+            return
+        end
+
+        if payload.status == "ReturnHome" and payload.spawnMode == "SpawnLocation" then
+            self:_scheduleFaceCameraToPortal(0.05)
+        end
+    end))
 end
 
 return CameraController

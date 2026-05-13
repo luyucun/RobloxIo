@@ -28,6 +28,7 @@ ReplicatedStorage
   - BattleEvents
     - PickupFeedback
     - ExperienceFeedback
+    - LocalMonsterSpawnToken
     - LocalMonsterKilled
     - LocalMonsterHitPlayer
     - WeaponStateSync
@@ -36,6 +37,8 @@ ReplicatedStorage
     - BossFeedback
     - LeaderboardSync
     - ArenaProgressSync
+    - NukeCinematic
+    - NukeLocalMonsterSweep
 
 二、PlayerStateSync（S -> C）
 发送方：`PlayerStateService:PushState`
@@ -171,27 +174,54 @@ orbs 子字段：
 - homingSpeed
 - homingConsumeRadius
 
-十、LocalMonsterKilled（C -> S）
+十、LocalMonsterSpawnToken（C <-> S）
+接收方：`LocalMonsterRewardService:_handleSpawnTokenRequest`
+触发：客户端本地怪数量不足时请求服务端授权生成。
+用途：服务端为玩家生成一次性普通怪 spawn token，并指定服务端认可的怪物定义。
+C -> S 字段：
+- count
+- timestamp
+S -> C 字段：
+- eventType = "Tokens" | "Denied"
+- reason
+- tokens
+- timestamp
+tokens 子字段：
+- token
+- monsterDefinitionId
+- templateName
+- typeName
+- maxHealth
+- attackDamage
+- attackRange
+- aggroRadius
+- disengageDistance
+- contactRadius
+- attackCooldownSeconds
+- moveSpeed
+- expiresAt
+说明：客户端只可用服务端返回的 token 生成和上报普通怪；随机伪造 token 不发奖励、不扣血。
+
+十一、LocalMonsterKilled（C -> S）
 接收方：`LocalMonsterRewardService:_handleLocalMonsterKilled`
 触发：客户端私有普通小怪死亡。
-用途：服务端按配置给该玩家结算普通小怪固定经验，并下发 `ExperienceFeedback` 播放本地经验块表现。
+用途：服务端按 token 对应的普通怪定义结算经验/重生分，并下发 `ExperienceFeedback` 播放本地经验块表现。
 字段：
-- monsterDefinitionId
-- monsterId
+- token
 - deathPosition
 - timestamp
-说明：服务端不接受客户端上传的经验、等级、血量、武器数量或伤害数值；重复 monsterId 和超频请求会被忽略。
+说明：服务端不接受客户端上传的经验、等级、血量、武器数量、伤害数值或怪物定义；token 只能消费一次，旧版无 token payload 只 warn 不发奖励。
 
-十一、LocalMonsterHitPlayer（C -> S）
+十二、LocalMonsterHitPlayer（C -> S）
 接收方：`LocalMonsterRewardService:_handleLocalMonsterHitPlayer`
 触发：客户端私有普通小怪在接触半径内完成一次攻击。
-用途：服务端按 `GameConfig.MONSTER.AttackDamage` 对该玩家扣血。
+用途：服务端按 token 对应的普通怪定义对该玩家扣血。
 字段：
-- monsterId
+- token
 - timestamp
-说明：仅战斗区内 Alive 玩家有效，并按玩家限速。
+说明：仅战斗区内 Alive 玩家有效，并按玩家限速；旧版无 token payload 只 warn 不扣血。
 
-十二、WeaponStateSync（S -> C）
+十三、WeaponStateSync（S -> C）
 发送方：`WeaponService:_fireWeaponStateSync`
 用途：同步玩家当前武器组表现数据，仅发给对应玩家。
 字段：
@@ -208,12 +238,11 @@ weapons 子字段：
 - damage
 - iconImage
 - orbitIndex
-- orbitRadius
 - orbitSpeed
 - orbitDirection
 - auraRadius
 
-十三、CombatFeedback（S -> C）
+十四、CombatFeedback（S -> C）
 发送方：`CombatService:_fireCombatFeedback`
 用途：武器对武器、武器对玩家、击杀等战斗表现广播。
 字段：
@@ -229,7 +258,7 @@ weapons 子字段：
 - WeaponHitPlayer
 - PlayerKilled
 
-十四、BuffFeedback（S -> C）
+十五、BuffFeedback（S -> C）
 发送方：`BuffService:_fireBuffFeedback`
 用途：玩家获得限时 Buff。
 字段：
@@ -240,7 +269,7 @@ weapons 子字段：
 - timestamp
 当前 buffType 为 `DamageMultiplier`。
 
-十五、BossFeedback（S -> C）
+十六、BossFeedback（S -> C）
 发送方：`BossService:_fireBossFeedback`
 用途：Boss 刷新反馈广播。
 字段：
@@ -251,7 +280,7 @@ weapons 子字段：
 - timestamp
 当前 eventType 为 `BossSpawned`。
 
-十六、LeaderboardSync（S -> C）
+十七、LeaderboardSync（S -> C）
 发送方：`LeaderboardService:_broadcast`
 用途：同步单服和全局排行榜。
 字段：
@@ -268,7 +297,7 @@ global 字段：
 - playtime
 - kills
 
-十七、ArenaProgressSync（S -> C）
+十八、ArenaProgressSync（S -> C）
 发送方：`ArenaProgressService:_broadcast`
 用途：同步当前服务器内正在战场且存活的真实玩家等级进度表现。
 字段：
@@ -282,7 +311,7 @@ players 行字段：
 - level
 说明：客户端按 `(level - minLevel) / (maxLevel - minLevel)` 摆放头像；单人或全员同级时统一放到进度条终点。
 
-十八、当前保留但主线未接入事件
+十九、当前保留但主线未接入事件
 1.PickupFeedback：
 - `RemoteEventService` 仍会创建。
 - 当前 `PickupService` 为空实现，主线资源改由 `ExperienceOrbService` 和 `BuffService` 处理。
@@ -324,6 +353,15 @@ players 行字段：
 10. PromptGroupJoin：
 - 发送方：`GMCommandService` 的 Studio-only `/groupjoin` 命令。
 - 用途：仅用于 Studio 测试，通知当前客户端直接调用 Roblox 官方加群系统弹窗，不发奖励、不改领取状态。
+
+11. NukeCinematic：
+- 发送方：`NukeService:_fireCinematic`
+- 用途：核弹购买成功后广播客户端播放核弹表现。
+
+12. NukeLocalMonsterSweep：
+- 接收方：`NukeService:_handleLocalMonsterSweep`
+- 用途：客户端核弹清除本地普通怪后，只提交当前 sessionId 和已存在 token 列表；服务端通过 `LocalMonsterRewardService:ConsumeNukeSweepTokens` 按未消费授权记录结算。
+- 字段：`sessionId`、`tokens`、`timestamp`。
 
 =====================================================
 列表结束

@@ -9,6 +9,8 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/ArenaProgress
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
     if sharedFolder then
@@ -141,6 +143,11 @@ function ArenaProgressController:_applyVisibilityFromState()
     local shouldShow = self._latestPlayerState
         and self._latestPlayerState.isInArena == true
         and self._latestPlayerState.alive == true
+    if ModalUiController:IsAnyOpen() then
+        ModalUiController:SetRestoredVisible(self._progressRoot, shouldShow == true)
+        self._progressRoot.Visible = false
+        return
+    end
     self._progressRoot.Visible = shouldShow == true
 end
 

@@ -9,6 +9,7 @@ Studio放置路径: ServerScriptService/Services/PotionService
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local ActorUtils = require(script.Parent:WaitForChild("ActorUtils"))
 
@@ -33,6 +34,7 @@ local function requireSharedModule(moduleName)
 end
 
 local PotionConfig = requireSharedModule("PotionConfig")
+local GameConfig = requireSharedModule("GameConfig")
 
 local PotionService = {}
 
@@ -45,6 +47,9 @@ PotionService._requestPotionActionConnection = nil
 PotionService._studioBotCommandConnection = nil
 PotionService._heartbeatConnection = nil
 PotionService._nextExpireCheckClock = 0
+PotionService._bossPotionDropFolder = nil
+PotionService._bossPotionDropsById = {}
+PotionService._nextBossPotionDropId = 1
 
 local function getPotionKey(potionId)
     local resolvedPotionId = math.floor(tonumber(potionId) or 0)
@@ -66,6 +71,189 @@ local function getPlayerByUserId(userId)
         return nil
     end
     return Players:GetPlayerByUserId(resolvedUserId)
+end
+
+local function findOrCreateFolder(parent, folderName)
+    local folder = parent:FindFirstChild(folderName)
+    if folder and folder:IsA("Folder") then
+        return folder
+    end
+
+    folder = Instance.new("Folder")
+    folder.Name = folderName
+    folder.Parent = parent
+    return folder
+end
+
+local function getBossPotionDropRuntimeFolderName()
+    local bossConfig = GameConfig.BOSS or {}
+    return tostring(bossConfig.PotionDropRuntimeFolderName or "BossPotionDrops")
+end
+
+local function getModelRootFolder()
+    return ReplicatedStorage:FindFirstChild((GameConfig.MONSTER and GameConfig.MONSTER.ModelRootFolderName) or "Model")
+end
+
+local function getPotionTemplate(potion)
+    local modelRoot = getModelRootFolder()
+    local potionFolder = modelRoot and modelRoot:FindFirstChild("Potion")
+    local modelName = potion and potion.ModelName
+    local template = modelName and potionFolder and potionFolder:FindFirstChild(modelName)
+    if template and (template:IsA("Model") or template:IsA("BasePart")) then
+        return template
+    end
+    return nil
+end
+
+local function getBaseParts(instance)
+    local parts = {}
+    if instance:IsA("BasePart") then
+        table.insert(parts, instance)
+        return parts
+    end
+
+    for _, descendant in ipairs(instance:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            table.insert(parts, descendant)
+        end
+    end
+    return parts
+end
+
+local function stripScripts(instance)
+    for _, descendant in ipairs(instance:GetDescendants()) do
+        if descendant:IsA("Script") or descendant:IsA("LocalScript") or descendant:IsA("ModuleScript") then
+            descendant:Destroy()
+        end
+    end
+end
+
+local function getInstanceCFrame(instance)
+    if instance:IsA("Model") then
+        return instance:GetPivot()
+    end
+    if instance:IsA("BasePart") then
+        return instance.CFrame
+    end
+    return CFrame.new()
+end
+
+local function setInstanceCFrame(instance, cframe)
+    if instance:IsA("Model") then
+        instance:PivotTo(cframe)
+    elseif instance:IsA("BasePart") then
+        instance.CFrame = cframe
+    end
+end
+
+local function getInstancePosition(instance)
+    if instance:IsA("Model") then
+        return instance:GetPivot().Position
+    end
+    if instance:IsA("BasePart") then
+        return instance.Position
+    end
+    return nil
+end
+
+local function getBottomOffsetFromPivot(instance)
+    if instance:IsA("BasePart") then
+        return -instance.Size.Y * 0.5
+    end
+    if instance:IsA("Model") then
+        local pivot = instance:GetPivot()
+        local boxCFrame, boxSize = instance:GetBoundingBox()
+        return (boxCFrame.Position.Y - (boxSize.Y * 0.5)) - pivot.Position.Y
+    end
+    return 0
+end
+
+local function attachDropTrail(instance)
+    local parts = getBaseParts(instance)
+    local trailPart = nil
+    for _, part in ipairs(parts) do
+        if not trailPart or part.Size.Magnitude > trailPart.Size.Magnitude then
+            trailPart = part
+        end
+    end
+    if not trailPart then
+        return nil
+    end
+
+    local halfY = math.max(0.1, trailPart.Size.Y * 0.5)
+    local frontAttachment = Instance.new("Attachment")
+    frontAttachment.Name = "PotionTrailFront"
+    frontAttachment.Position = Vector3.new(0, halfY * 0.45, 0)
+    frontAttachment.Parent = trailPart
+
+    local backAttachment = Instance.new("Attachment")
+    backAttachment.Name = "PotionTrailBack"
+    backAttachment.Position = Vector3.new(0, -halfY * 0.45, 0)
+    backAttachment.Parent = trailPart
+
+    local trail = Instance.new("Trail")
+    trail.Name = "PotionHomingTrail"
+    trail.Attachment0 = frontAttachment
+    trail.Attachment1 = backAttachment
+    trail.Enabled = false
+    trail.FaceCamera = true
+    trail.LightEmission = 0.75
+    trail.Lifetime = math.max(0.05, tonumber(GameConfig.EXPERIENCE.TrailLifetime) or 0.28)
+    trail.MinLength = 0.05
+    trail.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.08),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    local width = math.max(0.05, tonumber(GameConfig.EXPERIENCE.TrailWidth) or 0.45)
+    trail.WidthScale = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, width),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    trail.Color = ColorSequence.new(trailPart.Color)
+    trail.Parent = trailPart
+    return trail
+end
+
+local function getCharacterRoot(player)
+    local character = player and player.Character
+    if not character then
+        return nil
+    end
+    return character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
+end
+
+local function chooseBossPotionId()
+    local weights = GameConfig.BOSS and GameConfig.BOSS.PotionDropWeights or nil
+    if type(weights) ~= "table" then
+        return nil
+    end
+
+    local totalWeight = 0
+    for _, entry in ipairs(weights) do
+        local potion = PotionConfig.GetPotion(entry.PotionId)
+        local weight = math.max(0, tonumber(entry.Weight) or 0)
+        if potion and weight > 0 then
+            totalWeight += weight
+        end
+    end
+    if totalWeight <= 0 then
+        return nil
+    end
+
+    local roll = math.random() * totalWeight
+    local cumulative = 0
+    for _, entry in ipairs(weights) do
+        local potionId = tonumber(entry.PotionId)
+        local potion = PotionConfig.GetPotion(potionId)
+        local weight = math.max(0, tonumber(entry.Weight) or 0)
+        if potion and weight > 0 then
+            cumulative += weight
+            if roll <= cumulative then
+                return potionId
+            end
+        end
+    end
+    return nil
 end
 
 function PotionService:_fireFeedback(player, eventType, message, potionId)
@@ -98,9 +286,17 @@ function PotionService:_markDirty(player)
     end
 end
 
+function PotionService:_isPlayerLoaded(player)
+    return not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player)
+end
+
 function PotionService:_activatePotion(player, potion, source, eventType, message)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService and potion) then
         return false, "InvalidPlayer"
+    end
+    if not self:_isPlayerLoaded(player) then
+        self:_fireFeedback(player, "Failed", "DataLoading", potion and potion.Id)
+        return false, "DataLoading"
     end
 
     local now = os.time()
@@ -138,6 +334,10 @@ function PotionService:AddPotion(player, potionId, amount, source)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
         return false, "InvalidPlayer"
     end
+    if not self:_isPlayerLoaded(player) then
+        self:_fireFeedback(player, "Failed", "DataLoading", potionId)
+        return false, "DataLoading"
+    end
 
     local potion = PotionConfig.GetPotion(potionId)
     if not potion then
@@ -157,9 +357,124 @@ function PotionService:AddPotion(player, potionId, amount, source)
     return true, state.Potions[potionKey]
 end
 
+function PotionService:_createBossPotionDropFolder()
+    local runtimeRoot = findOrCreateFolder(Workspace, "Runtime")
+    return findOrCreateFolder(runtimeRoot, getBossPotionDropRuntimeFolderName())
+end
+
+function PotionService:_clearBossPotionDropFolder()
+    if not self._bossPotionDropFolder then
+        return
+    end
+    for _, child in ipairs(self._bossPotionDropFolder:GetChildren()) do
+        child:Destroy()
+    end
+end
+
+function PotionService:_destroyBossPotionDrop(dropState)
+    if not dropState then
+        return
+    end
+    if dropState.RuntimeInstance and dropState.RuntimeInstance.Parent then
+        dropState.RuntimeInstance:Destroy()
+    end
+    self._bossPotionDropsById[dropState.Id] = nil
+end
+
+function PotionService:_spawnBossPotionDropVisual(position, player, potion)
+    if not (self._bossPotionDropFolder and typeof(position) == "Vector3" and ActorUtils.IsPlayer(player) and potion) then
+        return nil
+    end
+
+    local template = getPotionTemplate(potion)
+    if not template then
+        warn(string.format("[PotionService] Boss 药水掉落缺少模板：%s", tostring(potion.ModelName)))
+        return nil
+    end
+
+    local dropId = tostring(self._nextBossPotionDropId)
+    self._nextBossPotionDropId += 1
+
+    local runtimePotion = template:Clone()
+    runtimePotion.Name = string.format("BossPotionDrop_%s_%s", tostring(potion.Id), dropId)
+    stripScripts(runtimePotion)
+
+    local parts = getBaseParts(runtimePotion)
+    for _, part in ipairs(parts) do
+        part.Anchored = true
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.Massless = true
+    end
+
+    local angle = math.random() * math.pi * 2
+    local radius = 3 + (math.random() * 2)
+    local bottomOffsetFromPivot = getBottomOffsetFromPivot(runtimePotion)
+    local groundBottomPosition = position + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+    local groundPosition = groundBottomPosition - Vector3.new(0, bottomOffsetFromPivot, 0)
+    local spawnPosition = groundPosition + Vector3.new(0, math.max(1, tonumber(GameConfig.EXPERIENCE.DropFallHeight) or 4), 0)
+    setInstanceCFrame(runtimePotion, CFrame.new(spawnPosition))
+    runtimePotion.Parent = self._bossPotionDropFolder
+
+    local trail = attachDropTrail(runtimePotion)
+    local now = os.clock()
+    local fallSeconds = math.max(0.05, tonumber(GameConfig.EXPERIENCE.DropFallSeconds) or 0.35)
+    local settleSeconds = math.max(0, tonumber(GameConfig.EXPERIENCE.GroundSettleSeconds) or 0.25)
+
+    local dropState = {
+        Id = dropId,
+        RuntimeInstance = runtimePotion,
+        TargetPlayer = player,
+        PotionId = potion.Id,
+        SpawnClock = now,
+        FallEndClock = now + fallSeconds,
+        HomingStartClock = now + fallSeconds + settleSeconds + math.max(0, tonumber(GameConfig.EXPERIENCE.HomingDelaySeconds) or 0.8),
+        ExpireClock = now + math.max(2, tonumber(GameConfig.BOSS and GameConfig.BOSS.PotionDropMaxLifetimeSeconds) or 12),
+        SpawnCFrame = CFrame.new(spawnPosition),
+        GroundCFrame = CFrame.new(groundPosition),
+        HomingSpeed = math.max(1, tonumber(GameConfig.EXPERIENCE.HomingSpeed) or 60),
+        ConsumeRadius = math.max(0.5, tonumber(GameConfig.EXPERIENCE.HomingConsumeRadius) or 2.5),
+        Trail = trail,
+    }
+
+    runtimePotion:SetAttribute("BossPotionDropId", dropId)
+    runtimePotion:SetAttribute("PotionId", potion.Id)
+    runtimePotion:SetAttribute("OwnerUserId", player.UserId)
+    self._bossPotionDropsById[dropId] = dropState
+    return dropState
+end
+
+function PotionService:DropBossPotionForPlayer(position, player, source)
+    if not (GameConfig.BOSS and GameConfig.BOSS.PotionDropEnabled == true) then
+        return false, "Disabled"
+    end
+    if not (typeof(position) == "Vector3" and ActorUtils.IsPlayer(player) and player.Parent) then
+        return false, "InvalidTarget"
+    end
+
+    local potionId = chooseBossPotionId()
+    local potion = potionId and PotionConfig.GetPotion(potionId) or nil
+    if not potion then
+        return false, "InvalidPotion"
+    end
+
+    local success, result = self:AddPotion(player, potion.Id, 1, source or "BossDrop")
+    if not success then
+        return false, result or "GrantFailed"
+    end
+
+    self:_spawnBossPotionDropVisual(position, player, potion)
+    return true, potion.Id
+end
+
 function PotionService:BuyWithDiamonds(player, potionId)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
         return false, "InvalidPlayer"
+    end
+    if not self:_isPlayerLoaded(player) then
+        self:_fireFeedback(player, "Failed", "DataLoading", potionId)
+        return false, "DataLoading"
     end
 
     local potion = PotionConfig.GetPotion(potionId)
@@ -192,12 +507,19 @@ function PotionService:GrantRobuxPotion(player, productId)
     if not potion then
         return false, "UnknownProduct"
     end
+    if not self:_isPlayerLoaded(player) then
+        return false, "DataLoading"
+    end
     return self:_activatePotion(player, potion, "RobuxPurchase", "Purchased", "RobuxPurchase")
 end
 
 function PotionService:UsePotion(player, potionId)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
         return false, "InvalidPlayer"
+    end
+    if not self:_isPlayerLoaded(player) then
+        self:_fireFeedback(player, "Failed", "DataLoading", potionId)
+        return false, "DataLoading"
     end
 
     local potion = PotionConfig.GetPotion(potionId)
@@ -291,6 +613,62 @@ function PotionService:_step()
     end
 end
 
+function PotionService:_stepBossPotionDrops(deltaTime)
+    local now = os.clock()
+    for dropId, dropState in pairs(self._bossPotionDropsById) do
+        local runtimePotion = dropState.RuntimeInstance
+        if not (runtimePotion and runtimePotion.Parent) then
+            self._bossPotionDropsById[dropId] = nil
+            continue
+        end
+
+        if now >= dropState.ExpireClock then
+            self:_destroyBossPotionDrop(dropState)
+            continue
+        end
+
+        if now < dropState.FallEndClock then
+            local duration = math.max(0.05, dropState.FallEndClock - dropState.SpawnClock)
+            local alpha = math.clamp((now - dropState.SpawnClock) / duration, 0, 1)
+            local easedAlpha = 1 - ((1 - alpha) * (1 - alpha))
+            setInstanceCFrame(runtimePotion, dropState.SpawnCFrame:Lerp(dropState.GroundCFrame, easedAlpha))
+            continue
+        end
+
+        if now < dropState.HomingStartClock then
+            local bob = math.sin((now - dropState.SpawnClock) * 7) * 0.05
+            setInstanceCFrame(runtimePotion, dropState.GroundCFrame + Vector3.new(0, bob, 0))
+            continue
+        end
+
+        if dropState.Trail and dropState.Trail.Parent then
+            dropState.Trail.Enabled = true
+        end
+
+        local rootPart = getCharacterRoot(dropState.TargetPlayer)
+        if not rootPart then
+            continue
+        end
+
+        local position = getInstancePosition(runtimePotion)
+        if not position then
+            self:_destroyBossPotionDrop(dropState)
+            continue
+        end
+
+        local offset = rootPart.Position - position
+        local distance = offset.Magnitude
+        if distance <= dropState.ConsumeRadius then
+            self:_destroyBossPotionDrop(dropState)
+        elseif distance > 0 then
+            local speedMultiplier = 1 + math.clamp((now - dropState.HomingStartClock) * 1.25, 0, 3)
+            local stepDistance = math.min(distance, dropState.HomingSpeed * speedMultiplier * math.max(0, deltaTime or 0))
+            local currentCFrame = getInstanceCFrame(runtimePotion)
+            setInstanceCFrame(runtimePotion, currentCFrame + (offset.Unit * stepDistance))
+        end
+    end
+end
+
 function PotionService:BindSystems(dependencies)
     self._rebirthService = dependencies and dependencies.RebirthService or self._rebirthService
 end
@@ -302,6 +680,10 @@ function PotionService:Init(dependencies)
     self._potionFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PotionFeedback") or nil
     self._studioBotCommandEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("StudioBotCommand") or nil
     self._nextExpireCheckClock = os.clock() + 0.5
+    self._bossPotionDropFolder = self:_createBossPotionDropFolder()
+    self._bossPotionDropsById = {}
+    self._nextBossPotionDropId = 1
+    self:_clearBossPotionDropFolder()
 
     disconnectConnection(self._requestPotionActionConnection)
     disconnectConnection(self._studioBotCommandConnection)
@@ -324,8 +706,9 @@ function PotionService:Init(dependencies)
         self._heartbeatConnection:Disconnect()
         self._heartbeatConnection = nil
     end
-    self._heartbeatConnection = RunService.Heartbeat:Connect(function()
+    self._heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
         self:_step()
+        self:_stepBossPotionDrops(deltaTime)
     end)
 end
 

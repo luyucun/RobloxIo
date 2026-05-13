@@ -35,6 +35,7 @@ end
 
 local GameConfig = requireSharedModule("GameConfig")
 local WeaponTierConfig = requireSharedModule("WeaponTierConfig")
+local SkinConfig = requireSharedModule("SkinConfig")
 
 local WeaponService = {}
 
@@ -102,6 +103,14 @@ end
 
 local function getCombatUserId(actor)
     return ActorUtils.GetCombatUserId(actor)
+end
+
+local function getWeaponOrbitSpeed()
+    return tonumber(GameConfig.WEAPON and GameConfig.WEAPON.OrbitSpeed) or 2.8
+end
+
+local function getWeaponOrbitDistance()
+    return 6
 end
 
 local function normalizeAngle(angle)
@@ -202,6 +211,21 @@ local function getPartCollisionReach(basePart)
     return math.max(size.X, size.Y, size.Z) * 0.5
 end
 
+local function copyAuraShape(sourceTemplate, targetInstance, targetAuraPart)
+    if not (sourceTemplate and targetInstance and targetAuraPart and targetAuraPart:IsA("BasePart")) then
+        return
+    end
+
+    local sourceAuraPart = resolveAuraPart(sourceTemplate)
+    if sourceAuraPart and sourceAuraPart:IsA("BasePart") then
+        local sourcePivot = getInstanceCFrame(sourceTemplate)
+        local targetPivot = getInstanceCFrame(targetInstance)
+        targetAuraPart.Size = sourceAuraPart.Size
+        targetAuraPart.CFrame = targetPivot * sourcePivot:ToObjectSpace(sourceAuraPart.CFrame)
+        targetAuraPart.Transparency = math.max(targetAuraPart.Transparency, GameConfig.WEAPON.FallbackAuraTransparency or 1)
+    end
+end
+
 local function applyWeaponAttributes(instance, weaponState)
     if not (instance and weaponState) then
         return
@@ -212,9 +236,10 @@ local function applyWeaponAttributes(instance, weaponState)
     instance:SetAttribute("Tier", weaponState.Tier)
     instance:SetAttribute("TierIndex", weaponState.TierIndex)
     instance:SetAttribute("Damage", weaponState.BaseDamage)
-    instance:SetAttribute("MaxHealth", weaponState.MaxHealth)
-    instance:SetAttribute("CurrentHealth", weaponState.CurrentHealth)
     instance:SetAttribute("IconImage", weaponState.IconImage or WeaponTierConfig.DefaultIconImage)
+    instance:SetAttribute("VisualSkinId", weaponState.VisualSkinId)
+    instance:SetAttribute("VisualTemplateName", weaponState.VisualTemplateName)
+    instance:SetAttribute("VisualIconImage", weaponState.VisualIconImage)
     instance:SetAttribute("OrbitDirection", weaponState.OrbitDirection or 1)
 
     for _, basePart in ipairs(getBaseParts(instance)) do
@@ -223,9 +248,10 @@ local function applyWeaponAttributes(instance, weaponState)
         basePart:SetAttribute("Tier", weaponState.Tier)
         basePart:SetAttribute("TierIndex", weaponState.TierIndex)
         basePart:SetAttribute("Damage", weaponState.BaseDamage)
-        basePart:SetAttribute("MaxHealth", weaponState.MaxHealth)
-        basePart:SetAttribute("CurrentHealth", weaponState.CurrentHealth)
         basePart:SetAttribute("IconImage", weaponState.IconImage or WeaponTierConfig.DefaultIconImage)
+        basePart:SetAttribute("VisualSkinId", weaponState.VisualSkinId)
+        basePart:SetAttribute("VisualTemplateName", weaponState.VisualTemplateName)
+        basePart:SetAttribute("VisualIconImage", weaponState.VisualIconImage)
         basePart:SetAttribute("OrbitDirection", weaponState.OrbitDirection or 1)
     end
 end
@@ -333,9 +359,11 @@ function WeaponService:_buildWeaponPayload(weaponStates)
             tierIndex = weaponState.TierIndex,
             damage = weaponState.BaseDamage,
             iconImage = weaponState.IconImage or WeaponTierConfig.GetIconImageForTier(weaponState.Tier),
+            visualSkinId = weaponState.VisualSkinId,
+            visualTemplateName = weaponState.VisualTemplateName,
+            visualIconImage = weaponState.VisualIconImage,
             orbitIndex = weaponState.OrbitIndex,
-            orbitRadius = weaponState.OrbitRadius,
-            orbitSpeed = weaponState.OrbitSpeed,
+            orbitSpeed = getWeaponOrbitSpeed(),
             orbitDirection = weaponState.OrbitDirection or 1,
             auraRadius = weaponState.AuraRadius or 0,
         })
@@ -351,11 +379,28 @@ function WeaponService:_fireWeaponStateSync(actor, tier, count, weaponStates)
         return
     end
 
+    local syncTier = tostring(tier or "None")
+    local syncTierIndex = WeaponTierConfig.GetTierIndex(syncTier)
+    local syncCount = math.max(0, math.floor(tonumber(count) or 0))
+    for _, weaponState in ipairs(weaponStates or {}) do
+        local tierIndex = math.max(0, math.floor(tonumber(weaponState and weaponState.TierIndex) or 0))
+        if tierIndex > syncTierIndex then
+            syncTierIndex = tierIndex
+            syncTier = tostring(weaponState.Tier or WeaponTierConfig.Order[tierIndex] or syncTier)
+        end
+    end
+    if weaponStates then
+        syncCount = #weaponStates
+    end
+
     self._weaponStateSyncEvent:FireClient(actor, {
-        weaponTier = tier,
-        weaponTierIndex = WeaponTierConfig.GetTierIndex(tier),
-        weaponCount = count,
-        weaponIcon = WeaponTierConfig.GetIconImageForTier(tier),
+        weaponTier = syncTier,
+        weaponTierIndex = syncTierIndex,
+        weaponCount = syncCount,
+        weaponIcon = WeaponTierConfig.GetIconImageForTier(syncTier),
+        visualSkinId = weaponStates and weaponStates[1] and weaponStates[1].VisualSkinId or nil,
+        visualTemplateName = weaponStates and weaponStates[1] and weaponStates[1].VisualTemplateName or nil,
+        visualIconImage = weaponStates and weaponStates[1] and weaponStates[1].VisualIconImage or nil,
         weapons = self:_buildWeaponPayload(weaponStates or {}),
         timestamp = os.clock(),
     })
@@ -638,18 +683,29 @@ function WeaponService:_createWeaponState(actor, tier, weaponIndex, totalCount, 
         return nil
     end
 
-    local template = self._templateFolder and findWeaponTemplate(self._templateFolder, tierConfig.TemplateName)
+    local baseTemplate = self._templateFolder and findWeaponTemplate(self._templateFolder, tierConfig.TemplateName)
+    local equippedSkin = ActorUtils.IsPlayer(actor) and self._playerStateService and self._playerStateService.GetEquippedSkinConfig and self._playerStateService:GetEquippedSkinConfig(actor) or nil
+    local visualTemplateName = equippedSkin and equippedSkin.TemplateName or tierConfig.TemplateName
+    local visualTemplate = self._templateFolder and findWeaponTemplate(self._templateFolder, visualTemplateName)
+    local template = visualTemplate or baseTemplate
     if not template then
         warn(string.format(
             "[WeaponService] 找不到武器模板 %s（路径: %s）",
-            tostring(tierConfig.TemplateName),
+            tostring(visualTemplateName),
             tostring(tierConfig.TemplatePath)
         ))
         return nil
     end
 
-    local runtimeWeapon = previousState and previousState.RuntimeInstance or template:Clone()
-    runtimeWeapon.Name = string.format("%s_%s_%d", tierConfig.TemplateName, tostring(getCombatUserId(actor)), weaponIndex)
+    local canReusePrevious = previousState
+        and previousState.RuntimeInstance
+        and previousState.RuntimeInstance.Parent
+        and previousState.VisualTemplateName == visualTemplateName
+    local runtimeWeapon = canReusePrevious and previousState.RuntimeInstance or template:Clone()
+    if previousState and previousState.RuntimeInstance and previousState.RuntimeInstance.Parent and previousState.RuntimeInstance ~= runtimeWeapon then
+        previousState.RuntimeInstance:Destroy()
+    end
+    runtimeWeapon.Name = string.format("%s_%s_%d", tostring(visualTemplateName), tostring(getCombatUserId(actor)), weaponIndex)
     runtimeWeapon.Parent = self._runtimeFolder
     local hitPart = self:_configureRuntimeInstance(runtimeWeapon)
     if not hitPart then
@@ -657,6 +713,7 @@ function WeaponService:_createWeaponState(actor, tier, weaponIndex, totalCount, 
         warn(string.format("[WeaponService] 武器模板 %s 内找不到 BasePart。", tostring(tierConfig.TemplateName)))
         return nil
     end
+    copyAuraShape(baseTemplate, runtimeWeapon, hitPart)
 
     local angleStep = (math.pi * 2) / math.max(1, totalCount)
     local ownerUserId = getCombatUserId(actor)
@@ -667,14 +724,10 @@ function WeaponService:_createWeaponState(actor, tier, weaponIndex, totalCount, 
     weaponState.TierIndex = tierConfig.TierIndex or WeaponTierConfig.GetTierIndex(tier)
     weaponState.BaseDamage = tierConfig.Damage
     weaponState.IconImage = tierConfig.IconImage or WeaponTierConfig.GetIconImageForTier(tier)
-    weaponState.MaxHealth = math.max(1, math.floor(tonumber(tierConfig.MaxHealth) or 1))
-    weaponState.CurrentHealth = previousState and math.clamp(
-        tonumber(previousState.CurrentHealth) or weaponState.MaxHealth,
-        0,
-        weaponState.MaxHealth
-    ) or weaponState.MaxHealth
-    weaponState.OrbitRadius = tierConfig.OrbitRadius
-    weaponState.OrbitSpeed = tierConfig.OrbitSpeed
+    weaponState.VisualSkinId = equippedSkin and equippedSkin.Id or nil
+    weaponState.VisualTemplateName = visualTemplateName
+    weaponState.VisualIconImage = equippedSkin and equippedSkin.IconImage or weaponState.IconImage
+    weaponState.OrbitSpeed = getWeaponOrbitSpeed()
     weaponState.OrbitDirection = previousState and previousState.OrbitDirection or 1
     weaponState.CurrentAngle = forcedAngle or (previousState and previousState.CurrentAngle) or ((weaponIndex - 1) * angleStep)
     weaponState.OrbitIndex = weaponIndex
@@ -708,10 +761,11 @@ function WeaponService:_calculateOrbitCenter(rootPart)
 end
 
 function WeaponService:_buildWeaponCFrame(centerPosition, weaponState)
+    local orbitDistance = getWeaponOrbitDistance()
     local offset = Vector3.new(
-        math.cos(weaponState.CurrentAngle) * weaponState.OrbitRadius,
+        math.cos(weaponState.CurrentAngle) * orbitDistance,
         GameConfig.WEAPON.OrbitHeight,
-        math.sin(weaponState.CurrentAngle) * weaponState.OrbitRadius
+        math.sin(weaponState.CurrentAngle) * orbitDistance
     )
     local position = centerPosition + offset
     local outward = Vector3.new(offset.X, 0, offset.Z)
@@ -733,6 +787,7 @@ function WeaponService:_updateWeaponTransforms(deltaTime)
                 local centerPosition = self:_calculateOrbitCenter(rootPart)
                 for _, weaponState in ipairs(weaponStates) do
                     if weaponState.Alive and weaponState.RuntimeInstance and weaponState.RuntimeInstance.Parent then
+                        weaponState.OrbitSpeed = getWeaponOrbitSpeed()
                         weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
                         self:_setRuntimeCFrame(weaponState.RuntimeInstance, self:_buildWeaponCFrame(centerPosition, weaponState))
                     end
@@ -760,14 +815,33 @@ function WeaponService:RebuildWeaponsForActor(actor)
     local combatUserId = getCombatUserId(actor)
     local previousWeaponStates = self._weaponsByCombatUserId[combatUserId] or {}
     local reusableWeaponStates = {}
+    local previousWeaponBySlot = {}
 
     for _, weaponState in ipairs(previousWeaponStates) do
         if weaponState.Alive and weaponState.RuntimeInstance and weaponState.RuntimeInstance.Parent then
             table.insert(reusableWeaponStates, weaponState)
+            local slotIndex = math.max(1, math.floor(tonumber(weaponState.OrbitIndex) or #reusableWeaponStates))
+            if not previousWeaponBySlot[slotIndex] then
+                previousWeaponBySlot[slotIndex] = weaponState
+            end
         end
     end
 
-    if resolved.Count <= 0 or resolved.Tier == "None" then
+    local desiredWeapons = {}
+    if type(resolved.Weapons) == "table" and #resolved.Weapons > 0 then
+        desiredWeapons = resolved.Weapons
+    elseif resolved.Count and resolved.Count > 0 and resolved.Tier ~= "None" then
+        for weaponIndex = 1, resolved.Count do
+            table.insert(desiredWeapons, {
+                SlotIndex = weaponIndex,
+                Tier = resolved.Tier,
+                TierIndex = resolved.TierIndex,
+            })
+        end
+    end
+
+    local desiredCount = #desiredWeapons
+    if desiredCount <= 0 or resolved.Tier == "None" then
         self:_clearActorWeapons(combatUserId)
         self._playerStateService:SetWeaponState(actor, "None", 0)
         self._playerStateService:PushState(actor)
@@ -775,69 +849,62 @@ function WeaponService:RebuildWeaponsForActor(actor)
         return
     end
 
-    local canReuse = #reusableWeaponStates > 0 and reusableWeaponStates[1].Tier == resolved.Tier
-    local shouldRedistributeAngles = not canReuse or (#reusableWeaponStates ~= resolved.Count)
     local previousLeadAngle = reusableWeaponStates[1] and reusableWeaponStates[1].CurrentAngle or 0
-    local redistributedAngles = shouldRedistributeAngles and self:_buildDistributedAngles(resolved.Count, previousLeadAngle) or nil
+    local shouldRedistributeAngles = #reusableWeaponStates ~= desiredCount
+    local redistributedAngles = shouldRedistributeAngles and self:_buildDistributedAngles(desiredCount, previousLeadAngle) or nil
+    local usedPreviousWeaponIds = {}
+    local selectedPreviousBySlot = {}
+
+    for weaponIndex, desiredWeapon in ipairs(desiredWeapons) do
+        local desiredTier = tostring(desiredWeapon.Tier or resolved.Tier or "None")
+        local previousState = previousWeaponBySlot[weaponIndex]
+        if previousState and previousState.Tier == desiredTier then
+            selectedPreviousBySlot[weaponIndex] = previousState
+            usedPreviousWeaponIds[tostring(previousState.Id)] = true
+        end
+    end
+
+    local function takeReusableWeaponState(tier)
+        for _, previousState in ipairs(reusableWeaponStates) do
+            local previousId = tostring(previousState.Id)
+            if previousState.Tier == tier and usedPreviousWeaponIds[previousId] ~= true then
+                usedPreviousWeaponIds[previousId] = true
+                return previousState
+            end
+        end
+        return nil
+    end
+
     local weaponStates = {}
-    if canReuse then
-        for weaponIndex = 1, resolved.Count do
-            local previousState = reusableWeaponStates[weaponIndex]
-            local weaponState = nil
-            if previousState then
-                weaponState = self:_createWeaponState(
-                    actor,
-                    resolved.Tier,
-                    weaponIndex,
-                    resolved.Count,
-                    previousState,
-                    redistributedAngles and redistributedAngles[weaponIndex] or nil
-                )
-            else
-                weaponState = self:_createWeaponState(
-                    actor,
-                    resolved.Tier,
-                    weaponIndex,
-                    resolved.Count,
-                    nil,
-                    redistributedAngles and redistributedAngles[weaponIndex] or nil
-                )
-            end
-            if weaponState then
-                table.insert(weaponStates, weaponState)
-            end
-        end
 
-        for weaponIndex = resolved.Count + 1, #reusableWeaponStates do
-            self:_destroyWeaponState(reusableWeaponStates[weaponIndex])
+    for weaponIndex, desiredWeapon in ipairs(desiredWeapons) do
+        local desiredTier = tostring(desiredWeapon.Tier or resolved.Tier or "None")
+        local previousState = selectedPreviousBySlot[weaponIndex] or takeReusableWeaponState(desiredTier)
+        local previousSlotState = previousWeaponBySlot[weaponIndex]
+        local replacementAngle = previousSlotState and previousSlotState.CurrentAngle or nil
+        local weaponState = self:_createWeaponState(
+            actor,
+            desiredTier,
+            weaponIndex,
+            desiredCount,
+            previousState,
+            redistributedAngles and redistributedAngles[weaponIndex] or replacementAngle
+        )
+        if weaponState then
+            table.insert(weaponStates, weaponState)
         end
+    end
 
-        for _, previousState in ipairs(previousWeaponStates) do
-            local shouldKeep = false
-            for _, currentState in ipairs(weaponStates) do
-                if currentState.Id == previousState.Id then
-                    shouldKeep = true
-                    break
-                end
-            end
-            if not shouldKeep then
-                self:_destroyWeaponState(previousState)
+    for _, previousState in ipairs(previousWeaponStates) do
+        local shouldKeep = false
+        for _, currentState in ipairs(weaponStates) do
+            if currentState.Id == previousState.Id then
+                shouldKeep = true
+                break
             end
         end
-    else
-        self:_clearActorWeapons(combatUserId)
-        for weaponIndex = 1, resolved.Count do
-            local weaponState = self:_createWeaponState(
-                actor,
-                resolved.Tier,
-                weaponIndex,
-                resolved.Count,
-                nil,
-                redistributedAngles and redistributedAngles[weaponIndex] or nil
-            )
-            if weaponState then
-                table.insert(weaponStates, weaponState)
-            end
+        if not shouldKeep then
+            self:_destroyWeaponState(previousState)
         end
     end
 
@@ -922,13 +989,20 @@ function WeaponService:HandleBrokenWeapon(weaponState, context)
     if remainingCount > 0 then
         local anchorAngle = remainingWeaponStates[1].CurrentAngle or 0
         local redistributedAngles = self:_buildDistributedAngles(remainingCount, anchorAngle)
+        local highestTier = remainingWeaponStates[1].Tier
+        local highestTierIndex = math.max(0, tonumber(remainingWeaponStates[1].TierIndex) or 0)
         for index, currentWeaponState in ipairs(remainingWeaponStates) do
             currentWeaponState.OrbitIndex = index
             currentWeaponState.CurrentAngle = redistributedAngles[index] or currentWeaponState.CurrentAngle
+            local tierIndex = math.max(0, tonumber(currentWeaponState.TierIndex) or 0)
+            if tierIndex > highestTierIndex then
+                highestTierIndex = tierIndex
+                highestTier = currentWeaponState.Tier
+            end
             self:SyncWeaponRuntimeState(currentWeaponState)
         end
         self._weaponsByCombatUserId[ownerUserId] = remainingWeaponStates
-        self._playerStateService:SetWeaponState(actor, remainingWeaponStates[1].Tier, remainingCount)
+        self._playerStateService:SetWeaponState(actor, highestTier, remainingCount)
         self._playerStateService:PushState(actor)
         self:_fireWeaponStateSync(actor, remainingWeaponStates[1].Tier, remainingCount, remainingWeaponStates)
     else

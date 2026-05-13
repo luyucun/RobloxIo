@@ -6,7 +6,6 @@ Studio放置路径: ServerScriptService/Services/BossService
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local function requireSharedModule(moduleName)
@@ -30,6 +29,7 @@ local function requireSharedModule(moduleName)
 end
 
 local GameConfig = requireSharedModule("GameConfig")
+local MonsterCatalog = requireSharedModule("MonsterCatalog")
 
 local BossService = {}
 
@@ -37,8 +37,6 @@ BossService._monsterService = nil
 BossService._battlePart = nil
 BossService._bossFeedbackEvent = nil
 BossService._activeBosses = {}
-BossService._nextSpawnClock = 0
-BossService._heartbeatConnection = nil
 
 local function resolveBattlePart()
     local battlePart = Workspace:FindFirstChild(GameConfig.ARENA.BattlePartName)
@@ -96,32 +94,44 @@ function BossService:_fireBossFeedback(eventType, bossState)
     })
 end
 
-function BossService:SpawnBoss()
+function BossService:SpawnBoss(monsterDefinitionId)
     if not (GameConfig.BOSS.Enabled and self._monsterService) then
         return nil
     end
-    if self:_getActiveBossCount() >= GameConfig.BOSS.MaxActiveCount then
+
+    local definitionId = tostring(monsterDefinitionId or GameConfig.BOSS.MonsterDefinitionId or "")
+    if definitionId == "" then
+        definitionId = tostring(GameConfig.BOSS.MonsterDefinitionId or "")
+    end
+
+    local bossDefinition = MonsterCatalog.GetDefinition(definitionId)
+    if not bossDefinition or bossDefinition.TypeName ~= "首领" then
+        warn(string.format("[BossService] Boss 定义无效或不是首领：%s", tostring(definitionId)))
         return nil
     end
 
     local bossState = self._monsterService:SpawnMonster(self:_samplePointInsideBattle(), {
         IsBoss = true,
         RuntimeName = GameConfig.BOSS.RuntimeName,
-        MonsterDefinitionId = GameConfig.BOSS.MonsterDefinitionId,
-        TemplateName = GameConfig.BOSS.TemplateName or GameConfig.MONSTER.BossTemplateName,
+        MonsterDefinitionId = definitionId,
+        TemplateName = bossDefinition.TemplateName or GameConfig.BOSS.TemplateName or GameConfig.MONSTER.BossTemplateName,
         Level = GameConfig.BOSS.Level,
-        MaxHealth = GameConfig.BOSS.MaxHealth,
-        AttackDamage = GameConfig.BOSS.AttackDamage,
-        MoveSpeed = GameConfig.BOSS.MoveSpeed,
-        AttackRange = GameConfig.BOSS.AttackRange or GameConfig.BOSS.AggroRadius,
-        AggroRadius = GameConfig.BOSS.AggroRadius,
-        DisengageDistance = GameConfig.BOSS.DisengageDistance
+        MaxHealth = bossDefinition.MaxHealth or GameConfig.BOSS.MaxHealth,
+        AttackDamage = bossDefinition.AttackDamage or GameConfig.BOSS.AttackDamage,
+        MoveSpeed = bossDefinition.MoveSpeed or GameConfig.BOSS.MoveSpeed,
+        AttackRange = bossDefinition.AttackRange or bossDefinition.AggroRadius or GameConfig.BOSS.AttackRange or GameConfig.BOSS.AggroRadius,
+        AggroRadius = bossDefinition.AggroRadius or GameConfig.BOSS.AggroRadius,
+        DisengageDistance = bossDefinition.DisengageDistance
+            or bossDefinition.AttackRange
+            or bossDefinition.AggroRadius
+            or GameConfig.BOSS.DisengageDistance
             or GameConfig.BOSS.AttackRange
             or GameConfig.BOSS.AggroRadius,
         ContactRadius = GameConfig.BOSS.ContactRadius,
         CollisionRadius = GameConfig.BOSS.CollisionRadius,
-        ExperienceDropCount = GameConfig.BOSS.ExperienceDropCount,
-        ExperiencePerOrb = GameConfig.BOSS.ExperiencePerOrb,
+        ExperienceDropCount = bossDefinition.ExperienceDropCount or GameConfig.BOSS.ExperienceDropCount,
+        ExperiencePerOrb = bossDefinition.ExperiencePerOrb or GameConfig.BOSS.ExperiencePerOrb,
+        KillScoreReward = bossDefinition.KillScoreReward or GameConfig.BOSS.KillScoreReward,
         BuffDropCount = GameConfig.BOSS.BuffDropCount,
     })
 
@@ -132,16 +142,24 @@ function BossService:SpawnBoss()
     return bossState
 end
 
-function BossService:_step()
-    if not GameConfig.BOSS.Enabled then
-        return
-    end
-    if os.clock() < self._nextSpawnClock then
-        return
+function BossService:SpawnBossesForEvent(eventConfig)
+    if type(eventConfig) ~= "table" then
+        return 0
     end
 
-    self._nextSpawnClock = os.clock() + GameConfig.BOSS.SpawnIntervalSeconds
-    self:SpawnBoss()
+    local bossDefinitionId = eventConfig.BossDefinitionId
+    local bossCount = math.max(0, math.floor(tonumber(eventConfig.BossCount) or 0))
+    if bossCount <= 0 or bossDefinitionId == nil then
+        return 0
+    end
+
+    local spawnedCount = 0
+    for _ = 1, bossCount do
+        if self:SpawnBoss(bossDefinitionId) then
+            spawnedCount += 1
+        end
+    end
+    return spawnedCount
 end
 
 function BossService:Init(dependencies)
@@ -149,21 +167,11 @@ function BossService:Init(dependencies)
     self._battlePart = resolveBattlePart()
     self._bossFeedbackEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("BossFeedback") or nil
     self._activeBosses = {}
-    self._nextSpawnClock = os.clock() + GameConfig.BOSS.InitialSpawnDelaySeconds
-
-    if self._heartbeatConnection then
-        self._heartbeatConnection:Disconnect()
-        self._heartbeatConnection = nil
-    end
 
     if not self._battlePart then
-        warn("[BossService] 找不到 workspace.Battle，Boss 刷新逻辑未启用。")
+        warn("[BossService] 找不到 workspace.Battle，事件 Boss 刷新逻辑未启用。")
         return
     end
-
-    self._heartbeatConnection = RunService.Heartbeat:Connect(function()
-        self:_step()
-    end)
 end
 
 return BossService
