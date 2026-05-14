@@ -49,6 +49,7 @@ RebirthService._respawnService = nil
 RebirthService._nukeService = nil
 RebirthService._potionService = nil
 RebirthService._wheelService = nil
+RebirthService._badgeAwardService = nil
 RebirthService._dataStore = nil
 RebirthService._dirtyByUserId = {}
 RebirthService._loadedByUserId = {}
@@ -68,7 +69,9 @@ end
 
 local function normalizeSavedData(data)
     if type(data) ~= "table" then
-        return 0, 0, GameConfig.PLAYER.BaseLevel, {}
+        return 0, 0, GameConfig.PLAYER.BaseLevel, {
+            guideCompleted = false,
+        }
     end
 
     local rebirth = math.max(0, math.floor(tonumber(data.rebirth) or tonumber(data.Rebirth) or 0))
@@ -112,6 +115,42 @@ local function normalizeSavedData(data)
                 subscriptionClaims[key] = day
             end
         end
+    end
+
+    local shopClaims = {}
+    local savedShopClaims = type(data.shopClaims) == "table" and data.shopClaims or data.ShopClaims
+    if type(savedShopClaims) == "table" then
+        for claimKey, claimed in pairs(savedShopClaims) do
+            local key = tostring(claimKey or "")
+            if key ~= "" and claimed == true then
+                shopClaims[key] = true
+            end
+        end
+    end
+
+    local options = {
+        Music = true,
+        Sfx = true,
+    }
+    local savedOptions = type(data.options) == "table" and data.options or data.Options
+    if type(savedOptions) == "table" then
+        if type(savedOptions.Music) == "boolean" then
+            options.Music = savedOptions.Music
+        elseif type(savedOptions.musicEnabled) == "boolean" then
+            options.Music = savedOptions.musicEnabled
+        end
+        if type(savedOptions.Sfx) == "boolean" then
+            options.Sfx = savedOptions.Sfx
+        elseif type(savedOptions.sfxEnabled) == "boolean" then
+            options.Sfx = savedOptions.sfxEnabled
+        end
+    end
+
+    local guideCompleted = true
+    if type(data.guideCompleted) == "boolean" then
+        guideCompleted = data.guideCompleted
+    elseif type(data.GuideCompleted) == "boolean" then
+        guideCompleted = data.GuideCompleted
     end
 
     local ownedSkins = {}
@@ -210,6 +249,9 @@ local function normalizeSavedData(data)
         potions = potions,
         groupRewards = groupRewards,
         subscriptionClaims = subscriptionClaims,
+        shopClaims = shopClaims,
+        options = options,
+        guideCompleted = guideCompleted,
         ownedSkins = ownedSkins,
         equippedSkinId = equippedSkinId,
         weaponUnlockRewards = normalizeWeaponUnlockRewards(data.weaponUnlockRewards or data.WeaponUnlockRewards),
@@ -261,6 +303,12 @@ function RebirthService:CanWritePersistentProgress(player)
     return self._loadStateByUserId[userId] == "Loaded"
 end
 
+function RebirthService:_awardNewPlayerBadge(player)
+    if self._badgeAwardService and self._badgeAwardService.AwardBadgeAsync then
+        self._badgeAwardService:AwardBadgeAsync(player, "NewPlayerWelcome", "NewPlayer")
+    end
+end
+
 function RebirthService:_loadPlayer(player)
     if not (player and player.Parent and self._playerStateService) then
         return
@@ -274,7 +322,9 @@ function RebirthService:_loadPlayer(player)
     self._loadStateByUserId[userId] = "Pending"
 
     if not self._dataStore then
-        self._playerStateService:SetRebirthData(player, 0, 0, GameConfig.PLAYER.BaseLevel, {})
+        local rebirth, rebirthScore, highestLevelReached, savedProgress = normalizeSavedData(nil)
+        self._playerStateService:SetRebirthData(player, rebirth, rebirthScore, highestLevelReached, savedProgress)
+        self:_awardNewPlayerBadge(player)
         self._loadStateByUserId[userId] = "Loaded"
         self._loadRetryClockByUserId[userId] = nil
         return
@@ -293,6 +343,9 @@ function RebirthService:_loadPlayer(player)
 
     local rebirth, rebirthScore, highestLevelReached, savedProgress = normalizeSavedData(data)
     self._playerStateService:SetRebirthData(player, rebirth, rebirthScore, highestLevelReached, savedProgress)
+    if data == nil then
+        self:_awardNewPlayerBadge(player)
+    end
     self._dirtyByUserId[userId] = nil
     self._loadStateByUserId[userId] = "Loaded"
     self._loadRetryClockByUserId[userId] = nil
@@ -317,6 +370,9 @@ function RebirthService:_savePlayer(player)
         potions = state.Potions or {},
         groupRewards = state.GroupRewards or {},
         subscriptionClaims = state.SubscriptionClaims or {},
+        shopClaims = state.ShopClaims or {},
+        options = state.Options or { Music = true, Sfx = true },
+        guideCompleted = state.GuideCompleted == true,
         ownedSkins = state.OwnedSkins or {},
         equippedSkinId = state.EquippedSkinId,
         weaponUnlockRewards = state.WeaponUnlockRewards or {},
@@ -557,6 +613,7 @@ function RebirthService:Init(dependencies)
     self._nukeService = dependencies.NukeService or self._nukeService
     self._potionService = dependencies.PotionService or self._potionService
     self._wheelService = dependencies.WheelService or self._wheelService
+    self._badgeAwardService = dependencies.BadgeAwardService or self._badgeAwardService
     self._dirtyByUserId = {}
     self._loadedByUserId = {}
     self._loadStateByUserId = {}

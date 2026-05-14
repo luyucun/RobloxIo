@@ -70,6 +70,7 @@ local function initController(controllerName, controller, dependencies)
     return false
 end
 
+local AudioSettingsController = requireLocalModule("AudioSettingsController")
 local WeaponFxController = requireLocalModule("WeaponFxController")
 local ClientEventController = requireLocalModule("ClientEventController")
 local GlobalLeaderboardController = requireLocalModule("GlobalLeaderboardController")
@@ -95,6 +96,16 @@ local OverheadLevelController = requireLocalModule("OverheadLevelController")
 local WheelController = requireLocalModule("WheelController")
 local SkinController = requireLocalModule("SkinController")
 local SubscriptionController = requireLocalModule("SubscriptionController")
+local ShopController = requireLocalModule("ShopController")
+local OptionController = requireLocalModule("OptionController")
+local BossHitFeedbackController = requireLocalModule("BossHitFeedbackController")
+local NoobMachineController = requireLocalModule("NoobMachineController")
+local GuideController = requireLocalModule("GuideController")
+
+initController("AudioSettingsController", AudioSettingsController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
 
 initController("CoreGuiController", CoreGuiController, {
     LocalPlayer = localPlayer,
@@ -109,6 +120,7 @@ initController("CameraController", CameraController, {
 initController("ClientEventController", ClientEventController, {
     LocalPlayer = localPlayer,
     RootScript = script,
+    AudioSettingsController = AudioSettingsController,
 })
 
 initController("TopStatsController", TopStatsController, {
@@ -215,13 +227,42 @@ initController("SubscriptionController", SubscriptionController, {
     RootScript = script,
 })
 
-initController("DefeatedController", DefeatedController, {
+initController("ShopController", ShopController, {
     LocalPlayer = localPlayer,
     RootScript = script,
+    WheelController = WheelController,
+    SubscriptionController = SubscriptionController,
+})
+
+initController("OptionController", OptionController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+    AudioSettingsController = AudioSettingsController,
+})
+
+initController("BossHitFeedbackController", BossHitFeedbackController, {
+	LocalPlayer = localPlayer,
+	RootScript = script,
+})
+
+initController("NoobMachineController", NoobMachineController, {
+	LocalPlayer = localPlayer,
+	RootScript = script,
+})
+
+initController("GuideController", GuideController, {
+	LocalPlayer = localPlayer,
+	RootScript = script,
+})
+
+initController("DefeatedController", DefeatedController, {
+	LocalPlayer = localPlayer,
+	RootScript = script,
 })
 
 initController("NukeCinematicController", NukeCinematicController, {
     LocalPlayer = localPlayer,
     RootScript = script,
     LocalMonsterController = LocalMonsterController,
+    AudioSettingsController = AudioSettingsController,
 })

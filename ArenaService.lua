@@ -647,6 +647,9 @@ function ArenaService:TryEnterArena(actor, options)
 
     self:_teleportActorToPosition(actor, targetPosition)
     self._playerStateService:SetInArena(actor, true)
+    if ActorUtils.IsPlayer(actor) and self._playerStateService.MarkGuideCompleted then
+        self._playerStateService:MarkGuideCompleted(actor)
+    end
     self._playerStateService:PushState(actor)
     if self._weaponService then
         self._weaponService:RebuildWeaponsForPlayer(actor)

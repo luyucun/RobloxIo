@@ -468,6 +468,11 @@ function PotionController:_resolveEntryScaleTarget()
         return icon
     end
 
+    local label = self._entry:FindFirstChild("TextLabel", true)
+    if label and label:IsA("GuiObject") then
+        return label
+    end
+
     return self._entry
 end
 
@@ -492,6 +497,11 @@ function PotionController:_resolveFriendScaleTarget()
     local icon = self._friendEntry:FindFirstChild("Icon", true)
     if icon and icon:IsA("GuiObject") then
         return icon
+    end
+
+    local label = self._friendEntry:FindFirstChild("TextLabel", true)
+    if label and label:IsA("GuiObject") then
+        return label
     end
 
     return self._friendEntry

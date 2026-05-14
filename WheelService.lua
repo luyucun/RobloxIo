@@ -40,6 +40,7 @@ WheelService._potionService = nil
 WheelService._rebirthService = nil
 WheelService._skinService = nil
 WheelService._healthService = nil
+WheelService._shopService = nil
 WheelService._wheelStateSyncEvent = nil
 WheelService._requestWheelStateSyncEvent = nil
 WheelService._requestWheelSpinEvent = nil
@@ -267,6 +268,9 @@ function WheelService:GrantPurchasedSpins(player, productId)
     self._playerStateService:AddWheelSpins(player, purchase.Spins)
     self:_markDirty(player)
     self:SyncState(player)
+    if self._shopService and self._shopService.NotifyWheelPurchase then
+        self._shopService:NotifyWheelPurchase(player, productId)
+    end
     return true
 end
 
@@ -320,6 +324,7 @@ function WheelService:BindSystems(dependencies)
     self._rebirthService = dependencies and dependencies.RebirthService or self._rebirthService
     self._skinService = dependencies and dependencies.SkinService or self._skinService
     self._healthService = dependencies and dependencies.HealthService or self._healthService
+    self._shopService = dependencies and dependencies.ShopService or self._shopService
 end
 
 function WheelService:Init(dependencies)
@@ -328,6 +333,7 @@ function WheelService:Init(dependencies)
     self._rebirthService = dependencies and dependencies.RebirthService or nil
     self._skinService = dependencies and dependencies.SkinService or nil
     self._healthService = dependencies and dependencies.HealthService or nil
+    self._shopService = dependencies and dependencies.ShopService or nil
     local remoteEventService = dependencies and dependencies.RemoteEventService or nil
     self._wheelStateSyncEvent = remoteEventService and remoteEventService:GetEvent("WheelStateSync") or nil
     self._requestWheelStateSyncEvent = remoteEventService and remoteEventService:GetEvent("RequestWheelStateSync") or nil

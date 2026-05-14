@@ -45,6 +45,7 @@ MonsterService._weaponService = nil
 MonsterService._healthService = nil
 MonsterService._experienceOrbService = nil
 MonsterService._potionService = nil
+MonsterService._bossHitFeedbackEvent = nil
 MonsterService._runtimeFolder = nil
 MonsterService._templateFolder = nil
 MonsterService._battlePart = nil
@@ -879,6 +880,27 @@ function MonsterService:SweepForNuke(sourceActor, originPosition, compressedOrbC
 end
 
 function MonsterService:ApplyWeaponDamage(monsterState, weaponState, sourceActor)
+    return self:_applyWeaponDamage(monsterState, weaponState, sourceActor, nil)
+end
+
+function MonsterService:_fireBossHitFeedback(monsterState, sourceActor, appliedDamage, hitPosition)
+    if not (self._bossHitFeedbackEvent and monsterState and monsterState.IsBoss) then
+        return
+    end
+
+    local bossPosition = getInstancePosition(monsterState.RuntimeInstance)
+    self._bossHitFeedbackEvent:FireAllClients({
+        bossId = monsterState.Id,
+        damage = math.max(0, math.floor(tonumber(appliedDamage) or 0)),
+        remainingHealth = math.max(0, math.floor(tonumber(monsterState.CurrentHealth) or 0)),
+        maxHealth = math.max(1, math.floor(tonumber(monsterState.MaxHealth) or 1)),
+        hitPosition = typeof(hitPosition) == "Vector3" and hitPosition or bossPosition,
+        attackerUserId = ActorUtils.IsPlayer(sourceActor) and sourceActor.UserId or nil,
+        timestamp = os.clock(),
+    })
+end
+
+function MonsterService:_applyWeaponDamage(monsterState, weaponState, sourceActor, hitPosition)
     if not (monsterState and weaponState and monsterState.Alive) then
         return false
     end
@@ -899,6 +921,7 @@ function MonsterService:ApplyWeaponDamage(monsterState, weaponState, sourceActor
     end
     if monsterState.IsBoss then
         self:_updateBossHealthBar(monsterState)
+        self:_fireBossHitFeedback(monsterState, sourceActor, appliedDamage, hitPosition)
     end
 
     if monsterState.CurrentHealth <= 0 then
@@ -926,7 +949,7 @@ function MonsterService:_stepWeaponHits()
                             local cooldownKey = tostring(weaponState.Id) .. ":" .. monsterState.Id
                             if not self._weaponHitCooldowns[cooldownKey] then
                                 self._weaponHitCooldowns[cooldownKey] = now + GameConfig.MONSTER.WeaponHitCooldownSeconds
-                                self:ApplyWeaponDamage(monsterState, weaponState, actor)
+                                self:_applyWeaponDamage(monsterState, weaponState, actor, weaponPosition)
                             end
                         end
                     end
@@ -966,6 +989,7 @@ function MonsterService:Init(dependencies)
     self._experienceOrbService = dependencies.ExperienceOrbService
     self._buffService = dependencies.BuffService
     self._potionService = dependencies.PotionService
+    self._bossHitFeedbackEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("BossHitFeedback") or nil
     configureCollisionGroups()
     self._battlePart = resolveBattlePart()
     self._runtimeFolder = self:_createRuntimeFolder()

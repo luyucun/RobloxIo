@@ -45,9 +45,16 @@ ClientEventController._latestLeaderboard = nil
 ClientEventController._latestFeedbackByName = {}
 ClientEventController._localOrbFolder = nil
 ClientEventController._localOrbs = {}
+ClientEventController._audioSettings = nil
 
 local LEVEL_UP_TEXT_SLIDE_OFFSET = UDim2.fromScale(0, 0.35)
 local LEVEL_UP_TEXT_TWEEN_INFO = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local EXPERIENCE_FALLBACK_COLORS = {
+    Color3.fromRGB(226, 61, 48),
+    Color3.fromRGB(255, 214, 58),
+    Color3.fromRGB(54, 126, 255),
+    Color3.fromRGB(74, 205, 86),
+}
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -77,34 +84,32 @@ local function findOrCreateLocalFolder(parent, folderName)
     return folder
 end
 
-local EXPERIENCE_TEMPLATE_NAMES = {
-    "ExperienceBlockRed",
-    "ExperienceBlockYellow",
-    "ExperienceBlockBlue",
-    "ExperienceBlockGreen",
-}
-
-local EXPERIENCE_FALLBACK_COLORS = {
-    ExperienceBlockRed = Color3.fromRGB(226, 61, 48),
-    ExperienceBlockYellow = Color3.fromRGB(255, 214, 58),
-    ExperienceBlockBlue = Color3.fromRGB(54, 126, 255),
-    ExperienceBlockGreen = Color3.fromRGB(74, 205, 86),
-}
-
 local function resolveExperienceTemplates()
     local modelRoot = ReplicatedStorage:FindFirstChild(GameConfig.EXPERIENCE.ModelRootFolderName)
     local itemFolder = modelRoot and modelRoot:FindFirstChild(GameConfig.EXPERIENCE.ItemFolderName)
-    local templateFolder = itemFolder and itemFolder:FindFirstChild(GameConfig.EXPERIENCE.TemplateFolderName or "ExperienceBlocks")
+    local templateFolderName = GameConfig.EXPERIENCE.TemplateFolderName or "ExperienceBlocks"
+    local templateFolder = itemFolder and itemFolder:FindFirstChild(templateFolderName)
     local templates = {}
     if templateFolder then
-        for _, templateName in ipairs(EXPERIENCE_TEMPLATE_NAMES) do
-            local template = templateFolder:FindFirstChild(templateName)
-            if template and template:IsA("BasePart") then
-                table.insert(templates, template)
+        for _, child in ipairs(templateFolder:GetChildren()) do
+            if child:IsA("BasePart") then
+                table.insert(templates, child)
             end
         end
     end
-    return templates
+    if #templates > 0 then
+        table.sort(templates, function(a, b)
+            return a.Name < b.Name
+        end)
+        return templates
+    end
+
+    local templateName = GameConfig.EXPERIENCE.TemplateName or "ExperienceOrb"
+    local template = itemFolder and itemFolder:FindFirstChild(templateName)
+    if template and template:IsA("BasePart") then
+        return { template }
+    end
+    return {}
 end
 
 local function stripScripts(instance)
@@ -116,12 +121,11 @@ local function stripScripts(instance)
 end
 
 local function createFallbackOrbPart()
-    local templateName = EXPERIENCE_TEMPLATE_NAMES[math.random(1, #EXPERIENCE_TEMPLATE_NAMES)]
     local orb = Instance.new("Part")
-    orb.Name = templateName
+    orb.Name = "ExperienceBlockFallback"
     orb.Shape = Enum.PartType.Block
     orb.Material = Enum.Material.SmoothPlastic
-    orb.Color = EXPERIENCE_FALLBACK_COLORS[templateName] or Color3.fromRGB(255, 214, 58)
+    orb.Color = EXPERIENCE_FALLBACK_COLORS[math.random(1, #EXPERIENCE_FALLBACK_COLORS)]
     orb.Size = Vector3.new(0.9, 0.9, 0.9)
     orb.Anchored = true
     orb.CanCollide = false
@@ -131,8 +135,7 @@ local function createFallbackOrbPart()
     return orb
 end
 
-local function createLocalOrbPart(templates)
-    local template = #templates > 0 and templates[math.random(1, #templates)] or nil
+local function createLocalOrbPart(template)
     local orb = template and template:Clone() or createFallbackOrbPart()
     stripScripts(orb)
     orb.Anchored = true
@@ -263,8 +266,12 @@ function ClientEventController:_spawnExperienceDrop(payload)
     for _, orbPayload in ipairs(payload.orbs) do
         local position = orbPayload.position
         if typeof(position) == "Vector3" then
-            local orb = createLocalOrbPart(templates)
-            orb.Name = string.format("ExperienceOrb_Client_%s_%02d", dropId, tonumber(orbPayload.index) or 0)
+            local template = nil
+            if #templates > 0 then
+                template = templates[math.random(1, #templates)]
+            end
+            local orb = createLocalOrbPart(template)
+            orb.Name = string.format("ExperienceBlock_Client_%s_%02d", dropId, tonumber(orbPayload.index) or 0)
             attachOrbTrail(orb)
             local groundPosition = position
             local spawnPosition = groundPosition + Vector3.new(
@@ -349,6 +356,11 @@ end
 function ClientEventController:_playSound(soundName, soundId)
     local sound = getAudioSound(soundName, soundId)
     if not sound then
+        return
+    end
+
+    if self._audioSettings and self._audioSettings.PlaySfx then
+        self._audioSettings:PlaySfx(sound, true)
         return
     end
 
@@ -467,6 +479,7 @@ end
 
 function ClientEventController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or nil
+    self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
     disconnectAll(self._connections)
     if self._renderConnection then
         self._renderConnection:Disconnect()

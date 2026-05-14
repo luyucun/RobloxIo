@@ -65,7 +65,7 @@ local HOVER_SCALE = 1.05
 local PRESS_SCALE = 0.92
 local ENTRY_HOVER_SCALE = 1.1
 local ENTRY_PRESS_SCALE = 0.9
-local HOVER_ROTATION = 18
+local HOVER_ROTATION = 20
 local HOVER_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local PRESS_TWEEN_INFO = TweenInfo.new(0.07, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local RESET_TWEEN_INFO = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -565,6 +565,37 @@ function SkinController:_handleFeedback(payload)
     end
 end
 
+function SkinController:_resolveEntryScaleTarget()
+    if not self._leftEntry then
+        return nil
+    end
+
+    local icon = self._leftEntry:FindFirstChild("Icon", true)
+    if icon and icon:IsA("GuiObject") then
+        return icon
+    end
+
+    local label = self._leftEntry:FindFirstChild("TextLabel", true)
+    if label and label:IsA("GuiObject") then
+        return label
+    end
+
+    return self._leftEntry
+end
+
+function SkinController:_resolveEntryRotationTarget()
+    if not self._leftEntry then
+        return nil
+    end
+
+    local icon = self._leftEntry:FindFirstChild("Icon", true)
+    if icon and icon:IsA("GuiObject") then
+        return icon
+    end
+
+    return self:_resolveEntryScaleTarget()
+end
+
 function SkinController:_bindUi(silent)
     local mainGui = findMainGui(self._localPlayer)
     self._mainGui = mainGui
@@ -601,13 +632,15 @@ function SkinController:_bindUi(silent)
     end
 
     local leftButton = leftEntry:FindFirstChildWhichIsA("GuiButton", true)
+    local entryScaleTarget = self:_resolveEntryScaleTarget()
+    local entryRotationTarget = self:_resolveEntryRotationTarget()
     self:_bindButton(leftButton, function()
         self:_setPanelOpen(true)
     end, {
-        ScaleTarget = leftEntry,
+        ScaleTarget = entryScaleTarget or leftButton,
         HoverScale = ENTRY_HOVER_SCALE,
         PressScale = ENTRY_PRESS_SCALE,
-        RotationTarget = leftEntry,
+        RotationTarget = entryRotationTarget,
         HoverRotation = HOVER_ROTATION,
     })
 

@@ -37,6 +37,7 @@ local SkinService = {}
 
 SkinService._playerStateService = nil
 SkinService._rebirthService = nil
+SkinService._shopService = nil
 SkinService._skinStateSyncEvent = nil
 SkinService._requestSkinStateSyncEvent = nil
 SkinService._requestSkinPurchaseEvent = nil
@@ -294,7 +295,11 @@ function SkinService:_tryGamePassGrant(player, skin)
         return false, reason or "GamePassNotOwned"
     end
 
-    return self:GrantSkin(player, skin.Id, "GamePass")
+    local success, reason = self:GrantSkin(player, skin.Id, "GamePass")
+    if success and self._shopService and self._shopService.NotifySkinPurchase then
+        self._shopService:NotifySkinPurchase(player, skin.Id, skin.GamePassId)
+    end
+    return success, reason
 end
 
 function SkinService:_handlePurchaseRequest(player, skinId)
@@ -371,11 +376,13 @@ end
 function SkinService:BindSystems(dependencies)
     self._playerStateService = dependencies and dependencies.PlayerStateService or self._playerStateService
     self._rebirthService = dependencies and dependencies.RebirthService or self._rebirthService
+    self._shopService = dependencies and dependencies.ShopService or self._shopService
 end
 
 function SkinService:Init(dependencies)
     self._playerStateService = dependencies and dependencies.PlayerStateService or nil
     self._rebirthService = dependencies and dependencies.RebirthService or nil
+    self._shopService = dependencies and dependencies.ShopService or nil
     local remoteEventService = dependencies and dependencies.RemoteEventService or nil
     self._skinStateSyncEvent = remoteEventService and remoteEventService:GetEvent("SkinStateSync") or nil
     self._requestSkinStateSyncEvent = remoteEventService and remoteEventService:GetEvent("RequestSkinStateSync") or nil

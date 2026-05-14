@@ -74,6 +74,7 @@ local HOVER_SCALE = 1.05
 local PRESS_SCALE = 0.92
 local ENTRY_HOVER_SCALE = 1.1
 local ENTRY_PRESS_SCALE = 0.9
+local HOVER_ROTATION = 20
 local HOVER_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local PRESS_TWEEN_INFO = TweenInfo.new(0.07, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local RESET_TWEEN_INFO = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -206,18 +207,26 @@ end
 
 function SubscriptionController:_applyButtonState(binding)
     local scale = binding.baseScale
+    local rotation = binding.baseRotation
     local tweenInfo = RESET_TWEEN_INFO
     if binding.isPressed then
         scale = binding.baseScale * binding.pressScale
+        rotation = binding.baseRotation + binding.hoverRotation
         tweenInfo = PRESS_TWEEN_INFO
     elseif binding.isHovered then
         scale = binding.baseScale * binding.hoverScale
+        rotation = binding.baseRotation + binding.hoverRotation
         tweenInfo = HOVER_TWEEN_INFO
     end
 
     playTween(binding, "scale", binding.uiScale, tweenInfo, {
         Scale = scale,
     })
+    if binding.rotationTarget then
+        playTween(binding, "rotation", binding.rotationTarget, tweenInfo, {
+            Rotation = rotation,
+        })
+    end
 end
 
 function SubscriptionController:_bindButton(button, onActivated, options)
@@ -226,6 +235,7 @@ function SubscriptionController:_bindButton(button, onActivated, options)
     end
 
     local scaleTarget = type(options) == "table" and options.ScaleTarget or button
+    local rotationTarget = type(options) == "table" and options.RotationTarget or nil
     local uiScale = ensureUiScale(scaleTarget)
     if not uiScale then
         return
@@ -234,9 +244,12 @@ function SubscriptionController:_bindButton(button, onActivated, options)
     local binding = {
         button = button,
         uiScale = uiScale,
+        rotationTarget = rotationTarget,
         baseScale = uiScale.Scale,
+        baseRotation = rotationTarget and rotationTarget.Rotation or 0,
         hoverScale = type(options) == "table" and tonumber(options.HoverScale) or HOVER_SCALE,
         pressScale = type(options) == "table" and tonumber(options.PressScale) or PRESS_SCALE,
+        hoverRotation = type(options) == "table" and tonumber(options.HoverRotation) or 0,
         isHovered = false,
         isPressed = false,
         tweens = {},
@@ -290,8 +303,42 @@ function SubscriptionController:_disconnectButtonBindings()
         if binding.uiScale and binding.uiScale.Parent then
             binding.uiScale.Scale = binding.baseScale
         end
+        if binding.rotationTarget and binding.rotationTarget.Parent then
+            binding.rotationTarget.Rotation = binding.baseRotation
+        end
     end
     table.clear(self._buttonBindings)
+end
+
+function SubscriptionController:_resolveClubScaleTarget()
+    if not self._clubEntry then
+        return nil
+    end
+
+    local icon = self._clubEntry:FindFirstChild("Icon", true)
+    if icon and icon:IsA("GuiObject") then
+        return icon
+    end
+
+    local label = self._clubEntry:FindFirstChild("TextLabel", true)
+    if label and label:IsA("GuiObject") then
+        return label
+    end
+
+    return self._clubEntry
+end
+
+function SubscriptionController:_resolveClubRotationTarget()
+    if not self._clubEntry then
+        return nil
+    end
+
+    local icon = self._clubEntry:FindFirstChild("Icon", true)
+    if icon and icon:IsA("GuiObject") then
+        return icon
+    end
+
+    return self:_resolveClubScaleTarget()
 end
 
 function SubscriptionController:_cancelPanelTweens()
@@ -534,6 +581,17 @@ function SubscriptionController:_handleFeedback(payload)
     end
 end
 
+function SubscriptionController:Open()
+    if not self._panel then
+        self:_bindUi(true)
+    end
+    self:_setOpen(true)
+end
+
+function SubscriptionController:PromptPurchase()
+    self:_promptPurchase()
+end
+
 function SubscriptionController:_bindUi(silent)
     self:_disconnectButtonBindings()
 
@@ -581,12 +639,16 @@ function SubscriptionController:_bindUi(silent)
     self._closeButton = title and select(1, findButton(title, "CloseButton")) or (self._panel and select(1, findButton(self._panel, "CloseButton")) or nil)
 
     if self._clubButton then
+        local clubScaleTarget = self:_resolveClubScaleTarget()
+        local clubRotationTarget = self:_resolveClubRotationTarget()
         self:_bindButton(self._clubButton, function()
             self:_setOpen(true)
         end, {
-            ScaleTarget = self._clubEntry or self._clubButton,
+            ScaleTarget = clubScaleTarget or self._clubButton,
+            RotationTarget = clubRotationTarget,
             HoverScale = ENTRY_HOVER_SCALE,
             PressScale = ENTRY_PRESS_SCALE,
+            HoverRotation = HOVER_ROTATION,
         })
     end
     if self._closeButton then

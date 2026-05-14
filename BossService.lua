@@ -105,7 +105,7 @@ function BossService:SpawnBoss(monsterDefinitionId)
     end
 
     local bossDefinition = MonsterCatalog.GetDefinition(definitionId)
-    if not bossDefinition or bossDefinition.TypeName ~= "首领" then
+    if not bossDefinition or (MonsterCatalog.IsBossDefinition and not MonsterCatalog.IsBossDefinition(bossDefinition)) then
         warn(string.format("[BossService] Boss 定义无效或不是首领：%s", tostring(definitionId)))
         return nil
     end

@@ -32,6 +32,7 @@ local function requireSharedModule(moduleName)
 end
 
 local RemoteNames = requireSharedModule("RemoteNames")
+local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
 local JoinGameController = {}
 
@@ -231,27 +232,7 @@ function JoinGameController:_applyModalUi()
     end
 
     table.clear(self._hiddenUiOriginalVisibleByNode)
-    if self._mainGui then
-        for _, child in ipairs(self._mainGui:GetChildren()) do
-            if child:IsA("GuiObject")
-                and child ~= self._joinGameRoot
-                and not child:IsAncestorOf(self._joinGameRoot)
-                and not self._joinGameRoot:IsAncestorOf(child)
-            then
-                self._hiddenUiOriginalVisibleByNode[child] = child.Visible
-                child.Visible = false
-            end
-        end
-    end
-
-    self._blurEffect = findBlurEffect()
-    if self._blurEffect then
-        self._blurOriginalEnabled = self._blurEffect.Enabled
-        self._blurEffect.Enabled = true
-    else
-        self._blurOriginalEnabled = nil
-    end
-
+    ModalUiController:Acquire("JoinGame", self._joinGameRoot)
     self._isModalApplied = true
 end
 
@@ -260,16 +241,8 @@ function JoinGameController:_restoreModalUi()
         return
     end
 
-    for guiObject, originalVisible in pairs(self._hiddenUiOriginalVisibleByNode) do
-        if guiObject and guiObject.Parent and guiObject:IsA("GuiObject") then
-            guiObject.Visible = originalVisible == true
-        end
-    end
     table.clear(self._hiddenUiOriginalVisibleByNode)
-
-    if self._blurEffect and self._blurEffect.Parent and self._blurOriginalEnabled ~= nil then
-        self._blurEffect.Enabled = self._blurOriginalEnabled == true
-    end
+    ModalUiController:Release("JoinGame")
     self._blurEffect = nil
     self._blurOriginalEnabled = nil
     self._isModalApplied = false

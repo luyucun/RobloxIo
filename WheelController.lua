@@ -46,6 +46,10 @@ WheelController._panel = nil
 WheelController._wheelIcon = nil
 WheelController._wheelIconClickButton = nil
 WheelController._wheelColorBg = nil
+WheelController._wheelClaim = nil
+WheelController._wheelClaimTemplate = nil
+WheelController._wheelClaimGiftSourceRoot = nil
+WheelController._wheelClaimGeneratedItem = nil
 WheelController._infoText = nil
 WheelController._freeCountdownText = nil
 WheelController._remainingText = nil
@@ -55,6 +59,7 @@ WheelController._requestStateEvent = nil
 WheelController._stateSyncEvent = nil
 WheelController._requestSpinEvent = nil
 WheelController._spinResultEvent = nil
+WheelController._requestPurchaseContextEvent = nil
 WheelController._latestState = {
     wheelSpins = 0,
     nextFreeSpinInSeconds = WheelConfig.FreeSpinIntervalSeconds,
@@ -67,6 +72,8 @@ WheelController._panelTweens = {}
 WheelController._panelAnimationSerial = 0
 WheelController._warningToken = 0
 WheelController._spinTween = nil
+WheelController._wheelClaimPopupSerial = 0
+WheelController._wheelClaimTweens = {}
 
 local HOVER_SCALE = 1.06
 local PRESS_SCALE = 0.92
@@ -85,6 +92,12 @@ local CLOSE_SHRINK_DURATION = 0.14
 local ICON_ROTATION_SPEED = 36
 local SPIN_DURATION_SECONDS = 3
 local SPIN_EXTRA_TURNS = 5
+local WHEEL_CLAIM_VISIBLE_SECONDS = 2
+local WHEEL_CLAIM_FROM_SCALE = 0.55
+local WHEEL_CLAIM_OVERSHOOT_SCALE = 1.12
+local WHEEL_CLAIM_POP_DURATION = 0.18
+local WHEEL_CLAIM_SETTLE_DURATION = 0.1
+local WHEEL_CLAIM_MODAL_OWNER = "WheelClaim"
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -343,6 +356,149 @@ function WheelController:_cancelPanelTweens()
     table.clear(self._panelTweens)
 end
 
+function WheelController:_cancelWheelClaimTweens()
+    for _, tween in ipairs(self._wheelClaimTweens) do
+        if tween then
+            tween:Cancel()
+        end
+    end
+    table.clear(self._wheelClaimTweens)
+end
+
+function WheelController:_clearWheelClaimItem()
+    if self._wheelClaimGeneratedItem and self._wheelClaimGeneratedItem.Parent then
+        self._wheelClaimGeneratedItem:Destroy()
+    end
+    self._wheelClaimGeneratedItem = nil
+end
+
+function WheelController:_hideWheelClaim()
+    self:_cancelWheelClaimTweens()
+    self:_clearWheelClaimItem()
+    if self._wheelClaim and self._wheelClaim.Parent then
+        self._wheelClaim.Visible = false
+    end
+    ModalUiController:Release(WHEEL_CLAIM_MODAL_OWNER)
+end
+
+function WheelController:_findWheelClaimGiftSourceRoot()
+    local uiFolder = ReplicatedStorage:FindFirstChild("UI")
+    local wheelBg = uiFolder and uiFolder:FindFirstChild("WheelBg")
+    return wheelBg and wheelBg:FindFirstChild("WheelColorBg", true) or nil
+end
+
+function WheelController:_resolveRewardGiftName(reward)
+    if type(reward) ~= "table" then
+        return nil
+    end
+
+    local giftName = tostring(reward.giftName or reward.GiftName or "")
+    if giftName ~= "" then
+        return giftName
+    end
+
+    local slot = math.floor(tonumber(reward.slot or reward.Slot) or 0)
+    if slot > 0 then
+        return "Gift" .. tostring(slot)
+    end
+
+    return nil
+end
+
+function WheelController:_showWheelClaim(reward)
+    if not (self._wheelClaim and self._wheelClaim:IsA("GuiObject")) then
+        self:_bindUi(true)
+    end
+    if not (self._wheelClaim and self._wheelClaim:IsA("GuiObject")) then
+        return
+    end
+
+    local giftName = self:_resolveRewardGiftName(reward)
+    if not giftName then
+        return
+    end
+
+    local sourceRoot = self._wheelClaimGiftSourceRoot
+    if not (sourceRoot and sourceRoot.Parent) then
+        sourceRoot = self:_findWheelClaimGiftSourceRoot()
+        self._wheelClaimGiftSourceRoot = sourceRoot
+    end
+    local source = sourceRoot and sourceRoot:FindFirstChild(giftName)
+    if not (source and source:IsA("GuiObject")) then
+        return
+    end
+
+    self._wheelClaimPopupSerial += 1
+    local serial = self._wheelClaimPopupSerial
+    self:_cancelWheelClaimTweens()
+    self:_clearWheelClaimItem()
+
+    local item = source:Clone()
+    item.Name = giftName
+    item.AnchorPoint = Vector2.new(0.5, 0.5)
+    item.Rotation = 0
+    item.Size = UDim2.new(0.5, 0, 0.5, 0)
+    item.Position = UDim2.new(0.5, 0, 0.5, 0)
+    item.Visible = true
+    item.Parent = self._wheelClaim
+    self._wheelClaimGeneratedItem = item
+
+    if self._wheelClaimTemplate and self._wheelClaimTemplate:IsA("GuiObject") then
+        self._wheelClaimTemplate.Visible = false
+    end
+
+    self._wheelClaim.ZIndex = math.max(50, tonumber(self._wheelClaim.ZIndex) or 0)
+    item.ZIndex = math.max(item.ZIndex, self._wheelClaim.ZIndex + 1)
+
+    local uiScale = ensureUiScale(self._wheelClaim)
+    ModalUiController:Acquire(WHEEL_CLAIM_MODAL_OWNER, self._wheelClaim)
+    self._wheelClaim.Visible = true
+    if not uiScale then
+        task.delay(WHEEL_CLAIM_VISIBLE_SECONDS, function()
+            if self._wheelClaimPopupSerial ~= serial then
+                return
+            end
+            self:_hideWheelClaim()
+        end)
+        return
+    end
+
+    uiScale.Scale = WHEEL_CLAIM_FROM_SCALE
+    local popTween = TweenService:Create(uiScale, TweenInfo.new(WHEEL_CLAIM_POP_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Scale = WHEEL_CLAIM_OVERSHOOT_SCALE,
+    })
+    local settleTween = TweenService:Create(uiScale, TweenInfo.new(WHEEL_CLAIM_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Scale = 1,
+    })
+    self._wheelClaimTweens = { popTween, settleTween }
+    task.spawn(function()
+        popTween:Play()
+        popTween.Completed:Wait()
+        if self._wheelClaimPopupSerial ~= serial then
+            return
+        end
+
+        settleTween:Play()
+        settleTween.Completed:Wait()
+        if self._wheelClaimPopupSerial ~= serial then
+            return
+        end
+
+        uiScale.Scale = 1
+        table.clear(self._wheelClaimTweens)
+    end)
+
+    task.delay(WHEEL_CLAIM_VISIBLE_SECONDS, function()
+        if self._wheelClaimPopupSerial ~= serial then
+            return
+        end
+        if uiScale and uiScale.Parent then
+            uiScale.Scale = 1
+        end
+        self:_hideWheelClaim()
+    end)
+end
+
 function WheelController:_setOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
@@ -490,6 +646,13 @@ function WheelController:_promptPurchase(productId)
         return
     end
 
+    if self._requestPurchaseContextEvent then
+        self._requestPurchaseContextEvent:FireServer({
+            source = "Wheel",
+            purchaseType = "WheelSpins",
+            productId = resolvedProductId,
+        })
+    end
     MarketplaceService:PromptProductPurchase(self._localPlayer, resolvedProductId)
 end
 
@@ -582,6 +745,7 @@ function WheelController:_handleSpinResult(payload)
         if payload.state then
             self:_applyState(payload.state)
         end
+        self:_showWheelClaim(payload.reward)
     end)
 end
 
@@ -610,6 +774,9 @@ function WheelController:_bindUi(silent)
     self._wheelIcon = wheelIcon
     self._wheelIconClickButton = self:_ensureWheelIconClickButton()
     self._wheelColorBg = panel:FindFirstChild("WheelColorBg")
+    self._wheelClaim = mainGui:FindFirstChild("WheelClaim")
+    self._wheelClaimTemplate = self._wheelClaim and self._wheelClaim:FindFirstChild("GiftTemplate")
+    self._wheelClaimGiftSourceRoot = self:_findWheelClaimGiftSourceRoot()
     self._infoText = findDescendant(wheelIconRoot, "Text")
     local freeCountdownRoot = panel:FindFirstChild("FreeCountDownTime")
     local remainingRoot = panel:FindFirstChild("RemainingTime")
@@ -623,6 +790,12 @@ function WheelController:_bindUi(silent)
 
     if self._panel.Visible ~= false then
         self._panel.Visible = false
+    end
+    if self._wheelClaim and self._wheelClaim:IsA("GuiObject") then
+        self._wheelClaim.Visible = false
+    end
+    if self._wheelClaimTemplate and self._wheelClaimTemplate:IsA("GuiObject") then
+        self._wheelClaimTemplate.Visible = false
     end
 
     if self._wheelIconClickButton then
@@ -691,6 +864,7 @@ function WheelController:_connectRemotes()
     self._stateSyncEvent = systemEventsFolder:WaitForChild(RemoteNames.System.WheelStateSync, 10)
     self._requestSpinEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestWheelSpin, 10)
     self._spinResultEvent = systemEventsFolder:WaitForChild(RemoteNames.System.WheelSpinResult, 10)
+    self._requestPurchaseContextEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestShopPurchaseContext, 10)
 
     if self._stateSyncEvent then
         table.insert(self._connections, self._stateSyncEvent.OnClientEvent:Connect(function(payload)
@@ -719,10 +893,15 @@ function WheelController:Open()
     end
 end
 
+function WheelController:Close(immediate)
+    self:_setOpen(false, immediate == true)
+end
+
 function WheelController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
+    self:_hideWheelClaim()
 
     self:_connectRemotes()
     if not self:_bindUi(true) then

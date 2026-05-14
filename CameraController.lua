@@ -56,7 +56,10 @@ function CameraController:_getConfig()
     local minZoom = math.max(0.5, tonumber(cameraConfig.MinZoomDistance) or 15)
     local maxZoom = math.max(minZoom, tonumber(cameraConfig.MaxZoomDistance) or 60)
     local defaultZoom = math.clamp(tonumber(cameraConfig.DefaultZoomDistance) or 20, minZoom, maxZoom)
-    return minZoom, defaultZoom, maxZoom
+    local spawnLookPitchDegrees = math.clamp(tonumber(cameraConfig.SpawnLookPitchDegrees) or 35, 5, 80)
+    local spawnLookFocusHeightOffset = tonumber(cameraConfig.SpawnLookFocusHeightOffset) or 2
+    local spawnLookForwardOffset = math.max(0, tonumber(cameraConfig.SpawnLookForwardOffset) or 8)
+    return minZoom, defaultZoom, maxZoom, spawnLookPitchDegrees, spawnLookFocusHeightOffset, spawnLookForwardOffset
 end
 
 local function getCharacterRoot(player)
@@ -118,15 +121,27 @@ function CameraController:_faceCameraToPortal()
         return false
     end
 
-    local lookTarget = Vector3.new(portalPosition.X, rootPart.Position.Y + 2, portalPosition.Z)
-    local direction = lookTarget - camera.CFrame.Position
-    if direction.Magnitude <= 0.001 then
+    local _, defaultZoom, _, spawnLookPitchDegrees, spawnLookFocusHeightOffset, spawnLookForwardOffset = self:_getConfig()
+    local flatDirection = Vector3.new(
+        portalPosition.X - rootPart.Position.X,
+        0,
+        portalPosition.Z - rootPart.Position.Z
+    )
+    if flatDirection.Magnitude <= 0.001 then
         return false
     end
 
+    local forward = flatDirection.Unit
+    local pitchRadians = math.rad(spawnLookPitchDegrees)
+    local horizontalDistance = math.cos(pitchRadians) * defaultZoom
+    local verticalDistance = math.sin(pitchRadians) * defaultZoom
+    local focusPosition = rootPart.Position + Vector3.new(0, spawnLookFocusHeightOffset, 0)
+    local cameraPosition = focusPosition - (forward * horizontalDistance) + Vector3.new(0, verticalDistance, 0)
+    local lookTarget = focusPosition + (forward * spawnLookForwardOffset)
+
     camera.CameraType = Enum.CameraType.Custom
     camera.CameraSubject = player.Character and player.Character:FindFirstChildOfClass("Humanoid") or camera.CameraSubject
-    camera.CFrame = CFrame.lookAt(camera.CFrame.Position, lookTarget)
+    camera.CFrame = CFrame.lookAt(cameraPosition, lookTarget)
     return true
 end
 

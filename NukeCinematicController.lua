@@ -79,6 +79,7 @@ local NukeCinematicController = {}
 
 NukeCinematicController._localPlayer = nil
 NukeCinematicController._localMonsterController = nil
+NukeCinematicController._audioSettings = nil
 NukeCinematicController._connections = {}
 NukeCinematicController._activeSessionId = 0
 NukeCinematicController._cameraState = nil
@@ -679,7 +680,7 @@ local function prepareEffectInstance(effect)
     end
 end
 
-local function createExplosionVfx(position, durationSeconds)
+local function createExplosionVfx(position, durationSeconds, audioSettings)
     local template = getBombEffectTemplate()
     if not template then
         warn("[NukeCinematicController] Missing ReplicatedStorage/Effect/Bomb explosion effect")
@@ -707,7 +708,11 @@ local function createExplosionVfx(position, durationSeconds)
                 end)
             end
         elseif descendant:IsA("Sound") then
-            descendant:Play()
+            if audioSettings and audioSettings.PlaySfx then
+                audioSettings:PlaySfx(descendant, false)
+            else
+                descendant:Play()
+            end
         end
     end
 
@@ -720,13 +725,17 @@ local function createExplosionVfx(position, durationSeconds)
     return vfx
 end
 
-local function playAudioSound(soundName, soundId)
+local function playAudioSound(soundName, soundId, audioSettings)
     local audioConfig = GameConfig.AUDIO or {}
     local audioFolder = game:GetService("SoundService"):FindFirstChild(audioConfig.FolderName or "Audio")
     local sound = audioFolder and audioFolder:FindFirstChild(soundName)
     if sound and sound:IsA("Sound") then
         if soundId and soundId ~= "" then
             sound.SoundId = soundId
+        end
+        if audioSettings and audioSettings.PlaySfx then
+            audioSettings:PlaySfx(sound, true)
+            return
         end
         sound:Stop()
         sound.TimePosition = 0
@@ -1122,9 +1131,9 @@ function NukeCinematicController:_playCinematic(payload)
 
         Lighting.ClockTime = tonumber(payload and payload.lightingClockTime) or GameConfig.NUKE.LightingClockTime or 4
         self:_sweepLocalMonstersForNuke(payload)
-        local effect = createExplosionVfx(battleCenter, explosionSeconds)
+        local effect = createExplosionVfx(battleCenter, explosionSeconds, self._audioSettings)
         local audioConfig = GameConfig.AUDIO or {}
-        playAudioSound(audioConfig.BoomSoundName or "Boom", audioConfig.BoomSoundId or "rbxassetid://77970762255205")
+        playAudioSound(audioConfig.BoomSoundName or "Boom", audioConfig.BoomSoundId or "rbxassetid://77970762255205", self._audioSettings)
         self:_holdExplosionCamera(camera, battleCenter, explosionCameraCFrame, explosionSeconds, sessionId)
         stopExplosionVfx(effect)
         task.wait(0.9)
@@ -1137,6 +1146,7 @@ end
 function NukeCinematicController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._localMonsterController = dependencies and dependencies.LocalMonsterController or nil
+    self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
     disconnectAll(self._connections)
 
     local eventsRoot = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)

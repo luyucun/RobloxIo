@@ -128,32 +128,12 @@ local function stripScripts(instance)
     end
 end
 
-local function getInstanceCFrame(instance)
-    if instance:IsA("Model") then
-        return instance:GetPivot()
-    end
-    if instance:IsA("BasePart") then
-        return instance.CFrame
-    end
-    return CFrame.new()
-end
-
 local function setInstanceCFrame(instance, cframe)
     if instance:IsA("Model") then
         instance:PivotTo(cframe)
     elseif instance:IsA("BasePart") then
         instance.CFrame = cframe
     end
-end
-
-local function getInstancePosition(instance)
-    if instance:IsA("Model") then
-        return instance:GetPivot().Position
-    end
-    if instance:IsA("BasePart") then
-        return instance.Position
-    end
-    return nil
 end
 
 local function getBottomOffsetFromPivot(instance)
@@ -166,60 +146,6 @@ local function getBottomOffsetFromPivot(instance)
         return (boxCFrame.Position.Y - (boxSize.Y * 0.5)) - pivot.Position.Y
     end
     return 0
-end
-
-local function attachDropTrail(instance)
-    local parts = getBaseParts(instance)
-    local trailPart = nil
-    for _, part in ipairs(parts) do
-        if not trailPart or part.Size.Magnitude > trailPart.Size.Magnitude then
-            trailPart = part
-        end
-    end
-    if not trailPart then
-        return nil
-    end
-
-    local halfY = math.max(0.1, trailPart.Size.Y * 0.5)
-    local frontAttachment = Instance.new("Attachment")
-    frontAttachment.Name = "PotionTrailFront"
-    frontAttachment.Position = Vector3.new(0, halfY * 0.45, 0)
-    frontAttachment.Parent = trailPart
-
-    local backAttachment = Instance.new("Attachment")
-    backAttachment.Name = "PotionTrailBack"
-    backAttachment.Position = Vector3.new(0, -halfY * 0.45, 0)
-    backAttachment.Parent = trailPart
-
-    local trail = Instance.new("Trail")
-    trail.Name = "PotionHomingTrail"
-    trail.Attachment0 = frontAttachment
-    trail.Attachment1 = backAttachment
-    trail.Enabled = false
-    trail.FaceCamera = true
-    trail.LightEmission = 0.75
-    trail.Lifetime = math.max(0.05, tonumber(GameConfig.EXPERIENCE.TrailLifetime) or 0.28)
-    trail.MinLength = 0.05
-    trail.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.08),
-        NumberSequenceKeypoint.new(1, 1),
-    })
-    local width = math.max(0.05, tonumber(GameConfig.EXPERIENCE.TrailWidth) or 0.45)
-    trail.WidthScale = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, width),
-        NumberSequenceKeypoint.new(1, 0),
-    })
-    trail.Color = ColorSequence.new(trailPart.Color)
-    trail.Parent = trailPart
-    return trail
-end
-
-local function getCharacterRoot(player)
-    local character = player and player.Character
-    if not character then
-        return nil
-    end
-    return character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
 end
 
 local function chooseBossPotionId()
@@ -375,13 +301,59 @@ function PotionService:_destroyBossPotionDrop(dropState)
     if not dropState then
         return
     end
+    if dropState.TouchConnections then
+        for _, connection in ipairs(dropState.TouchConnections) do
+            disconnectConnection(connection)
+        end
+        dropState.TouchConnections = nil
+    end
     if dropState.RuntimeInstance and dropState.RuntimeInstance.Parent then
         dropState.RuntimeInstance:Destroy()
     end
     self._bossPotionDropsById[dropState.Id] = nil
 end
 
-function PotionService:_spawnBossPotionDropVisual(position, player, potion)
+function PotionService:_setBossPotionDropTouchEnabled(dropState, enabled)
+    if not dropState or dropState.TouchEnabled == enabled then
+        return
+    end
+
+    for _, part in ipairs(dropState.Parts or {}) do
+        if part and part.Parent then
+            part.CanTouch = enabled
+        end
+    end
+    dropState.TouchEnabled = enabled
+end
+
+function PotionService:_handleBossPotionDropTouched(dropId, hit)
+    local dropState = self._bossPotionDropsById[tostring(dropId or "")]
+    if not dropState or dropState.Collected then
+        return
+    end
+    if os.clock() < (dropState.FallEndClock or 0) then
+        return
+    end
+    if not (hit and hit:IsA("BasePart")) then
+        return
+    end
+
+    local player = dropState.TargetPlayer
+    local character = player and player.Character
+    if not (ActorUtils.IsPlayer(player) and player.Parent and character and hit:IsDescendantOf(character)) then
+        return
+    end
+
+    dropState.Collected = true
+    local success = self:AddPotion(player, dropState.PotionId, 1, dropState.Source or "BossDrop")
+    if success then
+        self:_destroyBossPotionDrop(dropState)
+    else
+        dropState.Collected = false
+    end
+end
+
+function PotionService:_spawnBossPotionDropVisual(position, player, potion, source)
     if not (self._bossPotionDropFolder and typeof(position) == "Vector3" and ActorUtils.IsPlayer(player) and potion) then
         return nil
     end
@@ -417,31 +389,37 @@ function PotionService:_spawnBossPotionDropVisual(position, player, potion)
     setInstanceCFrame(runtimePotion, CFrame.new(spawnPosition))
     runtimePotion.Parent = self._bossPotionDropFolder
 
-    local trail = attachDropTrail(runtimePotion)
     local now = os.clock()
     local fallSeconds = math.max(0.05, tonumber(GameConfig.EXPERIENCE.DropFallSeconds) or 0.35)
-    local settleSeconds = math.max(0, tonumber(GameConfig.EXPERIENCE.GroundSettleSeconds) or 0.25)
 
     local dropState = {
         Id = dropId,
         RuntimeInstance = runtimePotion,
         TargetPlayer = player,
         PotionId = potion.Id,
+        Source = tostring(source or "BossDrop"),
         SpawnClock = now,
         FallEndClock = now + fallSeconds,
-        HomingStartClock = now + fallSeconds + settleSeconds + math.max(0, tonumber(GameConfig.EXPERIENCE.HomingDelaySeconds) or 0.8),
         ExpireClock = now + math.max(2, tonumber(GameConfig.BOSS and GameConfig.BOSS.PotionDropMaxLifetimeSeconds) or 12),
         SpawnCFrame = CFrame.new(spawnPosition),
         GroundCFrame = CFrame.new(groundPosition),
-        HomingSpeed = math.max(1, tonumber(GameConfig.EXPERIENCE.HomingSpeed) or 60),
-        ConsumeRadius = math.max(0.5, tonumber(GameConfig.EXPERIENCE.HomingConsumeRadius) or 2.5),
-        Trail = trail,
+        Parts = parts,
+        TouchConnections = {},
+        TouchEnabled = false,
+        Collected = false,
     }
 
     runtimePotion:SetAttribute("BossPotionDropId", dropId)
     runtimePotion:SetAttribute("PotionId", potion.Id)
     runtimePotion:SetAttribute("OwnerUserId", player.UserId)
     self._bossPotionDropsById[dropId] = dropState
+
+    for _, part in ipairs(parts) do
+        table.insert(dropState.TouchConnections, part.Touched:Connect(function(hit)
+            self:_handleBossPotionDropTouched(dropId, hit)
+        end))
+    end
+
     return dropState
 end
 
@@ -459,12 +437,10 @@ function PotionService:DropBossPotionForPlayer(position, player, source)
         return false, "InvalidPotion"
     end
 
-    local success, result = self:AddPotion(player, potion.Id, 1, source or "BossDrop")
-    if not success then
-        return false, result or "GrantFailed"
+    local dropState = self:_spawnBossPotionDropVisual(position, player, potion, source or "BossDrop")
+    if not dropState then
+        return false, "SpawnFailed"
     end
-
-    self:_spawnBossPotionDropVisual(position, player, potion)
     return true, potion.Id
 end
 
@@ -618,7 +594,7 @@ function PotionService:_stepBossPotionDrops(deltaTime)
     for dropId, dropState in pairs(self._bossPotionDropsById) do
         local runtimePotion = dropState.RuntimeInstance
         if not (runtimePotion and runtimePotion.Parent) then
-            self._bossPotionDropsById[dropId] = nil
+            self:_destroyBossPotionDrop(dropState)
             continue
         end
 
@@ -635,37 +611,9 @@ function PotionService:_stepBossPotionDrops(deltaTime)
             continue
         end
 
-        if now < dropState.HomingStartClock then
-            local bob = math.sin((now - dropState.SpawnClock) * 7) * 0.05
-            setInstanceCFrame(runtimePotion, dropState.GroundCFrame + Vector3.new(0, bob, 0))
-            continue
-        end
-
-        if dropState.Trail and dropState.Trail.Parent then
-            dropState.Trail.Enabled = true
-        end
-
-        local rootPart = getCharacterRoot(dropState.TargetPlayer)
-        if not rootPart then
-            continue
-        end
-
-        local position = getInstancePosition(runtimePotion)
-        if not position then
-            self:_destroyBossPotionDrop(dropState)
-            continue
-        end
-
-        local offset = rootPart.Position - position
-        local distance = offset.Magnitude
-        if distance <= dropState.ConsumeRadius then
-            self:_destroyBossPotionDrop(dropState)
-        elseif distance > 0 then
-            local speedMultiplier = 1 + math.clamp((now - dropState.HomingStartClock) * 1.25, 0, 3)
-            local stepDistance = math.min(distance, dropState.HomingSpeed * speedMultiplier * math.max(0, deltaTime or 0))
-            local currentCFrame = getInstanceCFrame(runtimePotion)
-            setInstanceCFrame(runtimePotion, currentCFrame + (offset.Unit * stepDistance))
-        end
+        self:_setBossPotionDropTouchEnabled(dropState, true)
+        local bob = math.sin((now - dropState.SpawnClock) * 7) * 0.05
+        setInstanceCFrame(runtimePotion, dropState.GroundCFrame + Vector3.new(0, bob, 0))
     end
 end
 

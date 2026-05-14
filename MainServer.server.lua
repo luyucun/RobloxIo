@@ -76,6 +76,7 @@ local ArenaProgressService = requireServerModule("ArenaProgressService")
 local WheelService = requireServerModule("WheelService")
 local SkinService = requireServerModule("SkinService")
 local SubscriptionService = requireServerModule("SubscriptionService")
+local ShopService = requireServerModule("ShopService")
 
 Players.RespawnTime = GameConfig.RESPAWN.DeathRecoverySeconds
 Players.CharacterAutoLoads = false
@@ -125,6 +126,7 @@ PlayerStateService:Init({
 RebirthService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
+    BadgeAwardService = BadgeAwardService,
 })
 PotionService:Init({
     RemoteEventService = RemoteEventService,
@@ -148,6 +150,12 @@ SubscriptionService:Init({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
     BadgeAwardService = BadgeAwardService,
+})
+ShopService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
 })
 GroupRewardService:Init({
     RemoteEventService = RemoteEventService,
@@ -219,6 +227,7 @@ MonsterService:Init({
     ExperienceOrbService = ExperienceOrbService,
     BuffService = BuffService,
     PotionService = PotionService,
+    RemoteEventService = RemoteEventService,
 })
 BossService:Init({
     MonsterService = MonsterService,
@@ -267,6 +276,7 @@ RebirthService:BindSystems({
     NukeService = NukeService,
     PotionService = PotionService,
     WheelService = WheelService,
+    BadgeAwardService = BadgeAwardService,
 })
 PotionService:BindSystems({
     RebirthService = RebirthService,
@@ -277,15 +287,22 @@ WheelService:BindSystems({
     RebirthService = RebirthService,
     SkinService = SkinService,
     HealthService = HealthService,
+    ShopService = ShopService,
 })
 SkinService:BindSystems({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
+    ShopService = ShopService,
 })
 SubscriptionService:BindSystems({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
     BadgeAwardService = BadgeAwardService,
+})
+ShopService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
 })
 BotService:BindSystems({
     ArenaService = ArenaService,
@@ -309,6 +326,7 @@ local function onPlayerAdded(player)
     WheelService:OnPlayerAdded(player)
     SkinService:OnPlayerAdded(player)
     SubscriptionService:OnPlayerAdded(player)
+    ShopService:OnPlayerAdded(player)
     LeaderboardService:OnPlayerAdded(player)
     SpecialEventService:OnPlayerAdded(player)
     ArenaProgressService:OnPlayerAdded(player)
@@ -354,6 +372,7 @@ local function onPlayerRemoving(player)
     WheelService:OnPlayerRemoving(player)
     SkinService:OnPlayerRemoving(player)
     SubscriptionService:OnPlayerRemoving(player)
+    ShopService:OnPlayerRemoving(player)
     BadgeAwardService:OnPlayerRemoving(player)
     RebirthService:OnPlayerRemoving(player)
     LeaderboardService:OnPlayerRemoving(player)

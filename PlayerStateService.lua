@@ -52,8 +52,12 @@ local FRIEND_EXPERIENCE_BONUS_PER_FRIEND = 0.2
 PlayerStateService._statesByActorId = {}
 PlayerStateService._playerStateSyncEvent = nil
 PlayerStateService._requestStateSyncEvent = nil
+PlayerStateService._requestOptionStateSyncEvent = nil
+PlayerStateService._requestOptionUpdateEvent = nil
 PlayerStateService._levelUpFeedbackEvent = nil
 PlayerStateService._requestStateConnection = nil
+PlayerStateService._requestOptionStateConnection = nil
+PlayerStateService._requestOptionUpdateConnection = nil
 PlayerStateService._weaponService = nil
 PlayerStateService._weaponUnlockRewardService = nil
 PlayerStateService._leaderboardService = nil
@@ -178,6 +182,65 @@ local function normalizeSubscriptionClaims(subscriptionClaims)
         end
     end
     return normalized
+end
+
+local function normalizeShopClaims(shopClaims)
+    local normalized = {}
+    if type(shopClaims) ~= "table" then
+        return normalized
+    end
+
+    for claimKey, claimed in pairs(shopClaims) do
+        local key = tostring(claimKey or "")
+        if key ~= "" and claimed == true then
+            normalized[key] = true
+        end
+    end
+    return normalized
+end
+
+local function normalizeOptions(options)
+    local normalized = {
+        Music = true,
+        Sfx = true,
+    }
+    if type(options) ~= "table" then
+        return normalized
+    end
+
+    if type(options.Music) == "boolean" then
+        normalized.Music = options.Music
+    elseif type(options.musicEnabled) == "boolean" then
+        normalized.Music = options.musicEnabled
+    end
+
+    if type(options.Sfx) == "boolean" then
+        normalized.Sfx = options.Sfx
+    elseif type(options.sfxEnabled) == "boolean" then
+        normalized.Sfx = options.sfxEnabled
+    end
+
+    return normalized
+end
+
+local function normalizeGuideCompleted(value, defaultValue)
+    if type(value) == "boolean" then
+        return value
+    end
+    return defaultValue == true
+end
+
+local function readGuideCompleted(data, defaultValue)
+    if type(data) ~= "table" then
+        return defaultValue == true
+    end
+    if type(data.guideCompleted) == "boolean" then
+        return data.guideCompleted
+    end
+    if type(data.GuideCompleted) == "boolean" then
+        return data.GuideCompleted
+    end
+    return defaultValue == true
 end
 
 local function normalizeOwnedSkins(ownedSkins)
@@ -513,6 +576,9 @@ function PlayerStateService:_applyLevelDerivedState(state)
     state.Potions = normalizePotionInventory(state.Potions)
     state.GroupRewards = normalizeGroupRewards(state.GroupRewards)
     state.SubscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims)
+    state.ShopClaims = normalizeShopClaims(state.ShopClaims)
+    state.Options = normalizeOptions(state.Options)
+    state.GuideCompleted = normalizeGuideCompleted(state.GuideCompleted, true)
     state.OwnedSkins = normalizeOwnedSkins(state.OwnedSkins)
     state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
     state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(state.WeaponUnlockRewards)
@@ -574,6 +640,9 @@ function PlayerStateService:_createDefaultState(actor)
         Potions = {},
         GroupRewards = {},
         SubscriptionClaims = {},
+        ShopClaims = {},
+        Options = normalizeOptions(),
+        GuideCompleted = true,
         OwnedSkins = {},
         EquippedSkinId = nil,
         WeaponUnlockRewards = normalizeWeaponUnlockRewards(),
@@ -836,11 +905,21 @@ function PlayerStateService:Init(dependencies)
     self._subscriptionService = dependencies and dependencies.SubscriptionService or nil
     self._playerStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PlayerStateSync") or nil
     self._requestStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestPlayerStateSync") or nil
+    self._requestOptionStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestOptionStateSync") or nil
+    self._requestOptionUpdateEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestOptionUpdate") or nil
     self._levelUpFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LevelUpFeedback") or nil
 
     if self._requestStateConnection then
         self._requestStateConnection:Disconnect()
         self._requestStateConnection = nil
+    end
+    if self._requestOptionStateConnection then
+        self._requestOptionStateConnection:Disconnect()
+        self._requestOptionStateConnection = nil
+    end
+    if self._requestOptionUpdateConnection then
+        self._requestOptionUpdateConnection:Disconnect()
+        self._requestOptionUpdateConnection = nil
     end
 
     if self._requestStateSyncEvent then
@@ -850,6 +929,36 @@ function PlayerStateService:Init(dependencies)
                 if self._weaponUnlockRewardService and self._weaponUnlockRewardService.SyncPendingPrompt then
                     self._weaponUnlockRewardService:SyncPendingPrompt(player)
                 end
+            end
+        end)
+    end
+
+    if self._requestOptionStateSyncEvent then
+        self._requestOptionStateConnection = self._requestOptionStateSyncEvent.OnServerEvent:Connect(function(player)
+            if not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player) then
+                self:PushState(player)
+            end
+        end)
+    end
+
+    if self._requestOptionUpdateEvent then
+        self._requestOptionUpdateConnection = self._requestOptionUpdateEvent.OnServerEvent:Connect(function(player, payload)
+            if type(payload) ~= "table" then
+                return
+            end
+            if self._rebirthService and self._rebirthService.IsPlayerLoaded and not self._rebirthService:IsPlayerLoaded(player) then
+                return
+            end
+
+            local changed = false
+            if type(payload.musicEnabled) == "boolean" then
+                changed = self:SetOption(player, "Music", payload.musicEnabled) or changed
+            end
+            if type(payload.sfxEnabled) == "boolean" then
+                changed = self:SetOption(player, "Sfx", payload.sfxEnabled) or changed
+            end
+            if changed ~= true then
+                self:PushState(player)
             end
         end)
     end
@@ -914,6 +1023,8 @@ function PlayerStateService:BuildStatePayload(actor)
     local friendExperienceBonus = math.max(0, tonumber(state.FriendExperienceBonus) or 0)
     local friendCount = math.max(0, math.floor(tonumber(state.FriendCount) or 0))
     local weaponUnlockRewards = state.WeaponUnlockRewards or normalizeWeaponUnlockRewards()
+    local options = normalizeOptions(state.Options)
+    state.Options = options
     local ownedSkins = normalizeOwnedSkins(state.OwnedSkins)
     state.OwnedSkins = ownedSkins
     state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, ownedSkins)
@@ -957,6 +1068,12 @@ function PlayerStateService:BuildStatePayload(actor)
         potions = state.Potions,
         groupRewards = state.GroupRewards,
         subscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims),
+        shopClaims = copyBooleanMap(normalizeShopClaims(state.ShopClaims)),
+        guideCompleted = state.GuideCompleted == true,
+        options = {
+            musicEnabled = options.Music == true,
+            sfxEnabled = options.Sfx == true,
+        },
         subscriptionActive = subscriptionActive,
         subscriptionExperienceBonus = subscriptionBonus,
         subscriptionDailyClaimed = subscriptionDailyClaimed,
@@ -1185,6 +1302,92 @@ function PlayerStateService:MarkSubscriptionClaim(actor, subscriptionId, utcDay)
     local state = self:_getOrCreateState(actor)
     state.SubscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims)
     state.SubscriptionClaims[key] = day
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
+function PlayerStateService:GetShopClaims(actor)
+    local state = self:_getOrCreateState(actor)
+    state.ShopClaims = normalizeShopClaims(state.ShopClaims)
+    return state.ShopClaims
+end
+
+function PlayerStateService:HasShopClaim(actor, claimKey)
+    local claims = self:GetShopClaims(actor)
+    local key = tostring(claimKey or "")
+    return key ~= "" and claims[key] == true
+end
+
+function PlayerStateService:MarkShopClaim(actor, claimKey)
+    local key = tostring(claimKey or "")
+    if key == "" then
+        return false
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.ShopClaims = normalizeShopClaims(state.ShopClaims)
+    if state.ShopClaims[key] == true then
+        return false
+    end
+
+    state.ShopClaims[key] = true
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
+function PlayerStateService:GetOptions(actor)
+    local state = self:_getOrCreateState(actor)
+    state.Options = normalizeOptions(state.Options)
+    return state.Options
+end
+
+function PlayerStateService:SetOption(actor, optionKey, enabled)
+    local key = tostring(optionKey or "")
+    if key ~= "Music" and key ~= "Sfx" then
+        return false
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.Options = normalizeOptions(state.Options)
+    local resolvedEnabled = enabled == true
+    if state.Options[key] == resolvedEnabled then
+        return false
+    end
+
+    state.Options[key] = resolvedEnabled
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
+function PlayerStateService:ApplyOptionsData(actor, options)
+    local state = self:_getOrCreateState(actor)
+    state.Options = normalizeOptions(options)
+    return state.Options
+end
+
+function PlayerStateService:IsGuideCompleted(actor)
+    local state = self:_getOrCreateState(actor)
+    state.GuideCompleted = normalizeGuideCompleted(state.GuideCompleted, true)
+    return state.GuideCompleted == true
+end
+
+function PlayerStateService:MarkGuideCompleted(actor)
+    local state = self:_getOrCreateState(actor)
+    state.GuideCompleted = normalizeGuideCompleted(state.GuideCompleted, true)
+    if state.GuideCompleted == true then
+        return false
+    end
+
+    state.GuideCompleted = true
     self:PushState(actor)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
@@ -1507,6 +1710,9 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.Potions = normalizePotionInventory(savedProgress.potions or savedProgress.Potions)
         state.GroupRewards = normalizeGroupRewards(savedProgress.groupRewards or savedProgress.GroupRewards)
         state.SubscriptionClaims = normalizeSubscriptionClaims(savedProgress.subscriptionClaims or savedProgress.SubscriptionClaims)
+        state.ShopClaims = normalizeShopClaims(savedProgress.shopClaims or savedProgress.ShopClaims)
+        state.Options = normalizeOptions(savedProgress.options or savedProgress.Options)
+        state.GuideCompleted = readGuideCompleted(savedProgress, true)
         state.OwnedSkins = normalizeOwnedSkins(savedProgress.ownedSkins or savedProgress.OwnedSkins)
         state.EquippedSkinId = normalizeEquippedSkinId(savedProgress.equippedSkinId or savedProgress.EquippedSkinId, state.OwnedSkins)
         local savedWeaponUnlockRewards = savedProgress.weaponUnlockRewards or savedProgress.WeaponUnlockRewards

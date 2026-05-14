@@ -1,0 +1,396 @@
+--[[
+Script: ShopService
+Type: ModuleScript
+Studio path: ServerScriptService/Services/ShopService
+Purpose: V3.5 shop state, StarterPack one-time rewards, and shared reward popup feedback.
+]]
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ActorUtils = require(script.Parent:WaitForChild("ActorUtils"))
+
+local function requireSharedModule(moduleName)
+    local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+    if sharedFolder then
+        local moduleInShared = sharedFolder:FindFirstChild(moduleName)
+        if moduleInShared and moduleInShared:IsA("ModuleScript") then
+            return require(moduleInShared)
+        end
+    end
+
+    local moduleInRoot = ReplicatedStorage:FindFirstChild(moduleName)
+    if moduleInRoot and moduleInRoot:IsA("ModuleScript") then
+        return require(moduleInRoot)
+    end
+
+    error(string.format(
+        "[ShopService] Missing shared module %s (expected in ReplicatedStorage/Shared or ReplicatedStorage root)",
+        tostring(moduleName or "")
+    ))
+end
+
+local ShopConfig = requireSharedModule("ShopConfig")
+local WheelConfig = requireSharedModule("WheelConfig")
+local SkinConfig = requireSharedModule("SkinConfig")
+
+local ShopService = {}
+
+ShopService._playerStateService = nil
+ShopService._rebirthService = nil
+ShopService._potionService = nil
+ShopService._shopStateSyncEvent = nil
+ShopService._requestShopStateSyncEvent = nil
+ShopService._requestStarterPackClaimEvent = nil
+ShopService._requestPurchaseContextEvent = nil
+ShopService._shopRewardFeedbackEvent = nil
+ShopService._connections = {}
+ShopService._purchaseContextByUserId = {}
+ShopService._starterPackGrantInProgressByUserId = {}
+
+local PURCHASE_CONTEXT_TTL_SECONDS = 120
+
+local function disconnectAll(connections)
+    for _, connection in ipairs(connections) do
+        if connection and connection.Connected then
+            connection:Disconnect()
+        end
+    end
+    table.clear(connections)
+end
+
+local function getUserId(player)
+    return player and player.UserId or 0
+end
+
+function ShopService:_isPlayerLoaded(player)
+    return not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player)
+end
+
+function ShopService:_markDirty(player)
+    if self._rebirthService and self._rebirthService.MarkDirty then
+        self._rebirthService:MarkDirty(player)
+    end
+end
+
+function ShopService:_ownsGamePass(player, gamePassId)
+    local resolvedGamePassId = math.floor(tonumber(gamePassId) or 0)
+    if resolvedGamePassId <= 0 then
+        return false, "InvalidGamePass"
+    end
+
+    local ok, owns = pcall(function()
+        return MarketplaceService:UserOwnsGamePassAsync(player.UserId, resolvedGamePassId)
+    end)
+    if not ok then
+        warn("[ShopService] UserOwnsGamePassAsync failed: " .. tostring(owns))
+        return false, "OwnershipCheckFailed"
+    end
+    return owns == true, owns == true and "Owned" or "NotOwned"
+end
+
+function ShopService:BuildStatePayload(player)
+    local claimKey = ShopConfig.StarterPack.ClaimKey
+    local starterPackClaimed = self._playerStateService
+        and self._playerStateService.HasShopClaim
+        and self._playerStateService:HasShopClaim(player, claimKey) == true
+        or false
+    local featuredSkinOwned = false
+    if self._playerStateService and self._playerStateService.OwnsSkin then
+        local ok, owns = pcall(function()
+            return self._playerStateService:OwnsSkin(player, ShopConfig.FeaturedSkinId)
+        end)
+        featuredSkinOwned = ok and owns == true or false
+    end
+
+    return {
+        starterPackClaimed = starterPackClaimed,
+        starterPackGamePassId = ShopConfig.StarterPack.GamePassId,
+        featuredSkinId = ShopConfig.FeaturedSkinId,
+        featuredSkinOwned = featuredSkinOwned,
+        timestamp = os.clock(),
+    }
+end
+
+function ShopService:SyncState(player)
+    if not (self._shopStateSyncEvent and ActorUtils.IsPlayer(player) and player.Parent) then
+        return
+    end
+    self._shopStateSyncEvent:FireClient(player, self:BuildStatePayload(player))
+end
+
+function ShopService:_fireRewardFeedback(player, source, rewards, reason)
+    if not (self._shopRewardFeedbackEvent and ActorUtils.IsPlayer(player) and player.Parent) then
+        return
+    end
+
+    self._shopRewardFeedbackEvent:FireClient(player, {
+        eventType = "RewardGranted",
+        source = tostring(source or "Shop"),
+        reason = tostring(reason or "Granted"),
+        rewards = ShopConfig.CopyRewardsForClient(rewards),
+        state = self:BuildStatePayload(player),
+        timestamp = os.clock(),
+    })
+end
+
+function ShopService:_grantStarterPack(player, source)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false, "InvalidPlayer"
+    end
+    if not self:_isPlayerLoaded(player) then
+        return false, "DataLoading"
+    end
+
+    local claimKey = ShopConfig.StarterPack.ClaimKey
+    if self._playerStateService:HasShopClaim(player, claimKey) then
+        self:SyncState(player)
+        return true, "AlreadyClaimed"
+    end
+
+    local userId = getUserId(player)
+    if self._starterPackGrantInProgressByUserId[userId] then
+        return false, "Busy"
+    end
+    self._starterPackGrantInProgressByUserId[userId] = true
+
+    local grantedRewards = {}
+    for _, reward in ipairs(ShopConfig.StarterPack.Rewards) do
+        local rewardType = tostring(reward.RewardType or "")
+        if rewardType == "Potion" then
+            if not (self._potionService and self._potionService.AddPotion) then
+                self._starterPackGrantInProgressByUserId[userId] = nil
+                return false, "PotionServiceUnavailable"
+            end
+            local success, reason = self._potionService:AddPotion(player, reward.PotionId, reward.Amount or 1, "StarterPack")
+            if not success then
+                self._starterPackGrantInProgressByUserId[userId] = nil
+                return false, reason or "PotionGrantFailed"
+            end
+        elseif rewardType == "WheelSpins" then
+            self._playerStateService:AddWheelSpins(player, reward.Amount or 0)
+        elseif rewardType == "Diamonds" then
+            self._playerStateService:AddDiamonds(player, reward.Amount or 0)
+        end
+        table.insert(grantedRewards, reward)
+    end
+
+    self._playerStateService:MarkShopClaim(player, claimKey)
+    self:_markDirty(player)
+    self._starterPackGrantInProgressByUserId[userId] = nil
+    self:SyncState(player)
+    self:_fireRewardFeedback(player, source or "Shop", grantedRewards, "StarterPack")
+    return true, "Granted"
+end
+
+function ShopService:_queueStarterPackRetry(player, source)
+    task.spawn(function()
+        local deadline = os.clock() + 15
+        while player and player.Parent and not self:_isPlayerLoaded(player) and os.clock() < deadline do
+            task.wait(0.5)
+        end
+        if player and player.Parent then
+            self:_grantStarterPack(player, source or "Shop")
+        end
+    end)
+end
+
+function ShopService:_tryAutoClaimStarterPack(player, source)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false
+    end
+    if not self:_isPlayerLoaded(player) then
+        return false
+    end
+    if self._playerStateService:HasShopClaim(player, ShopConfig.StarterPack.ClaimKey) then
+        self:SyncState(player)
+        return false
+    end
+
+    local owns = self:_ownsGamePass(player, ShopConfig.StarterPack.GamePassId)
+    if owns then
+        self:_grantStarterPack(player, source or "Shop")
+        return true
+    end
+
+    self:SyncState(player)
+    return false
+end
+
+function ShopService:_handleStateRequest(player, payload)
+    if type(payload) == "table" and payload.autoClaimStarterPack == true then
+        self:_tryAutoClaimStarterPack(player, payload.source or "Shop")
+        return
+    end
+    self:SyncState(player)
+end
+
+function ShopService:_handleStarterPackClaimRequest(player)
+    if not (ActorUtils.IsPlayer(player) and player.Parent) then
+        return
+    end
+    if not self:_isPlayerLoaded(player) then
+        self:SyncState(player)
+        return
+    end
+
+    if self._playerStateService and self._playerStateService:HasShopClaim(player, ShopConfig.StarterPack.ClaimKey) then
+        self:SyncState(player)
+        return
+    end
+
+    local owns = self:_ownsGamePass(player, ShopConfig.StarterPack.GamePassId)
+    if owns then
+        self:_grantStarterPack(player, "Shop")
+    else
+        self:SyncState(player)
+    end
+end
+
+function ShopService:_handleGamePassFinished(player, gamePassId, wasPurchased)
+    if wasPurchased ~= true then
+        return
+    end
+    if math.floor(tonumber(gamePassId) or 0) ~= ShopConfig.StarterPack.GamePassId then
+        return
+    end
+    if not (ActorUtils.IsPlayer(player) and player.Parent) then
+        return
+    end
+
+    local success, reason = self:_grantStarterPack(player, "Shop")
+    if not success and reason == "DataLoading" then
+        self:_queueStarterPackRetry(player, "Shop")
+    end
+end
+
+function ShopService:RecordPurchaseContext(player, payload)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and type(payload) == "table") then
+        return false
+    end
+
+    local userId = getUserId(player)
+    if userId <= 0 then
+        return false
+    end
+
+    self._purchaseContextByUserId[userId] = {
+        source = tostring(payload.source or "Shop"),
+        purchaseType = tostring(payload.purchaseType or ""),
+        productId = math.floor(tonumber(payload.productId) or 0),
+        gamePassId = math.floor(tonumber(payload.gamePassId) or 0),
+        skinId = math.floor(tonumber(payload.skinId) or 0),
+        expiresAt = os.clock() + PURCHASE_CONTEXT_TTL_SECONDS,
+    }
+    return true
+end
+
+function ShopService:_consumePurchaseContext(player, matcher)
+    local userId = getUserId(player)
+    local context = userId > 0 and self._purchaseContextByUserId[userId] or nil
+    if not context then
+        return nil
+    end
+    if tonumber(context.expiresAt) and os.clock() > context.expiresAt then
+        self._purchaseContextByUserId[userId] = nil
+        return nil
+    end
+    if type(matcher) == "function" and matcher(context) ~= true then
+        return nil
+    end
+
+    self._purchaseContextByUserId[userId] = nil
+    return context
+end
+
+function ShopService:NotifyWheelPurchase(player, productId)
+    local purchase = WheelConfig.GetPurchaseByProductId(productId)
+    if not purchase then
+        return false
+    end
+
+    local context = self:_consumePurchaseContext(player, function(candidate)
+        return candidate.purchaseType == "WheelSpins" and candidate.productId == tonumber(productId)
+    end)
+    local source = context and context.source or "Wheel"
+    self:_fireRewardFeedback(player, source, {
+        { RewardType = "WheelSpins", Amount = purchase.Spins },
+    }, "WheelPurchase")
+    return true
+end
+
+function ShopService:NotifySkinPurchase(player, skinId, gamePassId)
+    local skin = SkinConfig.GetSkin(skinId)
+    if not skin then
+        return false
+    end
+
+    local context = self:_consumePurchaseContext(player, function(candidate)
+        return candidate.purchaseType == "Skin"
+            and (candidate.skinId == tonumber(skinId) or candidate.gamePassId == tonumber(gamePassId))
+    end)
+    if not context then
+        return false
+    end
+
+    self:_fireRewardFeedback(player, context.source or "Shop", {
+        { RewardType = "Skin", SkinId = skin.Id, Amount = 1, Icon = skin.IconImage, Label = skin.Name },
+    }, "SkinPurchase")
+    return true
+end
+
+function ShopService:BindSystems(dependencies)
+    self._playerStateService = dependencies and dependencies.PlayerStateService or self._playerStateService
+    self._rebirthService = dependencies and dependencies.RebirthService or self._rebirthService
+    self._potionService = dependencies and dependencies.PotionService or self._potionService
+end
+
+function ShopService:Init(dependencies)
+    self._playerStateService = dependencies and dependencies.PlayerStateService or nil
+    self._rebirthService = dependencies and dependencies.RebirthService or nil
+    self._potionService = dependencies and dependencies.PotionService or nil
+    local remoteEventService = dependencies and dependencies.RemoteEventService or nil
+    self._shopStateSyncEvent = remoteEventService and remoteEventService:GetEvent("ShopStateSync") or nil
+    self._requestShopStateSyncEvent = remoteEventService and remoteEventService:GetEvent("RequestShopStateSync") or nil
+    self._requestStarterPackClaimEvent = remoteEventService and remoteEventService:GetEvent("RequestShopStarterPackClaim") or nil
+    self._requestPurchaseContextEvent = remoteEventService and remoteEventService:GetEvent("RequestShopPurchaseContext") or nil
+    self._shopRewardFeedbackEvent = remoteEventService and remoteEventService:GetEvent("ShopRewardFeedback") or nil
+    self._purchaseContextByUserId = {}
+    self._starterPackGrantInProgressByUserId = {}
+
+    disconnectAll(self._connections)
+    if self._requestShopStateSyncEvent then
+        table.insert(self._connections, self._requestShopStateSyncEvent.OnServerEvent:Connect(function(player, payload)
+            self:_handleStateRequest(player, payload)
+        end))
+    end
+    if self._requestStarterPackClaimEvent then
+        table.insert(self._connections, self._requestStarterPackClaimEvent.OnServerEvent:Connect(function(player)
+            self:_handleStarterPackClaimRequest(player)
+        end))
+    end
+    if self._requestPurchaseContextEvent then
+        table.insert(self._connections, self._requestPurchaseContextEvent.OnServerEvent:Connect(function(player, payload)
+            self:RecordPurchaseContext(player, payload)
+        end))
+    end
+    table.insert(self._connections, MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamePassId, wasPurchased)
+        self:_handleGamePassFinished(player, gamePassId, wasPurchased)
+    end))
+end
+
+function ShopService:OnPlayerAdded(player)
+    task.defer(function()
+        if player and player.Parent then
+            self:SyncState(player)
+        end
+    end)
+end
+
+function ShopService:OnPlayerRemoving(player)
+    local userId = getUserId(player)
+    self._purchaseContextByUserId[userId] = nil
+    self._starterPackGrantInProgressByUserId[userId] = nil
+end
+
+return ShopService

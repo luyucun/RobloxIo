@@ -22,6 +22,9 @@ GameConfig.CAMERA = {
     MinZoomDistance = 15,
     DefaultZoomDistance = 20,
     MaxZoomDistance = 60,
+    SpawnLookPitchDegrees = 35,
+    SpawnLookFocusHeightOffset = 2,
+    SpawnLookForwardOffset = 8,
 }
 
 GameConfig.AUDIO = {

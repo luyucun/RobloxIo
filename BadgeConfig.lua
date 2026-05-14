@@ -8,6 +8,11 @@ Purpose: Central badge definitions for official Roblox badge awards.
 local BadgeConfig = {}
 
 BadgeConfig.Badges = {
+    NewPlayerWelcome = {
+        Id = 3537031617648069,
+        Key = "NewPlayerWelcome",
+        Name = "New Player Welcome",
+    },
     FirstSubscription = {
         Id = 666216046024364,
         Key = "FirstSubscription",
