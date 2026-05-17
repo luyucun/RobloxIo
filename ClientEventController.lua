@@ -225,6 +225,34 @@ local function getAudioSound(soundName, soundId)
     return nil
 end
 
+local function findSoundByPath(root, soundPath)
+    if not (root and type(soundPath) == "table" and #soundPath > 0) then
+        return nil
+    end
+
+    local current = root
+    for index = 1, #soundPath - 1 do
+        current = current:FindFirstChild(soundPath[index])
+        if not current then
+            return nil
+        end
+    end
+
+    local soundName = soundPath[#soundPath]
+    local direct = current and current:FindFirstChild(soundName)
+    if direct and direct:IsA("Sound") then
+        return direct
+    end
+
+    for _, descendant in ipairs(root:GetDescendants()) do
+        if descendant:IsA("Sound") and descendant.Name == soundName then
+            return descendant
+        end
+    end
+
+    return nil
+end
+
 function ClientEventController:_recordFeedback(eventName, payload)
     self._latestFeedbackByName[eventName] = payload
 end
@@ -369,6 +397,38 @@ function ClientEventController:_playSound(soundName, soundId)
     sound:Play()
 end
 
+function ClientEventController:_playSfxByPath(folderName, soundPath)
+    if self._audioSettings and self._audioSettings.PlaySfxByPath then
+        self._audioSettings:PlaySfxByPath(folderName, soundPath, true)
+        return
+    end
+
+    local folder = SoundService:FindFirstChild(folderName) or SoundService:FindFirstChild(folderName, true)
+    local sound = findSoundByPath(folder, soundPath)
+    if sound then
+        sound:Stop()
+        sound.TimePosition = 0
+        sound:Play()
+    end
+end
+
+function ClientEventController:_playCombatFeedbackSound(payload)
+    if type(payload) ~= "table" then
+        return
+    end
+
+    local sourceUserId = tonumber(payload.sourceUserId)
+    if not (self._localPlayer and sourceUserId and sourceUserId == self._localPlayer.UserId) then
+        return
+    end
+
+    if payload.eventType == "WeaponHitWeapon" then
+        self:_playSfxByPath("Audio", { "Sword", "Sword Hit" })
+    elseif payload.eventType == "WeaponHitPlayer" then
+        self:_playSfxByPath("Audio", { "Sword", "SwordHitRelease" })
+    end
+end
+
 local function animateLevelUpText(effect)
     local billboard = effect:FindFirstChild("Billboard", true)
     local bg = billboard and billboard:FindFirstChild("Bg")
@@ -487,6 +547,13 @@ function ClientEventController:Init(dependencies)
     end
     self:_createLocalOrbFolder()
 
+    if self._audioSettings and self._audioSettings.BindPlayerGuiButtonClicks and self._localPlayer then
+        local playerGui = self._localPlayer:FindFirstChild("PlayerGui") or self._localPlayer:WaitForChild("PlayerGui", 10)
+        if playerGui then
+            self._audioSettings:BindPlayerGuiButtonClicks(playerGui)
+        end
+    end
+
     local eventsFolder = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
     local systemEventsFolder = eventsFolder:WaitForChild(RemoteNames.SystemEventsFolder)
     local battleEventsFolder = eventsFolder:WaitForChild(RemoteNames.BattleEventsFolder)
@@ -525,6 +592,7 @@ function ClientEventController:Init(dependencies)
 
     connectEvent(self._connections, battleEventsFolder:WaitForChild(RemoteNames.Battle.CombatFeedback), function(payload)
         self:_recordFeedback("CombatFeedback", payload)
+        self:_playCombatFeedbackSound(payload)
     end)
 
     connectEvent(self._connections, battleEventsFolder:WaitForChild(RemoteNames.Battle.BuffFeedback), function(payload)

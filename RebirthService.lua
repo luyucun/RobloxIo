@@ -178,6 +178,10 @@ local function normalizeSavedData(data)
             ClaimedTiers = {},
             PendingQueue = {},
         }
+        local savedLastPromptedTierIndex = rewards.lastPromptedTierIndex or rewards.LastPromptedTierIndex
+        if savedLastPromptedTierIndex ~= nil then
+            normalized.LastPromptedTierIndex = math.max(1, math.floor(tonumber(savedLastPromptedTierIndex) or 1))
+        end
         local claimedTiers = rewards.claimedTiers or rewards.ClaimedTiers or rewards.claimed or rewards.Claimed
         if type(claimedTiers) == "table" then
             for tierKey, claimed in pairs(claimedTiers) do

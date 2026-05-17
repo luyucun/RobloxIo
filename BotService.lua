@@ -149,7 +149,7 @@ function BotService:_createFallbackCharacterTemplate(botActor)
     for _, player in ipairs(Players:GetPlayers()) do
         if player.UserId and player.UserId > 0 then
             local didLoadFromUserId, loadedModel = pcall(function()
-                return Players:CreateHumanoidModelFromUserId(player.UserId)
+                return Players:CreateHumanoidModelFromUserIdAsync(player.UserId)
             end)
             if didLoadFromUserId and loadedModel then
                 model = loadedModel
@@ -161,7 +161,7 @@ function BotService:_createFallbackCharacterTemplate(botActor)
     if not model then
         local didLoadFromDescription, loadedModel = pcall(function()
             local description = Instance.new("HumanoidDescription")
-            return Players:CreateHumanoidModelFromDescription(description, Enum.HumanoidRigType.R15)
+            return Players:CreateHumanoidModelFromDescriptionAsync(description, Enum.HumanoidRigType.R15)
         end)
         if didLoadFromDescription and loadedModel then
             model = loadedModel

@@ -84,6 +84,14 @@ local function normalizeLevel(value)
     return math.clamp(math.floor(tonumber(value) or GameConfig.PLAYER.BaseLevel), 1, GameConfig.PLAYER.MaxSupportedLevel)
 end
 
+local function normalizeTierIndex(value)
+    return math.clamp(
+        math.floor(tonumber(value) or 1),
+        1,
+        math.max(1, #WeaponTierConfig.Order)
+    )
+end
+
 local function ensureLevelGradient(levelLabel, gradientName, colorSequence)
     local gradient = levelLabel:FindFirstChild(gradientName)
     if gradient and not gradient:IsA("UIGradient") then
@@ -292,13 +300,27 @@ local function copyBooleanMap(values)
     return result
 end
 
-local function normalizeWeaponUnlockRewards(rewards)
+local function normalizeWeaponUnlockRewards(rewards, maxPromptedTierIndex)
+    local maxPromptedTier = normalizeTierIndex(maxPromptedTierIndex)
     local normalized = {
         ClaimedTiers = {},
         PendingQueue = {},
+        LastPromptedTierIndex = maxPromptedTier,
     }
     if type(rewards) ~= "table" then
         return normalized
+    end
+
+    local savedLastPromptedTierIndex = rewards.LastPromptedTierIndex
+        or rewards.lastPromptedTierIndex
+        or rewards.MaxPromptedTierIndex
+        or rewards.maxPromptedTierIndex
+    if savedLastPromptedTierIndex ~= nil then
+        normalized.LastPromptedTierIndex = math.clamp(
+            math.floor(tonumber(savedLastPromptedTierIndex) or maxPromptedTier),
+            1,
+            maxPromptedTier
+        )
     end
 
     local claimedTiers = rewards.ClaimedTiers or rewards.claimedTiers or rewards.claimed or rewards.Claimed
@@ -317,7 +339,11 @@ local function normalizeWeaponUnlockRewards(rewards)
         for _, pendingTier in ipairs(pendingQueue) do
             local tierIndex = math.floor(tonumber(pendingTier) or 0)
             local key = tostring(tierIndex)
-            if tierIndex > 1 and normalized.ClaimedTiers[key] ~= true and seenPending[key] ~= true then
+            if tierIndex > 1
+                and tierIndex <= maxPromptedTier
+                and normalized.ClaimedTiers[key] ~= true
+                and seenPending[key] ~= true
+            then
                 seenPending[key] = true
                 table.insert(normalized.PendingQueue, tierIndex)
             end
@@ -334,12 +360,10 @@ local function getMaxUnlockedTierIndexForLevel(level)
 end
 
 local function buildHandledWeaponUnlockRewardsForLevel(level)
-    local rewards = normalizeWeaponUnlockRewards()
     local maxTierIndex = getMaxUnlockedTierIndexForLevel(level)
-    for tierIndex = 2, maxTierIndex do
-        rewards.ClaimedTiers[tostring(tierIndex)] = true
-    end
-    return rewards
+    return normalizeWeaponUnlockRewards({
+        LastPromptedTierIndex = maxTierIndex,
+    }, maxTierIndex)
 end
 
 local function normalizeActivePotion(activePotion, fallbackPotionId)
@@ -434,12 +458,21 @@ local function updateOverheadShieldUi(root, shieldState, shouldShowHealthBar)
 end
 
 local function ensureCollisionGroup(groupName)
-    local didRegister = pcall(function()
-        PhysicsService:RegisterCollisionGroup(groupName)
+    local found = false
+    local success, groups = pcall(function()
+        return PhysicsService:GetRegisteredCollisionGroups()
     end)
-    if not didRegister then
+    if success and type(groups) == "table" then
+        for _, group in ipairs(groups) do
+            if group.name == groupName or group.Name == groupName then
+                found = true
+                break
+            end
+        end
+    end
+    if not found then
         pcall(function()
-            PhysicsService:CreateCollisionGroup(groupName)
+            PhysicsService:RegisterCollisionGroup(groupName)
         end)
     end
 end
@@ -451,14 +484,9 @@ local function setCollisionRule(groupA, groupB, canCollide)
 end
 
 local function setPartCollisionGroup(basePart, groupName)
-    local didSet = pcall(function()
+    pcall(function()
         basePart.CollisionGroup = groupName
     end)
-    if not didSet then
-        pcall(function()
-            PhysicsService:SetPartCollisionGroup(basePart, groupName)
-        end)
-    end
 end
 
 local function getCharacterCollisionGroupName()
@@ -581,7 +609,10 @@ function PlayerStateService:_applyLevelDerivedState(state)
     state.GuideCompleted = normalizeGuideCompleted(state.GuideCompleted, true)
     state.OwnedSkins = normalizeOwnedSkins(state.OwnedSkins)
     state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
-    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(state.WeaponUnlockRewards)
+    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(
+        state.WeaponUnlockRewards,
+        getMaxUnlockedTierIndexForLevel(state.HighestLevelReached or state.Level)
+    )
     state.ActivePotions = normalizeActivePotions(state.ActivePotions, state.ActivePotion)
     state.ActivePotion = nil
 
@@ -645,7 +676,7 @@ function PlayerStateService:_createDefaultState(actor)
         GuideCompleted = true,
         OwnedSkins = {},
         EquippedSkinId = nil,
-        WeaponUnlockRewards = normalizeWeaponUnlockRewards(),
+        WeaponUnlockRewards = normalizeWeaponUnlockRewards(nil, getMaxUnlockedTierIndexForLevel(GameConfig.PLAYER.BaseLevel)),
         ActivePotions = {},
         ActivePotion = nil,
         SessionStartedAt = os.time(),
@@ -1022,7 +1053,11 @@ function PlayerStateService:BuildStatePayload(actor)
     local potionMoveSpeedBonus = self:GetPotionMoveSpeedBonus(actor)
     local friendExperienceBonus = math.max(0, tonumber(state.FriendExperienceBonus) or 0)
     local friendCount = math.max(0, math.floor(tonumber(state.FriendCount) or 0))
-    local weaponUnlockRewards = state.WeaponUnlockRewards or normalizeWeaponUnlockRewards()
+    local weaponUnlockRewards = normalizeWeaponUnlockRewards(
+        state.WeaponUnlockRewards,
+        getMaxUnlockedTierIndexForLevel(state.HighestLevelReached or state.Level)
+    )
+    state.WeaponUnlockRewards = weaponUnlockRewards
     local options = normalizeOptions(state.Options)
     state.Options = options
     local ownedSkins = normalizeOwnedSkins(state.OwnedSkins)
@@ -1084,6 +1119,7 @@ function PlayerStateService:BuildStatePayload(actor)
         weaponUnlockRewards = {
             claimedTiers = copyBooleanMap(weaponUnlockRewards.ClaimedTiers or {}),
             pendingQueue = copyArray(weaponUnlockRewards.PendingQueue or {}),
+            lastPromptedTierIndex = weaponUnlockRewards.LastPromptedTierIndex,
         },
         activePotions = activePotions,
         activePotion = activePotion,
@@ -1716,8 +1752,9 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.OwnedSkins = normalizeOwnedSkins(savedProgress.ownedSkins or savedProgress.OwnedSkins)
         state.EquippedSkinId = normalizeEquippedSkinId(savedProgress.equippedSkinId or savedProgress.EquippedSkinId, state.OwnedSkins)
         local savedWeaponUnlockRewards = savedProgress.weaponUnlockRewards or savedProgress.WeaponUnlockRewards
+        local maxPromptedTierIndex = getMaxUnlockedTierIndexForLevel(state.HighestLevelReached)
         if savedWeaponUnlockRewards ~= nil then
-            state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(savedWeaponUnlockRewards)
+            state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(savedWeaponUnlockRewards, maxPromptedTierIndex)
         else
             state.WeaponUnlockRewards = buildHandledWeaponUnlockRewardsForLevel(state.HighestLevelReached)
         end
@@ -1786,13 +1823,19 @@ end
 
 function PlayerStateService:GetWeaponUnlockRewards(actor)
     local state = self:_getOrCreateState(actor)
-    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(state.WeaponUnlockRewards)
+    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(
+        state.WeaponUnlockRewards,
+        getMaxUnlockedTierIndexForLevel(state.HighestLevelReached or state.Level)
+    )
     return state.WeaponUnlockRewards
 end
 
 function PlayerStateService:SetWeaponUnlockRewards(actor, rewards)
     local state = self:_getOrCreateState(actor)
-    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(rewards)
+    state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(
+        rewards,
+        getMaxUnlockedTierIndexForLevel(state.HighestLevelReached or state.Level)
+    )
     return state.WeaponUnlockRewards
 end
 
@@ -1848,7 +1891,9 @@ function PlayerStateService:_addExperience(actor, amount, requireActiveInArena)
         end
         self:SyncCharacterState(actor)
         if self._weaponService then
-            self._weaponService:RebuildWeaponsForActor(actor)
+            self._weaponService:RebuildWeaponsForActor(actor, {
+                previousLevel = previousLevel,
+            })
         end
         if self._rebirthService then
             self._rebirthService:MarkDirty(actor)
@@ -1905,7 +1950,9 @@ function PlayerStateService:SetLevelForStudioCommand(actor, level)
     self:_syncLeaderstats(actor, state)
     self:SyncCharacterState(actor)
     if self._weaponService then
-        self._weaponService:RebuildWeaponsForActor(actor)
+        self._weaponService:RebuildWeaponsForActor(actor, {
+            previousLevel = previousLevel,
+        })
     end
     if self._weaponUnlockRewardService and self._weaponUnlockRewardService.HandleLevelChanged and targetLevel > previousLevel then
         self._weaponUnlockRewardService:HandleLevelChanged(actor, previousLevel, targetLevel)
@@ -1956,7 +2003,9 @@ function PlayerStateService:ApplyLevelMultiplier(actor, multiplier)
     end
     self:SyncCharacterState(actor)
     if self._weaponService then
-        self._weaponService:RebuildWeaponsForActor(actor)
+        self._weaponService:RebuildWeaponsForActor(actor, {
+            previousLevel = previousLevel,
+        })
     end
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)

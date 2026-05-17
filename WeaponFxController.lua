@@ -45,6 +45,10 @@ WeaponFxController._localWeaponStates = {}
 WeaponFxController._hiddenServerParts = {}
 WeaponFxController._hiddenServerEffects = {}
 WeaponFxController._lastWeaponSignature = nil
+WeaponFxController._runtimeWeaponsFolder = nil
+WeaponFxController._runtimeWeaponFolderConnections = {}
+WeaponFxController._serverWeaponVisibilityDirty = true
+WeaponFxController._nextServerWeaponVisibilityRefreshClock = 0
 
 local TIER_COLORS = {
     T1 = Color3.fromRGB(214, 255, 77),
@@ -136,6 +140,20 @@ local function resolveAuraPart(instance)
     return nil
 end
 
+local function resolveHitPart(instance)
+    local auraPart = resolveAuraPart(instance)
+    if auraPart then
+        return auraPart
+    end
+    if instance:IsA("Model") then
+        return instance.PrimaryPart
+    end
+    if instance:IsA("BasePart") then
+        return instance
+    end
+    return nil
+end
+
 local function stripRuntimeOnlyDescendants(instance)
     for _, descendant in ipairs(instance:GetDescendants()) do
         if descendant:IsA("Script") or descendant:IsA("LocalScript") or descendant:IsA("ModuleScript") or descendant:IsA("Tool") then
@@ -215,6 +233,17 @@ local function normalizeOrbitDirection(direction)
     return (tonumber(direction) or 1) < 0 and -1 or 1
 end
 
+local function disconnectAll(connections)
+    for _, connection in ipairs(connections) do
+        if connection and connection.Connected then
+            connection:Disconnect()
+        end
+    end
+    table.clear(connections)
+end
+
+local SERVER_WEAPON_VISIBILITY_REFRESH_SECONDS = 1
+
 function WeaponFxController:_getLocalWeaponFolder()
     if self._localWeaponFolder and self._localWeaponFolder.Parent then
         return self._localWeaponFolder
@@ -234,6 +263,39 @@ function WeaponFxController:_getLocalWeaponFolder()
 
     self._localWeaponFolder = folder
     return folder
+end
+
+function WeaponFxController:_markServerWeaponVisibilityDirty()
+    self._serverWeaponVisibilityDirty = true
+    self._nextServerWeaponVisibilityRefreshClock = 0
+end
+
+function WeaponFxController:_resolveRuntimeWeaponsFolder()
+    local weaponsFolder = getRuntimeWeaponsFolder()
+    if weaponsFolder ~= self._runtimeWeaponsFolder then
+        disconnectAll(self._runtimeWeaponFolderConnections)
+        self._runtimeWeaponsFolder = weaponsFolder
+        self:_markServerWeaponVisibilityDirty()
+
+        if weaponsFolder then
+            table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildAdded:Connect(function()
+                self:_markServerWeaponVisibilityDirty()
+            end))
+            table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildRemoved:Connect(function()
+                self:_markServerWeaponVisibilityDirty()
+            end))
+        end
+    elseif weaponsFolder and #self._runtimeWeaponFolderConnections <= 0 then
+        self:_markServerWeaponVisibilityDirty()
+        table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildAdded:Connect(function()
+            self:_markServerWeaponVisibilityDirty()
+        end))
+        table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildRemoved:Connect(function()
+            self:_markServerWeaponVisibilityDirty()
+        end))
+    end
+
+    return self._runtimeWeaponsFolder
 end
 
 function WeaponFxController:_resolveTemplate(tierName, visualTemplateName)
@@ -356,7 +418,7 @@ function WeaponFxController:_createLocalWeaponState(weaponIndex, weaponTier, tem
 
     local weaponState = {
         Instance = localWeapon,
-        HitPart = resolveAuraPart(localWeapon) or (localWeapon:IsA("Model") and localWeapon.PrimaryPart or nil) or (localWeapon:IsA("BasePart") and localWeapon or nil),
+        HitPart = resolveHitPart(localWeapon),
         OrbitDirection = previousDirection,
     }
     self:_updateLocalWeaponState(weaponState, weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle)
@@ -482,6 +544,15 @@ function WeaponFxController:_hideOwnedServerWeapons()
         return
     end
 
+    local now = os.clock()
+    if not self._serverWeaponVisibilityDirty and now < self._nextServerWeaponVisibilityRefreshClock then
+        return
+    end
+    self._serverWeaponVisibilityDirty = false
+    self._nextServerWeaponVisibilityRefreshClock = now + SERVER_WEAPON_VISIBILITY_REFRESH_SECONDS
+
+    local weaponsFolder = self:_resolveRuntimeWeaponsFolder()
+
     for basePart in pairs(self._hiddenServerParts) do
         if not basePart.Parent then
             self._hiddenServerParts[basePart] = nil
@@ -500,7 +571,6 @@ function WeaponFxController:_hideOwnedServerWeapons()
         end
     end
 
-    local weaponsFolder = getRuntimeWeaponsFolder()
     if not weaponsFolder then
         return
     end
@@ -535,6 +605,10 @@ end
 
 function WeaponFxController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    disconnectAll(self._runtimeWeaponFolderConnections)
+    self._runtimeWeaponsFolder = nil
+    self._serverWeaponVisibilityDirty = true
+    self._nextServerWeaponVisibilityRefreshClock = 0
 
     local eventsFolder = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
     local battleEventsFolder = eventsFolder:WaitForChild(RemoteNames.BattleEventsFolder)

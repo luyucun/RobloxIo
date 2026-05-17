@@ -38,6 +38,7 @@ local NewWeaponUnlockController = {}
 NewWeaponUnlockController._localPlayer = nil
 NewWeaponUnlockController._connections = {}
 NewWeaponUnlockController._buttonConnections = {}
+NewWeaponUnlockController._panelVisibleConnection = nil
 NewWeaponUnlockController._mainGui = nil
 NewWeaponUnlockController._panel = nil
 NewWeaponUnlockController._claimButton = nil
@@ -50,6 +51,7 @@ NewWeaponUnlockController._requestStateSyncEvent = nil
 NewWeaponUnlockController._pendingPayloads = {}
 NewWeaponUnlockController._queuedTierIndexes = {}
 NewWeaponUnlockController._activePayload = nil
+NewWeaponUnlockController._activeTierKey = nil
 NewWeaponUnlockController._isOpen = false
 NewWeaponUnlockController._isClaiming = false
 NewWeaponUnlockController._bindRetryQueued = false
@@ -65,6 +67,7 @@ local PANEL_OUT = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirectio
 local CHILD_IN = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local CLAIM_IN = TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 local MODAL_OWNER_ID = "NewWeaponUnlock"
+local MODAL_Z_INDEX = 10
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -73,6 +76,12 @@ local function disconnectAll(connections)
         end
     end
     table.clear(connections)
+end
+
+local function disconnectConnection(connection)
+    if connection and connection.Connected then
+        connection:Disconnect()
+    end
 end
 
 local function findMainGui(localPlayer)
@@ -121,6 +130,40 @@ local function offsetPosition(position, offset)
     )
 end
 
+local function raiseModalRootZIndex(root, zIndex)
+    if root and root:IsA("GuiObject") then
+        root.ZIndex = math.max(root.ZIndex, zIndex)
+    end
+end
+
+local function normalizeTierIndex(value)
+    local tierIndex = tonumber(value)
+    if not tierIndex then
+        return nil
+    end
+    return math.floor(tierIndex)
+end
+
+function NewWeaponUnlockController:_getActiveTierIndex()
+    if self._activePayload then
+        local payloadTierIndex = normalizeTierIndex(self._activePayload.tierIndex)
+        if payloadTierIndex then
+            return payloadTierIndex
+        end
+    end
+
+    local keyTierIndex = normalizeTierIndex(self._activeTierKey)
+    if keyTierIndex then
+        return keyTierIndex
+    end
+
+    if self._panel and self._panel:IsA("GuiObject") then
+        return normalizeTierIndex(self._panel:GetAttribute("ActiveWeaponUnlockTierIndex"))
+    end
+
+    return nil
+end
+
 function NewWeaponUnlockController:_cancelTweens()
     for _, tween in ipairs(self._activeTweens) do
         if tween then
@@ -128,6 +171,33 @@ function NewWeaponUnlockController:_cancelTweens()
         end
     end
     table.clear(self._activeTweens)
+end
+
+function NewWeaponUnlockController:_disconnectPanelVisibleWatcher()
+    disconnectConnection(self._panelVisibleConnection)
+    self._panelVisibleConnection = nil
+end
+
+function NewWeaponUnlockController:_ensurePanelVisibleWatcher()
+    self:_disconnectPanelVisibleWatcher()
+    if not (self._panel and self._panel:IsA("GuiObject")) then
+        return
+    end
+
+    local watchedPanel = self._panel
+    self._panelVisibleConnection = watchedPanel:GetPropertyChangedSignal("Visible"):Connect(function()
+        if watchedPanel ~= self._panel then
+            return
+        end
+
+        if self._isOpen and watchedPanel.Visible ~= true then
+            task.defer(function()
+                if watchedPanel == self._panel and watchedPanel.Parent and self._isOpen and watchedPanel.Visible ~= true then
+                    watchedPanel.Visible = true
+                end
+            end)
+        end
+    end)
 end
 
 function NewWeaponUnlockController:_rememberPositions()
@@ -164,22 +234,30 @@ end
 
 function NewWeaponUnlockController:_playOpen(payload)
     if not (self._panel and self._panel:IsA("GuiObject")) then
-        return
+        return false
     end
 
-    self:_cancelTweens()
-    self:_rememberPositions()
     self._animationSerial += 1
     local serial = self._animationSerial
+    self:_cancelTweens()
+    self:_rememberPositions()
 
     self._isOpen = true
     self._isClaiming = false
     self._activePayload = payload
+    local activeTierIndex = normalizeTierIndex(payload and payload.tierIndex)
+    if activeTierIndex then
+        self._activeTierKey = tostring(activeTierIndex)
+    else
+        self._activeTierKey = tostring(payload and payload.tierIndex or "")
+    end
     self:_applyPayload(payload)
 
     if self._mainGui and self._mainGui:IsA("ScreenGui") then
         self._mainGui.Enabled = true
     end
+    raiseModalRootZIndex(self._panel, MODAL_Z_INDEX)
+    self._panel:SetAttribute("ActiveWeaponUnlockTierIndex", activeTierIndex)
     ModalUiController:Acquire(MODAL_OWNER_ID, self._panel)
     self._panel.Visible = true
     self._panel.Position = offsetPosition(self._originalPanelPosition or self._panel.Position, PANEL_OFFSET)
@@ -254,6 +332,8 @@ function NewWeaponUnlockController:_playOpen(payload)
             setGuiEnabled(self._claimButton, true)
         end
     end)
+
+    return true
 end
 
 function NewWeaponUnlockController:_playClose(afterClose)
@@ -264,8 +344,9 @@ function NewWeaponUnlockController:_playClose(afterClose)
         return
     end
 
-    self:_cancelTweens()
     self._animationSerial += 1
+    local serial = self._animationSerial
+    self:_cancelTweens()
     self._isOpen = false
     setGuiEnabled(self._claimButton, false)
 
@@ -274,7 +355,12 @@ function NewWeaponUnlockController:_playClose(afterClose)
     })
     table.insert(self._activeTweens, closeTween)
     closeTween.Completed:Connect(function()
+        if serial ~= self._animationSerial then
+            return
+        end
+
         self._panel.Visible = false
+        self._panel:SetAttribute("ActiveWeaponUnlockTierIndex", nil)
         if self._originalPanelPosition then
             self._panel.Position = self._originalPanelPosition
         end
@@ -291,10 +377,21 @@ function NewWeaponUnlockController:_showNextQueued()
         return
     end
 
-    local payload = table.remove(self._pendingPayloads, 1)
+    local payload = self._pendingPayloads[1]
     if payload then
-        self._queuedTierIndexes[tostring(payload.tierIndex or "")] = nil
-        self:_playOpen(payload)
+        if not (self._panel and self._panel.Parent) then
+            self:_bindUi(true)
+        end
+        if not (self._panel and self._panel.Parent) then
+            self:_queueBindRetry()
+            return
+        end
+        if self:_playOpen(payload) then
+            table.remove(self._pendingPayloads, 1)
+            self._queuedTierIndexes[tostring(payload.tierIndex or "")] = nil
+        else
+            self:_queueBindRetry()
+        end
     end
 end
 
@@ -306,9 +403,20 @@ function NewWeaponUnlockController:_handlePrompt(payload)
         return
     end
 
-    local tierKey = tostring(payload.tierIndex or "")
+    local tierIndex = normalizeTierIndex(payload.tierIndex)
+    local tierKey
+    if tierIndex then
+        tierKey = tostring(tierIndex)
+    else
+        tierKey = tostring(payload.tierIndex or "")
+    end
+    local activeTierIndex = self:_getActiveTierIndex()
+    local activeTierKey = ""
+    if activeTierIndex then
+        activeTierKey = tostring(activeTierIndex)
+    end
     if tierKey ~= "" then
-        if self._activePayload and tostring(self._activePayload.tierIndex or "") == tierKey then
+        if activeTierKey == tierKey then
             return
         end
         if self._queuedTierIndexes[tierKey] == true then
@@ -322,13 +430,21 @@ function NewWeaponUnlockController:_handlePrompt(payload)
 end
 
 function NewWeaponUnlockController:_requestClaim()
-    if self._isClaiming or not (self._activePayload and self._requestClaimEvent) then
+    local activeTierIndex = self:_getActiveTierIndex()
+    if self._isOpen and not self._activePayload and activeTierIndex then
+        self._activePayload = {
+            tierIndex = activeTierIndex,
+        }
+        self._activeTierKey = tostring(activeTierIndex)
+    end
+
+    if self._isClaiming or not (activeTierIndex and self._requestClaimEvent) then
         return
     end
 
     self._isClaiming = true
     setGuiEnabled(self._claimButton, false)
-    self._requestClaimEvent:FireServer(self._activePayload.tierIndex)
+    self._requestClaimEvent:FireServer(activeTierIndex)
 end
 
 function NewWeaponUnlockController:_handleFeedback(payload)
@@ -338,8 +454,13 @@ function NewWeaponUnlockController:_handleFeedback(payload)
 
     local eventType = tostring(payload.eventType or "")
     if eventType == "Success" then
+        if payload.clearPending == true then
+            table.clear(self._pendingPayloads)
+            table.clear(self._queuedTierIndexes)
+        end
         self:_playClose(function()
             self._activePayload = nil
+            self._activeTierKey = nil
             self._isClaiming = false
             if self._requestStateSyncEvent then
                 self._requestStateSyncEvent:FireServer()
@@ -361,6 +482,7 @@ function NewWeaponUnlockController:_bindUi(silent)
     self._mainGui = findMainGui(self._localPlayer)
     self._panel = self._mainGui and self._mainGui:FindFirstChild("NewWeaponUnlock", true) or nil
     if not (self._panel and self._panel:IsA("GuiObject")) then
+        self:_disconnectPanelVisibleWatcher()
         if not silent then
             self:_queueBindRetry()
         end
@@ -368,6 +490,7 @@ function NewWeaponUnlockController:_bindUi(silent)
     end
 
     self:_disconnectButtonBindings()
+    self:_ensurePanelVisibleWatcher()
     self._claimButton = self._panel:FindFirstChild("Claim", true)
     self._weaponImage = self._panel:FindFirstChild("Weapon", true)
     self._nameLabel = self._panel:FindFirstChild("Name", true)
@@ -376,18 +499,26 @@ function NewWeaponUnlockController:_bindUi(silent)
     local rewardRoot = self._panel:FindFirstChild("Reward", true)
     self._rewardLabel = rewardRoot and rewardRoot:FindFirstChild("Number", true) or nil
 
-    self._originalPanelPosition = self._panel.Position
-    table.clear(self._originalChildPositions)
-    self:_rememberPositions()
-    self._panel.Visible = false
-    setGuiEnabled(self._claimButton, false)
+    if not self._isOpen or not self._originalPanelPosition then
+        self._originalPanelPosition = self._panel.Position
+    end
+    if not self._isOpen then
+        table.clear(self._originalChildPositions)
+        self:_rememberPositions()
+    end
+    raiseModalRootZIndex(self._panel, MODAL_Z_INDEX)
+    if self._isOpen then
+        self._panel.Visible = true
+    else
+        self._panel.Visible = false
+        setGuiEnabled(self._claimButton, false)
+    end
 
     if self._claimButton and self._claimButton:IsA("GuiButton") then
         table.insert(self._buttonConnections, self._claimButton.Activated:Connect(function()
             self:_requestClaim()
         end))
     end
-
     return true
 end
 
@@ -416,9 +547,11 @@ function NewWeaponUnlockController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
+    self:_disconnectPanelVisibleWatcher()
     self._pendingPayloads = {}
     self._queuedTierIndexes = {}
     self._activePayload = nil
+    self._activeTierKey = nil
     self._isOpen = false
     self._isClaiming = false
 

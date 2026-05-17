@@ -50,7 +50,7 @@ local function getTierConfig(tierIndex)
     return tierName, tierName and WeaponTierConfig.Tiers[tierName] or nil
 end
 
-local function buildPromptPayload(tierIndex)
+local function buildPromptPayload(tierIndex, rewardDiamonds, rewardCount)
     local tierName, tierConfig = getTierConfig(tierIndex)
     if not tierConfig then
         return nil
@@ -64,7 +64,8 @@ local function buildPromptPayload(tierIndex)
         weaponName = WeaponTierConfig.GetDisplayNameForTier(tierName),
         weaponIcon = WeaponTierConfig.GetIconImageForTier(tierName),
         damage = math.max(0, math.floor(tonumber(tierConfig.Damage) or 0)),
-        rewardDiamonds = getRewardDiamonds(),
+        rewardDiamonds = math.max(0, math.floor(tonumber(rewardDiamonds) or getRewardDiamonds())),
+        rewardCount = math.max(1, math.floor(tonumber(rewardCount) or 1)),
         timestamp = os.clock(),
     }
 end
@@ -78,9 +79,54 @@ local function containsTier(queue, tierIndex)
     return false
 end
 
-local function getFirstQueuedTier(queue)
-    return math.floor(tonumber(queue and queue[1]) or 0)
+local function getClaimablePendingTiers(queue, claimedTiers, maxUnlockedTierIndex)
+    local result = {}
+    local seen = {}
+    local maxTier = math.max(1, math.floor(tonumber(maxUnlockedTierIndex) or 1))
+    for _, queuedTierIndex in ipairs(queue or {}) do
+        local tierIndex = math.floor(tonumber(queuedTierIndex) or 0)
+        local key = tostring(tierIndex)
+        if tierIndex > 1 and tierIndex <= maxTier and claimedTiers[key] ~= true and seen[key] ~= true then
+            seen[key] = true
+            table.insert(result, tierIndex)
+        end
+    end
+    table.sort(result)
+    return result
 end
+
+local function cleanPendingQueue(queue, claimedTiers, maxUnlockedTierIndex)
+    local result = {}
+    local seen = {}
+    local maxTier = math.max(1, math.floor(tonumber(maxUnlockedTierIndex) or 1))
+    for _, queuedTierIndex in ipairs(queue or {}) do
+        local tierIndex = math.floor(tonumber(queuedTierIndex) or 0)
+        local key = tostring(tierIndex)
+        if tierIndex > 1
+            and tierIndex <= maxTier
+            and claimedTiers[key] ~= true
+            and seen[key] ~= true
+        then
+            seen[key] = true
+            table.insert(result, tierIndex)
+        end
+    end
+    table.sort(result)
+    return result
+end
+
+local function areQueuesEqual(left, right)
+    if #(left or {}) ~= #(right or {}) then
+        return false
+    end
+    for index, value in ipairs(left or {}) do
+        if math.floor(tonumber(value) or 0) ~= math.floor(tonumber((right or {})[index]) or 0) then
+            return false
+        end
+    end
+    return true
+end
+
 
 local function removeTier(queue, tierIndex)
     local result = {}
@@ -96,18 +142,18 @@ local function removeTier(queue, tierIndex)
     return result, removed
 end
 
-function WeaponUnlockRewardService:_firePrompt(player, tierIndex)
+function WeaponUnlockRewardService:_firePrompt(player, tierIndex, rewardDiamonds, rewardCount)
     if not (self._weaponUnlockPromptEvent and player and player.Parent) then
         return
     end
 
-    local payload = buildPromptPayload(tierIndex)
+    local payload = buildPromptPayload(tierIndex, rewardDiamonds, rewardCount)
     if payload then
         self._weaponUnlockPromptEvent:FireClient(player, payload)
     end
 end
 
-function WeaponUnlockRewardService:_fireFeedback(player, eventType, message, tierIndex)
+function WeaponUnlockRewardService:_fireFeedback(player, eventType, message, tierIndex, rewardDiamonds, rewardCount, clearPending)
     if not (self._weaponUnlockRewardFeedbackEvent and player and player.Parent) then
         return
     end
@@ -116,7 +162,9 @@ function WeaponUnlockRewardService:_fireFeedback(player, eventType, message, tie
         eventType = eventType,
         message = message,
         tierIndex = tierIndex,
-        rewardDiamonds = getRewardDiamonds(),
+        rewardDiamonds = math.max(0, math.floor(tonumber(rewardDiamonds) or getRewardDiamonds())),
+        rewardCount = math.max(1, math.floor(tonumber(rewardCount) or 1)),
+        clearPending = clearPending == true,
         timestamp = os.clock(),
     })
 end
@@ -127,9 +175,20 @@ function WeaponUnlockRewardService:SyncPendingPrompt(player)
     end
 
     local rewards = self._playerStateService:GetWeaponUnlockRewards(player)
-    local tierIndex = rewards.PendingQueue and rewards.PendingQueue[1] or nil
+    local state = self._playerStateService:GetState(player)
+    local maxUnlockedTierIndex = self._playerStateService:GetMaxUnlockedWeaponTierIndexForLevel(state.HighestLevelReached or state.Level)
+    local cleanedQueue = cleanPendingQueue(rewards.PendingQueue, rewards.ClaimedTiers, maxUnlockedTierIndex)
+    if not areQueuesEqual(cleanedQueue, rewards.PendingQueue) then
+        rewards.PendingQueue = cleanedQueue
+        self._playerStateService:SetWeaponUnlockRewards(player, rewards)
+        if self._rebirthService then
+            self._rebirthService:MarkDirty(player)
+        end
+    end
+    local claimableTierIndexes = getClaimablePendingTiers(rewards.PendingQueue, rewards.ClaimedTiers, maxUnlockedTierIndex)
+    local tierIndex = claimableTierIndexes[1]
     if tierIndex then
-        self:_firePrompt(player, tierIndex)
+        self:_firePrompt(player, tierIndex, getRewardDiamonds(), 1)
     end
 end
 
@@ -141,29 +200,36 @@ function WeaponUnlockRewardService:HandleLevelChanged(player, previousLevel, new
         return false
     end
 
-    local previousTierIndex = self._playerStateService:GetMaxUnlockedWeaponTierIndexForLevel(previousLevel)
     local newTierIndex = self._playerStateService:GetMaxUnlockedWeaponTierIndexForLevel(newLevel)
-    if newTierIndex <= previousTierIndex then
+    local rewards = self._playerStateService:GetWeaponUnlockRewards(player)
+    local lastPromptedTierIndex = math.max(1, math.floor(tonumber(rewards.LastPromptedTierIndex) or 1))
+    local queueFromTierIndex = math.max(
+        lastPromptedTierIndex + 1,
+        self._playerStateService:GetMaxUnlockedWeaponTierIndexForLevel(previousLevel) + 1
+    )
+    if newTierIndex < queueFromTierIndex then
         return false
     end
 
-    local rewards = self._playerStateService:GetWeaponUnlockRewards(player)
     local didQueue = false
-    for tierIndex = previousTierIndex + 1, newTierIndex do
-        local key = tostring(tierIndex)
-        if tierIndex > 1 and rewards.ClaimedTiers[key] ~= true and not containsTier(rewards.PendingQueue, tierIndex) then
+    for tierIndex = queueFromTierIndex, newTierIndex do
+        if tierIndex > 1 and not containsTier(rewards.PendingQueue, tierIndex) then
             table.insert(rewards.PendingQueue, tierIndex)
             didQueue = true
         end
     end
 
-    if didQueue then
+    if didQueue or newTierIndex > lastPromptedTierIndex then
+        rewards.LastPromptedTierIndex = math.max(lastPromptedTierIndex, newTierIndex)
+        rewards.PendingQueue = cleanPendingQueue(rewards.PendingQueue, rewards.ClaimedTiers, newTierIndex)
         table.sort(rewards.PendingQueue)
         self._playerStateService:SetWeaponUnlockRewards(player, rewards)
         if self._rebirthService then
             self._rebirthService:MarkDirty(player)
         end
-        self:SyncPendingPrompt(player)
+        if didQueue then
+            self:SyncPendingPrompt(player)
+        end
     end
     return didQueue
 end
@@ -184,13 +250,21 @@ function WeaponUnlockRewardService:Claim(player, requestedTierIndex)
     self._claimingByUserId[userId] = true
 
     local rewards = self._playerStateService:GetWeaponUnlockRewards(player)
-    local tierIndex = math.floor(tonumber(requestedTierIndex) or tonumber(rewards.PendingQueue and rewards.PendingQueue[1]) or 0)
-    local key = tostring(tierIndex)
     local state = self._playerStateService:GetState(player)
     local maxUnlockedTierIndex = self._playerStateService:GetMaxUnlockedWeaponTierIndexForLevel(state.HighestLevelReached or state.Level)
-    local currentQueuedTierIndex = getFirstQueuedTier(rewards.PendingQueue)
+    rewards.PendingQueue = cleanPendingQueue(rewards.PendingQueue, rewards.ClaimedTiers, maxUnlockedTierIndex)
+    self._playerStateService:SetWeaponUnlockRewards(player, rewards)
+    local claimableTierIndexes = getClaimablePendingTiers(rewards.PendingQueue, rewards.ClaimedTiers, maxUnlockedTierIndex)
+    local currentQueuedTierIndex = claimableTierIndexes[1]
+    local tierIndex = math.floor(tonumber(requestedTierIndex) or tonumber(currentQueuedTierIndex) or 0)
+    local requestedKey = tostring(tierIndex)
+    local rewardDiamonds = getRewardDiamonds()
 
-    if tierIndex <= 1 or tierIndex ~= currentQueuedTierIndex or rewards.ClaimedTiers[key] == true or not containsTier(rewards.PendingQueue, tierIndex) or tierIndex > maxUnlockedTierIndex then
+    if tierIndex <= 1
+        or tierIndex ~= currentQueuedTierIndex
+        or rewards.ClaimedTiers[requestedKey] == true
+        or not containsTier(claimableTierIndexes, tierIndex)
+    then
         self._claimingByUserId[userId] = nil
         self:_fireFeedback(player, "Failed", "InvalidTier", tierIndex)
         return false, "InvalidTier"
@@ -204,15 +278,15 @@ function WeaponUnlockRewardService:Claim(player, requestedTierIndex)
     end
 
     rewards.PendingQueue = nextQueue
-    rewards.ClaimedTiers[key] = true
+    rewards.ClaimedTiers[requestedKey] = true
     self._playerStateService:SetWeaponUnlockRewards(player, rewards)
-    self._playerStateService:_addDiamondsWithoutPush(player, getRewardDiamonds())
+    self._playerStateService:_addDiamondsWithoutPush(player, rewardDiamonds)
     if self._rebirthService then
         self._rebirthService:MarkDirty(player)
     end
 
     self._claimingByUserId[userId] = nil
-    self:_fireFeedback(player, "Success", "Claimed", tierIndex)
+    self:_fireFeedback(player, "Success", "Claimed", tierIndex, rewardDiamonds, 1, false)
     task.delay(0.35, function()
         if player and player.Parent then
             self._playerStateService:PushState(player)

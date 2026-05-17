@@ -8,6 +8,7 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/SpecialEventC
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
 
 local function requireSharedModule(moduleName)
@@ -43,6 +44,12 @@ SpecialEventController._payload = nil
 SpecialEventController._serverClockOffset = 0
 SpecialEventController._activeClone = nil
 SpecialEventController._activeCloneEventId = nil
+SpecialEventController._lightingAppliedEventId = nil
+SpecialEventController._lightingDefaultFolder = nil
+SpecialEventController._lightingDefaultAtmosphere = nil
+SpecialEventController._lightingDefaultObbySky = nil
+SpecialEventController._lightingEventFolder = nil
+SpecialEventController._lightingMovedEventChildren = {}
 SpecialEventController._lastBoardUpdateClock = 0
 
 local EVENT_BOARD_PATHS = {
@@ -108,6 +115,22 @@ local function stabilizeSceneInstance(root)
             descendant.Anchored = true
         end
     end
+end
+
+local function findOrCreateLightingFolder(name)
+    local folder = Lighting:FindFirstChild(name)
+    if folder and folder:IsA("Folder") then
+        return folder
+    end
+
+    folder = Instance.new("Folder")
+    folder.Name = name
+    folder.Parent = Lighting
+    return folder
+end
+
+local function getLightingChild(name)
+    return Lighting:FindFirstChild(name)
 end
 
 local function formatCountdown(remainingSeconds)
@@ -181,6 +204,87 @@ function SpecialEventController:_clearActiveClone()
     self._activeCloneEventId = nil
 end
 
+function SpecialEventController:_restoreLightingState()
+    local eventFolder = self._lightingEventFolder
+    if eventFolder and eventFolder.Parent == Lighting then
+        for index = #self._lightingMovedEventChildren, 1, -1 do
+            local child = self._lightingMovedEventChildren[index]
+            if child and child.Parent == Lighting then
+                child.Parent = eventFolder
+            end
+        end
+    end
+
+    local defaultFolder = self._lightingDefaultFolder
+    if defaultFolder and defaultFolder.Parent == Lighting then
+        local defaultAtmosphere = self._lightingDefaultAtmosphere
+        if defaultAtmosphere and defaultAtmosphere.Parent == defaultFolder then
+            defaultAtmosphere.Parent = Lighting
+        end
+
+        local defaultObbySky = self._lightingDefaultObbySky
+        if defaultObbySky and defaultObbySky.Parent == defaultFolder then
+            defaultObbySky.Parent = Lighting
+        end
+    end
+
+    self._lightingAppliedEventId = nil
+    self._lightingDefaultFolder = nil
+    self._lightingDefaultAtmosphere = nil
+    self._lightingDefaultObbySky = nil
+    self._lightingEventFolder = nil
+    table.clear(self._lightingMovedEventChildren)
+end
+
+function SpecialEventController:_applyLightingForActiveEvent(activeEvent)
+    local eventId = activeEvent and tonumber(activeEvent.id) or nil
+    if self._lightingAppliedEventId == eventId then
+        return
+    end
+
+    if self._lightingAppliedEventId ~= nil then
+        self:_restoreLightingState()
+    end
+
+    if not activeEvent then
+        return
+    end
+
+    local eventName = tostring(activeEvent.name or "")
+    if eventName == "" then
+        return
+    end
+
+    local eventFolder = Lighting:FindFirstChild(eventName)
+    if not (eventFolder and eventFolder:IsA("Folder")) then
+        warn(string.format("[SpecialEventController] 找不到 Lighting/%s 事件天空文件夹", eventName))
+        return
+    end
+
+    local defaultFolder = findOrCreateLightingFolder("Default")
+    local defaultAtmosphere = getLightingChild("Atmosphere")
+    local defaultObbySky = getLightingChild("Obby Sky")
+
+    self._lightingAppliedEventId = eventId
+    self._lightingDefaultFolder = defaultFolder
+    self._lightingDefaultAtmosphere = defaultAtmosphere
+    self._lightingDefaultObbySky = defaultObbySky
+    self._lightingEventFolder = eventFolder
+    table.clear(self._lightingMovedEventChildren)
+
+    if defaultAtmosphere and defaultAtmosphere.Parent == Lighting then
+        defaultAtmosphere.Parent = defaultFolder
+    end
+    if defaultObbySky and defaultObbySky.Parent == Lighting then
+        defaultObbySky.Parent = defaultFolder
+    end
+
+    for _, child in ipairs(eventFolder:GetChildren()) do
+        table.insert(self._lightingMovedEventChildren, child)
+        child.Parent = Lighting
+    end
+end
+
 function SpecialEventController:_cloneEventScene(activeEvent)
     if not activeEvent then
         self:_clearActiveClone()
@@ -239,7 +343,9 @@ function SpecialEventController:_getActiveEvent()
 end
 
 function SpecialEventController:_refreshScene()
-    self:_cloneEventScene(self:_getActiveEvent())
+    local activeEvent = self:_getActiveEvent()
+    self:_cloneEventScene(activeEvent)
+    self:_applyLightingForActiveEvent(activeEvent)
 end
 
 function SpecialEventController:_hideAllEventLabels(frame)
@@ -319,6 +425,7 @@ end
 function SpecialEventController:Init()
     disconnectAll(self._connections)
     self:_clearActiveClone()
+    self:_restoreLightingState()
     self._payload = nil
     self._serverClockOffset = 0
     self._lastBoardUpdateClock = 0

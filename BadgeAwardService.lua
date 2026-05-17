@@ -119,7 +119,7 @@ function BadgeAwardService:AwardBadge(player, badgeKeyOrId, source)
     end
 
     local ok, awardErr = pcall(function()
-        BadgeService:AwardBadge(userId, badgeId)
+        BadgeService:AwardBadgeAsync(userId, badgeId)
     end)
     self._awardInProgressByUserIdAndBadgeId[awardKey] = nil
 

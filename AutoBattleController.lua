@@ -71,6 +71,9 @@ AutoBattleController._lastProgressCheckDistance = nil
 AutoBattleController._lastProgressCheckTargetId = nil
 AutoBattleController._autoButtonUiScale = nil
 AutoBattleController._autoButtonTween = nil
+AutoBattleController._autoBannerPhase = 0
+AutoBattleController._autoBannerBaseColor = nil
+AutoBattleController._autoBannerBaseGradient = nil
 AutoBattleController._isAutoButtonHovered = false
 AutoBattleController._isAutoButtonPressed = false
 
@@ -94,6 +97,7 @@ local PRESS_SCALE = 0.92
 local HOVER_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local PRESS_TWEEN_INFO = TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local RESET_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local AUTO_BANNER_SCROLL_SPEED = 0.45
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -127,6 +131,77 @@ local function setEnabled(instance, enabled)
     pcall(function()
         instance.Enabled = enabled == true
     end)
+end
+
+local function wrapUnit(value)
+    local wrapped = (tonumber(value) or 0) % 1
+    if wrapped < 0 then
+        wrapped += 1
+    end
+    return wrapped
+end
+
+local function lerpColor(colorA, colorB, alpha)
+    return Color3.new(
+        colorA.R + ((colorB.R - colorA.R) * alpha),
+        colorA.G + ((colorB.G - colorA.G) * alpha),
+        colorA.B + ((colorB.B - colorA.B) * alpha)
+    )
+end
+
+local function sampleColorSequence(colorSequence, time)
+    local keypoints = colorSequence and colorSequence.Keypoints
+    if not keypoints or #keypoints == 0 then
+        return Color3.new(1, 1, 1)
+    end
+
+    local clampedTime = math.clamp(tonumber(time) or 0, 0, 1)
+    if clampedTime <= keypoints[1].Time then
+        return keypoints[1].Value
+    end
+
+    for index = 2, #keypoints do
+        local currentKeypoint = keypoints[index]
+        if clampedTime <= currentKeypoint.Time then
+            local previousKeypoint = keypoints[index - 1]
+            local span = currentKeypoint.Time - previousKeypoint.Time
+            local alpha = span > 0 and ((clampedTime - previousKeypoint.Time) / span) or 0
+            return lerpColor(previousKeypoint.Value, currentKeypoint.Value, alpha)
+        end
+    end
+
+    return keypoints[#keypoints].Value
+end
+
+local function buildShiftedColorSequence(colorSequence, phase)
+    local shiftedPhase = wrapUnit(phase)
+    local times = { 0, 1 }
+    local sourceKeypoints = colorSequence and colorSequence.Keypoints or {}
+    for _, keypoint in ipairs(sourceKeypoints) do
+        local shiftedTime = wrapUnit(keypoint.Time + shiftedPhase)
+        if shiftedTime > 0 and shiftedTime < 1 then
+            table.insert(times, shiftedTime)
+        end
+    end
+
+    table.sort(times)
+
+    local shiftedKeypoints = {}
+    local previousTime = nil
+    for _, time in ipairs(times) do
+        if previousTime == nil or math.abs(time - previousTime) > 0.0001 then
+            table.insert(shiftedKeypoints, ColorSequenceKeypoint.new(
+                time,
+                sampleColorSequence(colorSequence, wrapUnit(time - shiftedPhase))
+            ))
+            previousTime = time
+        end
+    end
+
+    if #shiftedKeypoints < 2 then
+        return colorSequence
+    end
+    return ColorSequence.new(shiftedKeypoints)
 end
 
 local function ensureUiScale(guiObject)
@@ -250,12 +325,55 @@ function AutoBattleController:_updateAutoButtonUi()
     end
 
     setText(self._autoButton:FindFirstChild("Name", true), self._isAutoEnabled and "Stop" or "Auto")
+    local label = self._autoButton:FindFirstChild("Label", true)
+    if label and label:IsA("GuiObject") then
+        label.Visible = self._isAutoEnabled ~= true
+    end
 
     local bg = self._autoButton:FindFirstChild("Bg", true)
     local bannerOn = bg and bg:FindFirstChild("BannerOn", true)
     local bannerOff = bg and bg:FindFirstChild("BannerOff", true)
-    setEnabled(bannerOn, self._isAutoEnabled ~= true)
-    setEnabled(bannerOff, self._isAutoEnabled == true)
+    setEnabled(bannerOn, self._isAutoEnabled == true)
+    setEnabled(bannerOff, self._isAutoEnabled ~= true)
+
+    if bannerOn and bannerOn:IsA("UIGradient") and self._autoBannerBaseGradient ~= bannerOn then
+        self._autoBannerBaseGradient = bannerOn
+        self._autoBannerBaseColor = bannerOn.Color
+    end
+
+    if bannerOn and bannerOn:IsA("UIGradient") and self._isAutoEnabled ~= true then
+        self._autoBannerPhase = 0
+        if self._autoBannerBaseColor then
+            bannerOn.Color = self._autoBannerBaseColor
+        end
+        bannerOn.Offset = Vector2.new(0, 0)
+    end
+end
+
+function AutoBattleController:_stepAutoButtonBanner(deltaTime)
+    if self._isAutoEnabled ~= true or not self._autoButton then
+        return
+    end
+
+    local bg = self._autoButton:FindFirstChild("Bg", true)
+    local bannerOn = bg and bg:FindFirstChild("BannerOn", true)
+    if not (bannerOn and bannerOn:IsA("UIGradient") and bannerOn.Enabled == true) then
+        return
+    end
+
+    if self._autoBannerBaseGradient ~= bannerOn then
+        self._autoBannerBaseGradient = bannerOn
+        self._autoBannerBaseColor = bannerOn.Color
+        self._autoBannerPhase = 0
+    end
+
+    if not self._autoBannerBaseColor then
+        self._autoBannerBaseColor = bannerOn.Color
+    end
+
+    self._autoBannerPhase = wrapUnit((self._autoBannerPhase or 0) + ((tonumber(deltaTime) or 0) * AUTO_BANNER_SCROLL_SPEED))
+    bannerOn.Offset = Vector2.new(0, 0)
+    bannerOn.Color = buildShiftedColorSequence(self._autoBannerBaseColor, self._autoBannerPhase)
 end
 
 function AutoBattleController:_cancelAutoButtonTween()
@@ -873,7 +991,8 @@ function AutoBattleController:Init(dependencies)
         end))
     end
 
-    self._renderConnection = RunService.RenderStepped:Connect(function()
+    self._renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
+        self:_stepAutoButtonBanner(deltaTime)
         self:_stepAutoBattle()
     end)
 end

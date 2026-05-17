@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local function requireSharedModule(moduleName)
@@ -40,6 +41,7 @@ local LocalMonsterController = {}
 
 LocalMonsterController._localPlayer = nil
 LocalMonsterController._weaponFxController = nil
+LocalMonsterController._audioSettings = nil
 LocalMonsterController._monsterFolder = nil
 LocalMonsterController._battlePart = nil
 LocalMonsterController._connections = {}
@@ -54,15 +56,30 @@ LocalMonsterController._spawnTokenRequestPending = false
 LocalMonsterController._spawnTokenRequestDeadline = 0
 LocalMonsterController._nextSpawnTokenRequestClock = 0
 LocalMonsterController._nextMonsterId = 1
+LocalMonsterController._nextKillRequestId = 1
 LocalMonsterController._nextSpawnClock = 0
 LocalMonsterController._simulationAccumulator = 0
-LocalMonsterController._nextSpawnSlotIndex = 0
 LocalMonsterController._nukeLocalMonsterSweepEvent = nil
+LocalMonsterController._pendingKillsByRequestId = {}
 
 local LOOP_FADE_SECONDS = 0.12
 local ATTACK_FADE_SECONDS = 0.04
 local MOVING_SPEED_THRESHOLD = 0.35
 local SPATIAL_CELL_SIZE = 10
+local DEFAULT_LOCAL_SIMULATION_TICK_SECONDS = 0.08
+local LOCAL_DAMAGE_MERGE_SECONDS = 0.18
+local LOCAL_TOKEN_EXPIRY_BUFFER_SECONDS = 3
+local KILL_ACK_RETRY_SECONDS = 1.25
+local VISUAL_FOLLOW_SPEED = 22
+local VISUAL_SNAP_DISTANCE = 18
+
+local function getLocalSimulationTickSeconds()
+    local configuredTick = tonumber(GameConfig.MONSTER and GameConfig.MONSTER.LocalSimulationTickSeconds) or 0
+    if configuredTick > 0 then
+        return configuredTick
+    end
+    return DEFAULT_LOCAL_SIMULATION_TICK_SECONDS
+end
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -129,6 +146,19 @@ local function setInstanceCFrame(instance, cframe)
     elseif instance:IsA("BasePart") then
         instance.CFrame = cframe
     end
+end
+
+local function getPlanarLookAtCFrame(position, lookAtPosition)
+    if typeof(position) ~= "Vector3" then
+        return nil
+    end
+    if typeof(lookAtPosition) == "Vector3" then
+        local lookAt = Vector3.new(lookAtPosition.X, position.Y, lookAtPosition.Z)
+        if (lookAt - position).Magnitude > 0.001 then
+            return CFrame.new(position, lookAt)
+        end
+    end
+    return CFrame.new(position)
 end
 
 local function getBottomOffsetFromPivot(instance)
@@ -278,6 +308,41 @@ local function getMonsterValue(monsterState, key, fallback)
     return value
 end
 
+local function isSpawnAuthorizationFresh(spawnAuthorization)
+    if not spawnAuthorization then
+        return false
+    end
+
+    local localExpiresAt = tonumber(spawnAuthorization.localExpiresAt)
+    if localExpiresAt and localExpiresAt - os.clock() <= LOCAL_TOKEN_EXPIRY_BUFFER_SECONDS then
+        return false
+    end
+
+    return tostring(spawnAuthorization.token or "") ~= ""
+end
+
+local function formatDamage(amount)
+    local value = math.max(0, math.floor(tonumber(amount) or 0))
+    if value >= 1000000 then
+        return string.format("%.1fM", value / 1000000):gsub("%.0M", "M")
+    end
+    if value >= 1000 then
+        return string.format("%.1fK", value / 1000):gsub("%.0K", "K")
+    end
+    return tostring(value)
+end
+
+local function getDamageColors(amount)
+    local value = math.max(0, tonumber(amount) or 0)
+    if value >= 10000 then
+        return Color3.fromRGB(255, 139, 47), Color3.fromRGB(76, 40, 18)
+    end
+    if value >= 1000 then
+        return Color3.fromRGB(255, 230, 92), Color3.fromRGB(196, 88, 24)
+    end
+    return Color3.fromRGB(255, 255, 255), Color3.fromRGB(38, 42, 56)
+end
+
 local function setLoop(monsterState, loopName)
     if monsterState.CurrentLoopName == loopName then
         local currentTrack = monsterState.Tracks and monsterState.Tracks[loopName]
@@ -330,6 +395,20 @@ local function getPartCollisionReach(basePart)
     end
     local size = basePart.Size
     return math.max(size.X, size.Y, size.Z) * 0.5
+end
+
+local function getMonsterHeight(instance)
+    if not instance then
+        return 5
+    end
+    if instance:IsA("Model") then
+        local _, size = instance:GetBoundingBox()
+        return math.max(1, size.Y)
+    end
+    if instance:IsA("BasePart") then
+        return math.max(1, instance.Size.Y)
+    end
+    return 5
 end
 
 local function isWeaponHittingPosition(weaponState, targetPosition, targetRadius)
@@ -397,7 +476,7 @@ function LocalMonsterController:_getGroundY(template)
     return groundY - getBottomOffsetFromPivot(template)
 end
 
-function LocalMonsterController:_samplePointInsideBattle(slotIndex)
+function LocalMonsterController:_samplePointInsideBattle()
     if not self._battlePart then
         return nil
     end
@@ -406,22 +485,8 @@ function LocalMonsterController:_samplePointInsideBattle(slotIndex)
     local padding = GameConfig.MONSTER.EdgePadding
     local usableHalfX = math.max(0, (size.X * 0.5) - padding)
     local usableHalfZ = math.max(0, (size.Z * 0.5) - padding)
-    local targetCount = math.max(1, math.floor(tonumber(GameConfig.MONSTER.MaxActiveCount) or 1))
-    local aspectRatio = usableHalfZ > 0 and (usableHalfX / usableHalfZ) or 1
-    local columns = math.max(1, math.ceil(math.sqrt(targetCount * math.max(0.25, aspectRatio))))
-    local rows = math.max(1, math.ceil(targetCount / columns))
-    local normalizedSlotIndex = (math.max(1, math.floor(tonumber(slotIndex) or 1)) - 1) % (columns * rows)
-    local column = normalizedSlotIndex % columns
-    local row = math.floor(normalizedSlotIndex / columns)
-    local cellWidth = (usableHalfX * 2) / columns
-    local cellDepth = (usableHalfZ * 2) / rows
-    local jitterRatio = math.clamp(tonumber(GameConfig.MONSTER.EvenSpawnJitterRatio) or 0.35, 0, 0.45)
-    local jitterX = (math.random() * 2 - 1) * cellWidth * jitterRatio
-    local jitterZ = (math.random() * 2 - 1) * cellDepth * jitterRatio
-    local localX = -usableHalfX + ((column + 0.5) * cellWidth) + jitterX
-    local localZ = -usableHalfZ + ((row + 0.5) * cellDepth) + jitterZ
-    localX = math.clamp(localX, -usableHalfX, usableHalfX)
-    localZ = math.clamp(localZ, -usableHalfZ, usableHalfZ)
+    local localX = (math.random() * 2 - 1) * usableHalfX
+    local localZ = (math.random() * 2 - 1) * usableHalfZ
 
     local worldPoint = (self._battlePart.CFrame * CFrame.new(localX, 0, localZ)).Position
     return Vector3.new(worldPoint.X, worldPoint.Y, worldPoint.Z)
@@ -489,8 +554,26 @@ function LocalMonsterController:_loadTracks(instance, monsterDefinition)
     }
 end
 
+function LocalMonsterController:_discardExpiredSpawnTokens()
+    local freshQueue = {}
+    local discardedTokens = {}
+    for _, spawnAuthorization in ipairs(self._spawnTokenQueue) do
+        if isSpawnAuthorizationFresh(spawnAuthorization) then
+            table.insert(freshQueue, spawnAuthorization)
+        elseif spawnAuthorization and spawnAuthorization.token then
+            table.insert(discardedTokens, spawnAuthorization.token)
+        end
+    end
+    self._spawnTokenQueue = freshQueue
+    self:_discardSpawnTokensOnServer(discardedTokens)
+end
+
 function LocalMonsterController:_spawnMonster()
-    local spawnAuthorization = table.remove(self._spawnTokenQueue, 1)
+    local spawnAuthorization = nil
+    repeat
+        spawnAuthorization = table.remove(self._spawnTokenQueue, 1)
+    until not spawnAuthorization or isSpawnAuthorizationFresh(spawnAuthorization)
+
     if not spawnAuthorization then
         self:_requestSpawnTokens()
         return nil
@@ -502,8 +585,7 @@ function LocalMonsterController:_spawnMonster()
         return nil
     end
     local template = self:_resolveTemplate(monsterDefinition)
-    self._nextSpawnSlotIndex += 1
-    local spawnPoint = self:_samplePointInsideBattle(self._nextSpawnSlotIndex)
+    local spawnPoint = self:_samplePointInsideBattle()
     if not spawnPoint then
         return nil
     end
@@ -530,6 +612,8 @@ function LocalMonsterController:_spawnMonster()
     local monsterState = {
         Id = monsterId,
         SpawnToken = spawnAuthorization.token,
+        SpawnTokenExpiresAt = spawnAuthorization.expiresAt,
+        SpawnTokenLocalExpiresAt = spawnAuthorization.localExpiresAt,
         MonsterDefinitionId = monsterDefinitionId,
         MonsterTemplateName = monsterTemplateName,
         MonsterType = monsterTypeName,
@@ -558,8 +642,16 @@ function LocalMonsterController:_spawnMonster()
         Tracks = self:_loadTracks(instance, monsterDefinition),
         CurrentLoopName = nil,
         LastPosition = spawnPosition,
+        DisplayPosition = spawnPosition,
+        DisplayLookAt = nil,
+        DamageBucket = nil,
     }
     self._monstersById[monsterId] = monsterState
+    self._localMonsterSpawnTokenEvent:FireServer({
+        eventType = "Activate",
+        token = monsterState.SpawnToken,
+        timestamp = os.clock(),
+    })
     setLoop(monsterState, "Idle")
     return monsterState
 end
@@ -581,14 +673,50 @@ function LocalMonsterController:_destroyMonster(monsterState)
     self._monstersById[monsterState.Id] = nil
 end
 
-function LocalMonsterController:_clearMonsters()
+function LocalMonsterController:_discardSpawnTokensOnServer(tokens)
+    if not (self._localMonsterSpawnTokenEvent and type(tokens) == "table" and #tokens > 0) then
+        return
+    end
+
+    self._localMonsterSpawnTokenEvent:FireServer({
+        eventType = "Discard",
+        tokens = tokens,
+        timestamp = os.clock(),
+    })
+end
+
+function LocalMonsterController:_clearMonsters(options)
+    local shouldDiscardTokens = not (type(options) == "table" and options.preserveTokens == true)
+    local discardedTokens = {}
     for _, monsterState in pairs(self._monstersById) do
+        if shouldDiscardTokens and monsterState and monsterState.SpawnToken and not monsterState.PendingKill then
+            table.insert(discardedTokens, monsterState.SpawnToken)
+        end
         self:_destroyMonster(monsterState)
     end
+    if shouldDiscardTokens then
+        for _, spawnAuthorization in ipairs(self._spawnTokenQueue) do
+            if spawnAuthorization and spawnAuthorization.token then
+                table.insert(discardedTokens, spawnAuthorization.token)
+            end
+        end
+    end
     self._monstersById = {}
+    table.clear(self._pendingKillsByRequestId)
+    self:_discardSpawnTokensOnServer(discardedTokens)
     if self._monsterFolder and self._monsterFolder.Parent then
         self._monsterFolder:ClearAllChildren()
     end
+end
+
+function LocalMonsterController:_resetLocalMonsterPopulation()
+    self:_clearMonsters()
+    self._spawnTokenQueue = {}
+    self._spawnTokenRequestPending = false
+    self._spawnTokenRequestDeadline = 0
+    self._nextSpawnTokenRequestClock = 0
+    self._nextSpawnClock = 0
+    self._simulationAccumulator = 0
 end
 
 function LocalMonsterController:SweepForNuke(sessionId)
@@ -599,7 +727,9 @@ function LocalMonsterController:SweepForNuke(sessionId)
         end
     end
 
-    self:_clearMonsters()
+    self:_clearMonsters({
+        preserveTokens = true,
+    })
     self._nextSpawnClock = os.clock() + math.max(0, tonumber(GameConfig.NUKE.MonsterRespawnPauseSeconds) or 2.5)
 
     if self._nukeLocalMonsterSweepEvent and #tokens > 0 then
@@ -632,6 +762,7 @@ function LocalMonsterController:_maintainPopulation()
         or (GameConfig.MONSTER.PreloadMaxSpawnPerInterval or GameConfig.MONSTER.MaxSpawnPerInterval)
     self._nextSpawnClock = now + spawnInterval
 
+    self:_discardExpiredSpawnTokens()
     local missingCount = GameConfig.MONSTER.MaxActiveCount - self:_getActiveMonsterCount()
     local spawnCount = math.min(missingCount, maxSpawnPerInterval or missingCount)
     if #self._spawnTokenQueue < spawnCount then
@@ -649,8 +780,11 @@ function LocalMonsterController:_buildSpatialGrid()
     local cellSize = SPATIAL_CELL_SIZE
     for _, monsterState in pairs(self._monstersById) do
         if monsterState.Alive then
-            monsterState.Position = getInstancePosition(monsterState.Instance) or monsterState.Position
             local position = monsterState.Position
+            if not position then
+                position = getInstancePosition(monsterState.Instance)
+                monsterState.Position = position
+            end
             if position then
                 local cellX = math.floor(position.X / cellSize)
                 local cellZ = math.floor(position.Z / cellSize)
@@ -719,11 +853,76 @@ function LocalMonsterController:_reportMonsterKilled(monsterState)
     if not (self._localMonsterKilledEvent and monsterState and monsterState.SpawnToken) then
         return
     end
+
+    if monsterState.PendingKill then
+        return
+    end
+
+    local requestId = tostring(self._nextKillRequestId)
+    self._nextKillRequestId += 1
+    monsterState.PendingKill = true
+    monsterState.KillRequestId = requestId
+    monsterState.KillRequestClock = os.clock()
+    monsterState.Alive = false
+    self._pendingKillsByRequestId[requestId] = monsterState
+
     self._localMonsterKilledEvent:FireServer({
+        requestId = requestId,
         token = monsterState.SpawnToken,
         deathPosition = monsterState.Position or getInstancePosition(monsterState.Instance),
         timestamp = os.clock(),
     })
+end
+
+function LocalMonsterController:_handleKillAck(payload)
+    if type(payload) ~= "table" then
+        return
+    end
+
+    local requestId = tostring(payload.requestId or payload.RequestId or "")
+    if requestId == "" then
+        return
+    end
+
+    local monsterState = self._pendingKillsByRequestId[requestId]
+    if not monsterState then
+        return
+    end
+    self._pendingKillsByRequestId[requestId] = nil
+
+    local eventType = tostring(payload.eventType or "")
+    if eventType == "KillAccepted" then
+        self:_destroyMonster(monsterState)
+        return
+    end
+
+    warn(string.format(
+        "[LocalMonsterController] 本地小怪击杀未结算经验，丢弃异常怪并补刷: reason=%s token=%s",
+        tostring(payload.reason or "Unknown"),
+        tostring(monsterState.SpawnToken or "")
+    ))
+    self:_destroyMonster(monsterState)
+    self._nextSpawnClock = 0
+    self:_requestSpawnTokens(1)
+end
+
+function LocalMonsterController:_retryPendingKillReports()
+    if not self._localMonsterKilledEvent then
+        return
+    end
+
+    local now = os.clock()
+    for requestId, monsterState in pairs(self._pendingKillsByRequestId) do
+        if monsterState and monsterState.SpawnToken and now - (monsterState.KillRequestClock or 0) >= KILL_ACK_RETRY_SECONDS then
+            monsterState.KillRequestClock = now
+            self._localMonsterKilledEvent:FireServer({
+                requestId = requestId,
+                token = monsterState.SpawnToken,
+                deathPosition = monsterState.Position or getInstancePosition(monsterState.Instance),
+                timestamp = now,
+            })
+        end
+    end
 end
 
 function LocalMonsterController:_requestSpawnTokens(count)
@@ -756,16 +955,35 @@ end
 function LocalMonsterController:_handleSpawnTokenPayload(payload)
     self._spawnTokenRequestPending = false
     self._spawnTokenRequestDeadline = 0
+
+    if type(payload) == "table" and (payload.eventType == "KillAccepted" or payload.eventType == "KillRejected") then
+        self:_handleKillAck(payload)
+        return
+    end
+
     if not (type(payload) == "table" and payload.eventType == "Tokens" and type(payload.tokens) == "table") then
         return
     end
 
     for _, tokenInfo in ipairs(payload.tokens) do
-        if type(tokenInfo) == "table" and tostring(tokenInfo.token or "") ~= "" then
-            table.insert(self._spawnTokenQueue, {
+        if type(tokenInfo) == "table" then
+            local receivedAt = os.clock()
+            local serverNow = tonumber(payload.timestamp)
+            local expiresAt = tonumber(tokenInfo.expiresAt)
+            local localExpiresAt = expiresAt
+            if expiresAt and serverNow then
+                localExpiresAt = receivedAt + math.max(0, expiresAt - serverNow)
+            end
+
+            local spawnAuthorization = {
                 token = tostring(tokenInfo.token),
                 monsterDefinitionId = tostring(tokenInfo.monsterDefinitionId or GameConfig.MONSTER.MonsterDefinitionId),
-            })
+                expiresAt = expiresAt,
+                localExpiresAt = localExpiresAt,
+            }
+            if isSpawnAuthorizationFresh(spawnAuthorization) then
+                table.insert(self._spawnTokenQueue, spawnAuthorization)
+            end
         end
     end
 end
@@ -788,9 +1006,9 @@ function LocalMonsterController:_applyHitKnockback(monsterState, sourcePosition)
     if instantDistance > 0 then
         local nextPosition = self:_clampPositionInsideBattle(monsterState.Position + (knockbackDirection * instantDistance))
         nextPosition = Vector3.new(nextPosition.X, monsterState.GroundY or monsterState.Position.Y, nextPosition.Z)
-        setInstanceCFrame(monsterState.Instance, CFrame.new(nextPosition))
         monsterState.LastPosition = nextPosition
         monsterState.Position = nextPosition
+        monsterState.DisplayLookAt = monsterState.DisplayLookAt or nextPosition + knockbackDirection
     end
 
     monsterState.KnockbackVelocity = knockbackDirection * (distance / duration)
@@ -813,6 +1031,114 @@ function LocalMonsterController:_applyHitKnockback(monsterState, sourcePosition)
             end
         end)
     end
+end
+
+function LocalMonsterController:_createDamageNumberAnchor(monsterState, snapshotPosition, snapshotHeight)
+    local position = snapshotPosition
+    if typeof(position) ~= "Vector3" then
+        position = monsterState and monsterState.Position
+    end
+    if typeof(position) ~= "Vector3" then
+        local instance = monsterState and monsterState.Instance
+        position = instance and getInstancePosition(instance) or Vector3.zero
+    end
+
+    local height = tonumber(snapshotHeight) or getMonsterHeight(monsterState and monsterState.Instance)
+    local anchor = Instance.new("Part")
+    anchor.Name = "LocalMonsterDamageNumberAnchor"
+    anchor.Anchored = true
+    anchor.CanCollide = false
+    anchor.CanTouch = false
+    anchor.CanQuery = false
+    anchor.Transparency = 1
+    anchor.Size = Vector3.new(0.2, 0.2, 0.2)
+    anchor.CFrame = CFrame.new(position + Vector3.new(0, math.max(2.5, height * 0.58 + 1), 0))
+    anchor.Parent = Workspace.CurrentCamera or Workspace
+    return anchor
+end
+
+function LocalMonsterController:_showDamageNumber(monsterState, amount, snapshotPosition, snapshotHeight)
+    local anchor = self:_createDamageNumberAnchor(monsterState, snapshotPosition, snapshotHeight)
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "LocalMonsterDamageNumbers_Client"
+    gui.Adornee = anchor
+    gui.AlwaysOnTop = true
+    gui.LightInfluence = 0
+    gui.Size = UDim2.fromOffset(180, 70)
+    gui.Parent = anchor
+
+    local textColor, strokeColor = getDamageColors(amount)
+    local label = Instance.new("TextLabel")
+    label.Name = "DamageNumber"
+    label.AnchorPoint = Vector2.new(0.5, 0.5)
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.fromScale(0.5 + ((math.random() - 0.5) * 0.16), 0.62)
+    label.Size = UDim2.fromOffset(110, 34)
+    label.Font = Enum.Font.GothamBold
+    label.Text = formatDamage(amount)
+    label.TextColor3 = textColor
+    label.TextScaled = true
+    label.TextTransparency = 0
+    label.Parent = gui
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = strokeColor
+    stroke.Thickness = 2.5
+    stroke.Transparency = 0
+    stroke.Parent = label
+
+    TweenService:Create(label, TweenInfo.new(0.62, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Position = UDim2.fromScale(label.Position.X.Scale, 0.08),
+        Size = UDim2.fromOffset(138, 42),
+        TextTransparency = 1,
+    }):Play()
+    TweenService:Create(stroke, TweenInfo.new(0.62, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Transparency = 1,
+    }):Play()
+
+    task.delay(0.72, function()
+        if anchor and anchor.Parent then
+            anchor:Destroy()
+        end
+    end)
+end
+
+function LocalMonsterController:_queueDamageNumber(monsterState, amount)
+    if not (monsterState and monsterState.Alive) then
+        return
+    end
+
+    local bucket = monsterState.DamageBucket
+    if not bucket then
+        bucket = {
+            Amount = 0,
+            Position = monsterState.Position,
+            Height = getMonsterHeight(monsterState.Instance),
+        }
+        monsterState.DamageBucket = bucket
+
+        task.delay(LOCAL_DAMAGE_MERGE_SECONDS, function()
+            if monsterState.DamageBucket ~= bucket then
+                return
+            end
+
+            monsterState.DamageBucket = nil
+            if bucket.Amount > 0 then
+                self:_showDamageNumber(monsterState, bucket.Amount, bucket.Position, bucket.Height)
+            end
+        end)
+    end
+
+    bucket.Amount += math.max(0, math.floor(tonumber(amount) or 0))
+    bucket.Position = monsterState.Position or bucket.Position
+    bucket.Height = bucket.Height or getMonsterHeight(monsterState.Instance)
+end
+
+function LocalMonsterController:_playHitFeedback(monsterState, damage)
+    if self._audioSettings and self._audioSettings.PlaySfxByPath then
+        self._audioSettings:PlaySfxByPath("Audio", { "Sword", "SwordHitRelease" }, true)
+    end
+    self:_queueDamageNumber(monsterState, damage)
 end
 
 function LocalMonsterController:_applyWeaponHits(monsterState)
@@ -840,10 +1166,12 @@ function LocalMonsterController:_applyWeaponHits(monsterState)
                     if isWeaponHittingPosition(weaponState, monsterState.Position, contactRadius) then
                         monsterState.LastWeaponHitClockByKey[cooldownKey] = now
                         self:_applyHitKnockback(monsterState, weaponPosition)
-                        monsterState.CurrentHealth = math.max(0, monsterState.CurrentHealth - math.max(0, math.floor(tonumber(weaponState.Damage) or 0)))
+                        local damage = math.max(0, math.floor(tonumber(weaponState.Damage) or 0))
+                        local previousHealth = math.max(0, math.floor(tonumber(monsterState.CurrentHealth) or 0))
+                        monsterState.CurrentHealth = math.max(0, previousHealth - damage)
+                        self:_playHitFeedback(monsterState, damage)
                         if monsterState.CurrentHealth <= 0 then
                             self:_reportMonsterKilled(monsterState)
-                            self:_destroyMonster(monsterState)
                             return
                         end
                     end
@@ -891,9 +1219,9 @@ function LocalMonsterController:_stepMonster(monsterState, grid, deltaTime)
         if knockback.Magnitude > 0 then
             local nextPosition = self:_clampPositionInsideBattle(position + knockback)
             nextPosition = Vector3.new(nextPosition.X, monsterState.GroundY or position.Y, nextPosition.Z)
-            setInstanceCFrame(monsterState.Instance, CFrame.new(nextPosition))
             monsterState.LastPosition = nextPosition
             monsterState.Position = nextPosition
+            monsterState.DisplayLookAt = nextPosition + knockback
         end
         return
     end
@@ -927,12 +1255,7 @@ function LocalMonsterController:_stepMonster(monsterState, grid, deltaTime)
 
     local nextPosition = self:_clampPositionInsideBattle(position + movement + separation + knockback)
     nextPosition = Vector3.new(nextPosition.X, monsterState.GroundY or position.Y, nextPosition.Z)
-    local lookAt = Vector3.new(rootPart.Position.X, nextPosition.Y, rootPart.Position.Z)
-    if (lookAt - nextPosition).Magnitude > 0.001 then
-        setInstanceCFrame(monsterState.Instance, CFrame.new(nextPosition, lookAt))
-    else
-        setInstanceCFrame(monsterState.Instance, CFrame.new(nextPosition))
-    end
+    monsterState.DisplayLookAt = Vector3.new(rootPart.Position.X, nextPosition.Y, rootPart.Position.Z)
 
     local speed = (nextPosition - (monsterState.LastPosition or position)).Magnitude / math.max(deltaTime, 0.001)
     monsterState.LastPosition = nextPosition
@@ -941,28 +1264,65 @@ function LocalMonsterController:_stepMonster(monsterState, grid, deltaTime)
     self:_applyWeaponHits(monsterState)
 end
 
+function LocalMonsterController:_updateMonsterVisual(monsterState, deltaTime)
+    if not (monsterState and monsterState.Alive and monsterState.Instance and monsterState.Instance.Parent) then
+        return
+    end
+
+    local targetPosition = monsterState.Position
+    if typeof(targetPosition) ~= "Vector3" then
+        return
+    end
+
+    local displayPosition = monsterState.DisplayPosition
+    if typeof(displayPosition) ~= "Vector3" then
+        displayPosition = getInstancePosition(monsterState.Instance) or targetPosition
+    end
+
+    local distance = (targetPosition - displayPosition).Magnitude
+    if distance >= VISUAL_SNAP_DISTANCE then
+        displayPosition = targetPosition
+    else
+        local alpha = 1 - math.exp(-VISUAL_FOLLOW_SPEED * math.max(0, deltaTime))
+        displayPosition = displayPosition:Lerp(targetPosition, math.clamp(alpha, 0, 1))
+    end
+
+    monsterState.DisplayPosition = displayPosition
+    local cframe = getPlanarLookAtCFrame(displayPosition, monsterState.DisplayLookAt)
+    if cframe then
+        setInstanceCFrame(monsterState.Instance, cframe)
+    end
+end
+
+function LocalMonsterController:_updateVisuals(deltaTime)
+    for _, monsterState in pairs(self._monstersById) do
+        self:_updateMonsterVisual(monsterState, deltaTime)
+    end
+end
+
 function LocalMonsterController:_step(deltaTime)
+    self:_retryPendingKillReports()
     self:_maintainPopulation()
     if not (self._latestPlayerState and self._latestPlayerState.isInArena and self._latestPlayerState.alive) then
         self._simulationAccumulator = 0
         for _, monsterState in pairs(self._monstersById) do
             if monsterState.Alive then
                 setLoop(monsterState, "Idle")
+                monsterState.DisplayPosition = monsterState.Position or getInstancePosition(monsterState.Instance)
+                monsterState.DisplayLookAt = nil
             end
         end
         return
     end
 
-    local tickSeconds = math.max(0, tonumber(GameConfig.MONSTER.LocalSimulationTickSeconds) or 0)
-    if tickSeconds > 0 then
-        self._simulationAccumulator += deltaTime
-        if self._simulationAccumulator < tickSeconds then
-            return
-        end
+    local tickSeconds = getLocalSimulationTickSeconds()
+    self._simulationAccumulator = math.min((self._simulationAccumulator or 0) + deltaTime, 0.2)
+    if self._simulationAccumulator < tickSeconds then
+        return
     end
 
-    local stepDelta = tickSeconds > 0 and math.min(self._simulationAccumulator, 0.2) or math.min(deltaTime, 0.05)
-    self._simulationAccumulator = 0
+    self._simulationAccumulator -= tickSeconds
+    local stepDelta = math.min(tickSeconds, 0.2)
     local grid = self:_buildSpatialGrid()
     for _, monsterState in pairs(self._monstersById) do
         self:_stepMonster(monsterState, grid, stepDelta)
@@ -1080,6 +1440,7 @@ end
 function LocalMonsterController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._weaponFxController = dependencies and dependencies.WeaponFxController or nil
+    self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
     self._battlePart = self:_resolveBattlePart()
     self._monstersById = {}
     self._spawnTokenQueue = {}
@@ -1087,9 +1448,10 @@ function LocalMonsterController:Init(dependencies)
     self._spawnTokenRequestDeadline = 0
     self._nextSpawnTokenRequestClock = 0
     self._nextMonsterId = 1
+    self._nextKillRequestId = 1
     self._nextSpawnClock = 0
     self._simulationAccumulator = 0
-    self._nextSpawnSlotIndex = 0
+    self._pendingKillsByRequestId = {}
     self:_createMonsterFolder()
 
     disconnectAll(self._connections)
@@ -1114,6 +1476,10 @@ function LocalMonsterController:Init(dependencies)
         self:_handleSpawnTokenPayload(payload)
     end))
 
+    table.insert(self._connections, self._localMonsterKilledEvent.OnClientEvent:Connect(function(payload)
+        self:_handleKillAck(payload)
+    end))
+
     local requestStateSyncEvent = systemEventsFolder:FindFirstChild(RemoteNames.System.RequestPlayerStateSync)
     if requestStateSyncEvent and requestStateSyncEvent:IsA("RemoteEvent") then
         requestStateSyncEvent:FireServer()
@@ -1127,6 +1493,7 @@ function LocalMonsterController:Init(dependencies)
             self._battlePart = self:_resolveBattlePart()
         end
         self:_step(deltaTime)
+        self:_updateVisuals(deltaTime)
     end)
 end
 

@@ -108,6 +108,22 @@ local function setTextValue(textObject, value)
     end
 end
 
+local function setVisibleTextNode(root, nodeName, visible, textValue)
+    if not root then
+        return false
+    end
+
+    local didUpdate = false
+    for _, descendant in ipairs(root:GetDescendants()) do
+        if descendant.Name == nodeName and (descendant:IsA("TextLabel") or descendant:IsA("TextButton") or descendant:IsA("TextBox")) then
+            descendant.Visible = visible == true
+            setTextValue(descendant, textValue)
+            didUpdate = true
+        end
+    end
+    return didUpdate
+end
+
 local function setEnabledByName(root, childName, enabled)
     if not root then
         return
@@ -132,13 +148,19 @@ local function applyToggleVisual(button, enabled)
         return
     end
 
-    local labelText = enabled and "On" or "Off"
+    local labelText = enabled and "on" or "off"
     setTextValue(button, labelText)
     setTextValue(button:FindFirstChild("Text"), labelText)
     for _, descendant in ipairs(button:GetDescendants()) do
         if descendant.Name == "Text" then
             setTextValue(descendant, labelText)
         end
+    end
+    local hasOnOffLabels = setVisibleTextNode(button, "ON", enabled == true, "on")
+    hasOnOffLabels = setVisibleTextNode(button, "OFF", enabled ~= true, "off") or hasOnOffLabels
+    if not hasOnOffLabels then
+        setTextValue(button:FindFirstChild("ON"), labelText)
+        setTextValue(button:FindFirstChild("OFF"), labelText)
     end
 
     applyToggleEffects(button, enabled)

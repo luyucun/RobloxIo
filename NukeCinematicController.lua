@@ -825,9 +825,22 @@ function NukeCinematicController:_waitForSession(sessionId, durationSeconds)
     return sessionId == self._activeSessionId
 end
 
-function NukeCinematicController:_showNukeBanner(root, durationSeconds, sessionId)
+local function getNukeCallerName(payload)
+    local name = payload and (payload.ownerDisplayName or payload.ownerName)
+    if type(name) ~= "string" or name == "" then
+        return "Someone"
+    end
+    return name
+end
+
+function NukeCinematicController:_showNukeBanner(root, durationSeconds, sessionId, payload)
     if not (root and root:IsA("GuiObject")) then
         return true
+    end
+
+    local textLabel = root:FindFirstChild("Text")
+    if textLabel and (textLabel:IsA("TextLabel") or textLabel:IsA("TextButton") or textLabel:IsA("TextBox")) then
+        textLabel.Text = string.format("%s called in a nuke.", getNukeCallerName(payload))
     end
 
     local wasVisible = root.Visible
@@ -892,7 +905,7 @@ function NukeCinematicController:_playPrelude(payload, sessionId)
     local fadeOutSeconds = math.max(0, tonumber(payload and payload.warningFadeOutSeconds) or GameConfig.NUKE.WarningFadeOutSeconds or 0.25)
     local gapSeconds = math.max(0, tonumber(payload and payload.warningGapSeconds) or GameConfig.NUKE.WarningGapSeconds or 0.1)
 
-    if bannerSeconds > 0 and not self:_showNukeBanner(nukeBanner, bannerSeconds, sessionId) then
+    if bannerSeconds > 0 and not self:_showNukeBanner(nukeBanner, bannerSeconds, sessionId, payload) then
         return false
     end
     return self:_flashWarning(warning, sessionId, flashCount, fadeInSeconds, holdSeconds, fadeOutSeconds, gapSeconds)

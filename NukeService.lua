@@ -349,10 +349,16 @@ function NukeService:_sweepServerMonsters(ownerPlayer, center)
 end
 
 function NukeService:_buildCinematicPayload(ownerPlayer, sessionId, center, surfaceY)
+    local ownerDisplayName = ownerPlayer.DisplayName
+    if ownerDisplayName == nil or ownerDisplayName == "" then
+        ownerDisplayName = ownerPlayer.Name
+    end
+
     return {
         sessionId = sessionId,
         ownerUserId = ownerPlayer.UserId,
         ownerName = ownerPlayer.Name,
+        ownerDisplayName = ownerDisplayName,
         battleCenter = {
             x = center.X,
             y = surfaceY,

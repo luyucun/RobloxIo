@@ -125,7 +125,11 @@ function SkinService:_queueGamePassOwnershipSync(player, force)
             end
         end
 
-        self._gamePassOwnershipSyncStateByUserId[userId] = hadCheckFailure and nil or "Done"
+        if hadCheckFailure then
+            self._gamePassOwnershipSyncStateByUserId[userId] = nil
+        else
+            self._gamePassOwnershipSyncStateByUserId[userId] = "Done"
+        end
         if changed then
             self:_markDirty(player)
         end

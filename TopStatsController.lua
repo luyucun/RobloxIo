@@ -51,6 +51,8 @@ TopStatsController._latestPayload = nil
 local GEM_IMAGE = "rbxassetid://89590364394067"
 local NUMBER_TWEEN_SECONDS = 0.35
 local ICON_POP_SCALE = 1.18
+local UI_BIND_RETRY_COUNT = 80
+local UI_BIND_RETRY_INTERVAL_SECONDS = 0.25
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -309,8 +311,8 @@ function TopStatsController:_queueBindRetry()
     end
     self._bindRetryQueued = true
     task.spawn(function()
-        for _ = 1, 20 do
-            task.wait(0.25)
+        for _ = 1, UI_BIND_RETRY_COUNT do
+            task.wait(UI_BIND_RETRY_INTERVAL_SECONDS)
             if self:_bindUi(true) then
                 self._bindRetryQueued = false
                 if self._latestPayload then
@@ -320,7 +322,6 @@ function TopStatsController:_queueBindRetry()
             end
         end
         self._bindRetryQueued = false
-        self:_bindUi(false)
     end)
 end
 

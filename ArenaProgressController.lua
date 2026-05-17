@@ -47,6 +47,8 @@ ArenaProgressController._bindRetryQueued = false
 
 local GENERATED_ATTRIBUTE = "ArenaProgressGenerated"
 local PLAYER_NODE_PREFIX = "Player_"
+local UI_BIND_RETRY_COUNT = 80
+local UI_BIND_RETRY_INTERVAL_SECONDS = 0.25
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -250,15 +252,14 @@ function ArenaProgressController:_queueBindRetry()
     end
     self._bindRetryQueued = true
     task.spawn(function()
-        for _ = 1, 20 do
-            task.wait(0.25)
+        for _ = 1, UI_BIND_RETRY_COUNT do
+            task.wait(UI_BIND_RETRY_INTERVAL_SECONDS)
             if self:_bindUi(true) then
                 self._bindRetryQueued = false
                 return
             end
         end
         self._bindRetryQueued = false
-        self:_bindUi(false)
     end)
 end
 
@@ -288,6 +289,28 @@ function ArenaProgressController:Init(dependencies)
     table.insert(self._connections, arenaProgressSyncEvent.OnClientEvent:Connect(function(payload)
         self:_render(payload)
     end))
+
+    local playerGui = self._localPlayer and (self._localPlayer:FindFirstChild("PlayerGui") or self._localPlayer:WaitForChild("PlayerGui", 10))
+    if playerGui then
+        table.insert(self._connections, playerGui.ChildAdded:Connect(function(child)
+            if child.Name == "Main" then
+                task.defer(function()
+                    if self:_bindUi(true) and self._latestPayload then
+                        self:_render(self._latestPayload)
+                    end
+                end)
+            end
+        end))
+        table.insert(self._connections, playerGui.DescendantAdded:Connect(function(descendant)
+            if descendant.Name == "Progress" or descendant.Name == "Playertemplate" then
+                task.defer(function()
+                    if self:_bindUi(true) and self._latestPayload then
+                        self:_render(self._latestPayload)
+                    end
+                end)
+            end
+        end))
+    end
 end
 
 return ArenaProgressController

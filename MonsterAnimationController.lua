@@ -46,7 +46,7 @@ MonsterAnimationController._rescanClock = 0
 local LOOP_FADE_SECONDS = 0.15
 local ATTACK_FADE_SECONDS = 0.05
 local MOVING_SPEED_THRESHOLD = 0.5
-local RESCAN_INTERVAL_SECONDS = 0.5
+local RESCAN_INTERVAL_SECONDS = 5
 local SMOOTH_FOLLOW_SPEED = 18
 local SNAP_DISTANCE = 24
 local ORIGINAL_TRANSPARENCY_ATTRIBUTE = "__ClientOriginalTransparency"
@@ -589,6 +589,7 @@ function MonsterAnimationController:Init()
     self._rescanClock = 0
     self:_createVisualFolder()
     self:_resolveMonsterFolder()
+    self._rescanClock = os.clock() + RESCAN_INTERVAL_SECONDS
 
     self._renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
         local now = os.clock()

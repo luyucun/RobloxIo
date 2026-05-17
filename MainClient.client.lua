@@ -162,6 +162,7 @@ initController("LocalMonsterController", LocalMonsterController, {
     LocalPlayer = localPlayer,
     RootScript = script,
     WeaponFxController = WeaponFxController,
+    AudioSettingsController = AudioSettingsController,
 })
 
 initController("AutoBattleController", AutoBattleController, {
@@ -214,6 +215,7 @@ initController("MonetizationController", MonetizationController, {
 initController("WheelController", WheelController, {
     LocalPlayer = localPlayer,
     RootScript = script,
+    AudioSettingsController = AudioSettingsController,
 })
 
 initController("SkinController", SkinController, {
@@ -243,6 +245,7 @@ initController("OptionController", OptionController, {
 initController("BossHitFeedbackController", BossHitFeedbackController, {
 	LocalPlayer = localPlayer,
 	RootScript = script,
+	AudioSettingsController = AudioSettingsController,
 })
 
 initController("NoobMachineController", NoobMachineController, {

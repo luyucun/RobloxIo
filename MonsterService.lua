@@ -137,25 +137,29 @@ local function getInstancePosition(instance)
 end
 
 local function ensureCollisionGroup(groupName)
-    local didRegister = pcall(function()
-        PhysicsService:RegisterCollisionGroup(groupName)
+    local found = false
+    local success, groups = pcall(function()
+        return PhysicsService:GetRegisteredCollisionGroups()
     end)
-    if not didRegister then
+    if success and type(groups) == "table" then
+        for _, group in ipairs(groups) do
+            if group.name == groupName or group.Name == groupName then
+                found = true
+                break
+            end
+        end
+    end
+    if not found then
         pcall(function()
-            PhysicsService:CreateCollisionGroup(groupName)
+            PhysicsService:RegisterCollisionGroup(groupName)
         end)
     end
 end
 
 local function setPartCollisionGroup(basePart, groupName)
-    local didSet = pcall(function()
+    pcall(function()
         basePart.CollisionGroup = groupName
     end)
-    if not didSet then
-        pcall(function()
-            PhysicsService:SetPartCollisionGroup(basePart, groupName)
-        end)
-    end
 end
 
 local function getCharacterCollisionGroupName()

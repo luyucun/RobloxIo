@@ -36,6 +36,7 @@ local RemoteNames = requireSharedModule("RemoteNames")
 local BossHitFeedbackController = {}
 
 BossHitFeedbackController._localPlayer = nil
+BossHitFeedbackController._audioSettings = nil
 BossHitFeedbackController._connection = nil
 BossHitFeedbackController._lastHighlightClockByBossId = {}
 BossHitFeedbackController._lastImpactClockByBossId = {}
@@ -606,12 +607,16 @@ function BossHitFeedbackController:_handleBossHitFeedback(payload)
     self:_playHealthBarFeedback(bossId, bossInstance, payload.remainingHealth, payload.maxHealth)
 
     if ownHit then
+        if self._audioSettings and self._audioSettings.PlaySfxByPath then
+            self._audioSettings:PlaySfxByPath("Audio", { "Sword", "SwordHitRelease" }, true)
+        end
         self:_queueDamageNumber(bossId, bossInstance, payload.damage)
     end
 end
 
 function BossHitFeedbackController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
 
     disconnectConnection(self._connection)
     self._connection = nil

@@ -49,8 +49,11 @@ WeaponService._weaponStateSyncEvent = nil
 WeaponService._weaponsByCombatUserId = {}
 WeaponService._weaponByPart = {}
 WeaponService._brokenDebrisStates = {}
+WeaponService._weaponRestorationByCombatUserId = {}
 WeaponService._heartbeatConnection = nil
 WeaponService._nextWeaponId = 1
+
+local WEAPON_RESTORE_INTERVAL_SECONDS = 5
 
 local function findOrCreateFolder(parent, folderName)
     for _, child in ipairs(parent:GetChildren()) do
@@ -318,6 +321,7 @@ end
 function WeaponService:_clearActorWeapons(combatUserId)
     local weaponStates = self._weaponsByCombatUserId[combatUserId]
     if not weaponStates then
+        self._weaponRestorationByCombatUserId[combatUserId] = nil
         return
     end
 
@@ -326,6 +330,7 @@ function WeaponService:_clearActorWeapons(combatUserId)
     end
 
     self._weaponsByCombatUserId[combatUserId] = nil
+    self._weaponRestorationByCombatUserId[combatUserId] = nil
 end
 
 function WeaponService:_destroyWeaponState(weaponState)
@@ -797,14 +802,115 @@ function WeaponService:_updateWeaponTransforms(deltaTime)
     end
 end
 
-function WeaponService:RebuildWeaponsForActor(actor)
+function WeaponService:_updateWeaponRestoration(_deltaTime)
+    local now = os.clock()
+    for combatUserId, restorationState in pairs(self._weaponRestorationByCombatUserId) do
+        local actor = self:_resolveActorByCombatUserId(combatUserId)
+        if not actor then
+            self._weaponRestorationByCombatUserId[combatUserId] = nil
+            continue
+        end
+
+        local state = self._playerStateService:GetState(actor)
+        if not (state and state.Alive and state.IsInArena) then
+            self._weaponRestorationByCombatUserId[combatUserId] = nil
+            continue
+        end
+
+        local resolved = WeaponTierConfig.ResolveLoadoutForLevel(state.Level)
+        local desiredCount = #self:_buildDesiredWeaponList(resolved)
+        local currentCount = #self:_getAliveWeaponStates(combatUserId)
+        if desiredCount <= 0 or currentCount >= desiredCount then
+            self._weaponRestorationByCombatUserId[combatUserId] = nil
+            continue
+        end
+
+        local nextRestoreAt = tonumber(restorationState.NextRestoreAt) or now
+        if now >= nextRestoreAt then
+            self:_rebuildWeaponsForActorToCount(actor, math.min(currentCount + 1, desiredCount))
+            local refreshedState = self._weaponRestorationByCombatUserId[combatUserId]
+            if refreshedState then
+                refreshedState.NextRestoreAt = now + WEAPON_RESTORE_INTERVAL_SECONDS
+            end
+        end
+    end
+end
+
+function WeaponService:_getAliveWeaponStates(combatUserId)
+    local aliveWeaponStates = {}
+    for _, weaponState in ipairs(self._weaponsByCombatUserId[combatUserId] or {}) do
+        if weaponState.Alive and weaponState.RuntimeInstance and weaponState.RuntimeInstance.Parent then
+            table.insert(aliveWeaponStates, weaponState)
+        end
+    end
+    return aliveWeaponStates
+end
+
+function WeaponService:_buildDesiredWeaponList(resolved)
+    local desiredWeapons = {}
+    if type(resolved and resolved.Weapons) == "table" and #resolved.Weapons > 0 then
+        for _, desiredWeapon in ipairs(resolved.Weapons) do
+            table.insert(desiredWeapons, desiredWeapon)
+        end
+    elseif resolved and resolved.Count and resolved.Count > 0 and resolved.Tier ~= "None" then
+        for weaponIndex = 1, resolved.Count do
+            table.insert(desiredWeapons, {
+                SlotIndex = weaponIndex,
+                Tier = resolved.Tier,
+                TierIndex = resolved.TierIndex,
+            })
+        end
+    end
+    return desiredWeapons
+end
+
+function WeaponService:_getHighestWeaponTier(weaponStates)
+    local highestTier = "None"
+    local highestTierIndex = 0
+    for _, weaponState in ipairs(weaponStates or {}) do
+        local tierIndex = math.max(0, tonumber(weaponState and weaponState.TierIndex) or 0)
+        if tierIndex > highestTierIndex then
+            highestTierIndex = tierIndex
+            highestTier = tostring(weaponState.Tier or WeaponTierConfig.Order[tierIndex] or "None")
+        end
+    end
+    return highestTier, highestTierIndex
+end
+
+function WeaponService:_syncActorWeaponState(actor, weaponStates)
+    local weaponTier = self:_getHighestWeaponTier(weaponStates)
+    local weaponCount = #(weaponStates or {})
+    self._playerStateService:SetWeaponState(actor, weaponTier, weaponCount)
+    self._playerStateService:PushState(actor)
+    self:_fireWeaponStateSync(actor, weaponTier, weaponCount, weaponStates or {})
+end
+
+function WeaponService:_refreshWeaponRestoration(actor, currentCount, desiredCount)
+    local combatUserId = getCombatUserId(actor)
+    if math.max(0, tonumber(currentCount) or 0) >= math.max(0, tonumber(desiredCount) or 0) then
+        self._weaponRestorationByCombatUserId[combatUserId] = nil
+        return
+    end
+
+    local restorationState = self._weaponRestorationByCombatUserId[combatUserId]
+    if not restorationState then
+        restorationState = {
+            NextRestoreAt = os.clock() + WEAPON_RESTORE_INTERVAL_SECONDS,
+        }
+        self._weaponRestorationByCombatUserId[combatUserId] = restorationState
+    end
+    restorationState.TargetCount = math.max(0, math.floor(tonumber(desiredCount) or 0))
+end
+
+function WeaponService:_rebuildWeaponsForActorToCount(actor, targetCount)
     if not actor then
         return
     end
 
+    local combatUserId = getCombatUserId(actor)
     local state = self._playerStateService:GetState(actor)
-    if not (state.Alive and state.IsInArena) then
-        self:_clearActorWeapons(getCombatUserId(actor))
+    if not (state and state.Alive and state.IsInArena) then
+        self:_clearActorWeapons(combatUserId)
         self._playerStateService:SetWeaponState(actor, "None", 0)
         self._playerStateService:PushState(actor)
         self:_fireWeaponStateSync(actor, "None", 0, {})
@@ -812,7 +918,29 @@ function WeaponService:RebuildWeaponsForActor(actor)
     end
 
     local resolved = WeaponTierConfig.ResolveLoadoutForLevel(state.Level)
-    local combatUserId = getCombatUserId(actor)
+    local desiredWeapons = self:_buildDesiredWeaponList(resolved)
+    local desiredCount = #desiredWeapons
+    if desiredCount <= 0 or resolved.Tier == "None" then
+        self:_clearActorWeapons(combatUserId)
+        self._playerStateService:SetWeaponState(actor, "None", 0)
+        self._playerStateService:PushState(actor)
+        self:_fireWeaponStateSync(actor, "None", 0, {})
+        return
+    end
+
+    local rebuildCount = desiredCount
+    if targetCount ~= nil then
+        rebuildCount = math.clamp(math.floor(tonumber(targetCount) or desiredCount), 0, desiredCount)
+    end
+    if rebuildCount <= 0 then
+        self:_clearActorWeapons(combatUserId)
+        self._playerStateService:SetWeaponState(actor, "None", 0)
+        self._playerStateService:PushState(actor)
+        self:_fireWeaponStateSync(actor, "None", 0, {})
+        self:_refreshWeaponRestoration(actor, 0, desiredCount)
+        return
+    end
+
     local previousWeaponStates = self._weaponsByCombatUserId[combatUserId] or {}
     local reusableWeaponStates = {}
     local previousWeaponBySlot = {}
@@ -827,35 +955,14 @@ function WeaponService:RebuildWeaponsForActor(actor)
         end
     end
 
-    local desiredWeapons = {}
-    if type(resolved.Weapons) == "table" and #resolved.Weapons > 0 then
-        desiredWeapons = resolved.Weapons
-    elseif resolved.Count and resolved.Count > 0 and resolved.Tier ~= "None" then
-        for weaponIndex = 1, resolved.Count do
-            table.insert(desiredWeapons, {
-                SlotIndex = weaponIndex,
-                Tier = resolved.Tier,
-                TierIndex = resolved.TierIndex,
-            })
-        end
-    end
-
-    local desiredCount = #desiredWeapons
-    if desiredCount <= 0 or resolved.Tier == "None" then
-        self:_clearActorWeapons(combatUserId)
-        self._playerStateService:SetWeaponState(actor, "None", 0)
-        self._playerStateService:PushState(actor)
-        self:_fireWeaponStateSync(actor, "None", 0, {})
-        return
-    end
-
     local previousLeadAngle = reusableWeaponStates[1] and reusableWeaponStates[1].CurrentAngle or 0
-    local shouldRedistributeAngles = #reusableWeaponStates ~= desiredCount
-    local redistributedAngles = shouldRedistributeAngles and self:_buildDistributedAngles(desiredCount, previousLeadAngle) or nil
+    local shouldRedistributeAngles = #reusableWeaponStates ~= rebuildCount
+    local redistributedAngles = shouldRedistributeAngles and self:_buildDistributedAngles(rebuildCount, previousLeadAngle) or nil
     local usedPreviousWeaponIds = {}
     local selectedPreviousBySlot = {}
 
-    for weaponIndex, desiredWeapon in ipairs(desiredWeapons) do
+    for weaponIndex = 1, rebuildCount do
+        local desiredWeapon = desiredWeapons[weaponIndex]
         local desiredTier = tostring(desiredWeapon.Tier or resolved.Tier or "None")
         local previousState = previousWeaponBySlot[weaponIndex]
         if previousState and previousState.Tier == desiredTier then
@@ -877,7 +984,8 @@ function WeaponService:RebuildWeaponsForActor(actor)
 
     local weaponStates = {}
 
-    for weaponIndex, desiredWeapon in ipairs(desiredWeapons) do
+    for weaponIndex = 1, rebuildCount do
+        local desiredWeapon = desiredWeapons[weaponIndex]
         local desiredTier = tostring(desiredWeapon.Tier or resolved.Tier or "None")
         local previousState = selectedPreviousBySlot[weaponIndex] or takeReusableWeaponState(desiredTier)
         local previousSlotState = previousWeaponBySlot[weaponIndex]
@@ -886,7 +994,7 @@ function WeaponService:RebuildWeaponsForActor(actor)
             actor,
             desiredTier,
             weaponIndex,
-            desiredCount,
+            rebuildCount,
             previousState,
             redistributedAngles and redistributedAngles[weaponIndex] or replacementAngle
         )
@@ -916,13 +1024,47 @@ function WeaponService:RebuildWeaponsForActor(actor)
         end
     end
 
-    self._playerStateService:SetWeaponState(actor, resolved.Tier, #weaponStates)
-    self._playerStateService:PushState(actor)
-    self:_fireWeaponStateSync(actor, resolved.Tier, #weaponStates, weaponStates)
+    self:_syncActorWeaponState(actor, weaponStates)
+    self:_refreshWeaponRestoration(actor, #weaponStates, desiredCount)
+    return #weaponStates, desiredCount
+end
+
+function WeaponService:RebuildWeaponsForActor(actor, options)
+    if not actor then
+        return
+    end
+
+    local state = self._playerStateService:GetState(actor)
+    if not (state and state.Alive and state.IsInArena) then
+        return self:_rebuildWeaponsForActorToCount(actor, 0)
+    end
+
+    local combatUserId = getCombatUserId(actor)
+    local currentCount = #self:_getAliveWeaponStates(combatUserId)
+    local resolved = WeaponTierConfig.ResolveLoadoutForLevel(state.Level)
+    local desiredCount = #self:_buildDesiredWeaponList(resolved)
+    local targetCount = desiredCount
+    local hasExistingWeaponRecord = self._weaponsByCombatUserId[combatUserId] ~= nil
+        or self._weaponRestorationByCombatUserId[combatUserId] ~= nil
+    if currentCount < desiredCount and (currentCount > 0 or hasExistingWeaponRecord) then
+        targetCount = currentCount
+    end
+    if type(options) == "table" and options.previousLevel ~= nil and currentCount < desiredCount then
+        local previousResolved = WeaponTierConfig.ResolveLoadoutForLevel(options.previousLevel)
+        local previousDesiredCount = #self:_buildDesiredWeaponList(previousResolved)
+        local immediateLevelGainCount = math.max(0, desiredCount - previousDesiredCount)
+        if immediateLevelGainCount > 0 then
+            local restoredCount = math.min(desiredCount, currentCount + immediateLevelGainCount)
+            if restoredCount > targetCount then
+                targetCount = restoredCount
+            end
+        end
+    end
+    return self:_rebuildWeaponsForActorToCount(actor, targetCount)
 end
 
 function WeaponService:RebuildWeaponsForPlayer(actor)
-    self:RebuildWeaponsForActor(actor)
+    return self:_rebuildWeaponsForActorToCount(actor, nil)
 end
 
 function WeaponService:AdjustAttackScore(actor, delta)
@@ -989,24 +1131,23 @@ function WeaponService:HandleBrokenWeapon(weaponState, context)
     if remainingCount > 0 then
         local anchorAngle = remainingWeaponStates[1].CurrentAngle or 0
         local redistributedAngles = self:_buildDistributedAngles(remainingCount, anchorAngle)
-        local highestTier = remainingWeaponStates[1].Tier
-        local highestTierIndex = math.max(0, tonumber(remainingWeaponStates[1].TierIndex) or 0)
         for index, currentWeaponState in ipairs(remainingWeaponStates) do
             currentWeaponState.OrbitIndex = index
             currentWeaponState.CurrentAngle = redistributedAngles[index] or currentWeaponState.CurrentAngle
-            local tierIndex = math.max(0, tonumber(currentWeaponState.TierIndex) or 0)
-            if tierIndex > highestTierIndex then
-                highestTierIndex = tierIndex
-                highestTier = currentWeaponState.Tier
-            end
             self:SyncWeaponRuntimeState(currentWeaponState)
         end
         self._weaponsByCombatUserId[ownerUserId] = remainingWeaponStates
-        self._playerStateService:SetWeaponState(actor, highestTier, remainingCount)
-        self._playerStateService:PushState(actor)
-        self:_fireWeaponStateSync(actor, remainingWeaponStates[1].Tier, remainingCount, remainingWeaponStates)
+        self:_syncActorWeaponState(actor, remainingWeaponStates)
+
+        local state = self._playerStateService:GetState(actor)
+        local desiredCount = 0
+        if state then
+            desiredCount = #self:_buildDesiredWeaponList(WeaponTierConfig.ResolveLoadoutForLevel(state.Level))
+        end
+        self:_refreshWeaponRestoration(actor, remainingCount, desiredCount)
     else
         self._weaponsByCombatUserId[ownerUserId] = {}
+        self._weaponRestorationByCombatUserId[ownerUserId] = nil
         self._playerStateService:SetWeaponState(actor, "None", 0)
         self._playerStateService:PushState(actor)
         self:_fireWeaponStateSync(actor, "None", 0, {})
@@ -1036,6 +1177,7 @@ function WeaponService:Init(dependencies)
     self._weaponsByCombatUserId = {}
     self._weaponByPart = {}
     self._brokenDebrisStates = {}
+    self._weaponRestorationByCombatUserId = {}
     self._nextWeaponId = 1
     self:_clearRuntimeFolder()
     self:_clearBrokenDebrisFolder()
@@ -1053,6 +1195,7 @@ function WeaponService:Init(dependencies)
     self._heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
         self:_updateWeaponTransforms(deltaTime)
         self:_updateBrokenDebris(deltaTime)
+        self:_updateWeaponRestoration(deltaTime)
     end)
 end
 

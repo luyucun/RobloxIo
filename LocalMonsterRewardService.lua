@@ -104,7 +104,12 @@ function LocalMonsterRewardService:_pruneAuthorizationsForUserId(userId)
 
     local now = os.clock()
     for token, authorization in pairs(authorizations) do
-        if not authorization or authorization.Consumed == true or (tonumber(authorization.ExpiresAt) or 0) <= now then
+        if not authorization or authorization.Consumed == true then
+            authorizations[token] = nil
+        elseif authorization.Active == true then
+            -- Active tokens belong to monsters that already exist on a client.
+            -- Do not let a long fight turn into a valid kill with no reward.
+        elseif (tonumber(authorization.ExpiresAt) or 0) <= now then
             authorizations[token] = nil
         end
     end
@@ -153,6 +158,52 @@ function LocalMonsterRewardService:_createAuthorization(player)
     return authorizations[token], definition
 end
 
+function LocalMonsterRewardService:_handleSpawnTokenActivated(player, payload)
+    local userId = getUserId(player)
+    local token = tostring(payload and payload.token or payload and payload.Token or "")
+    if userId <= 0 or token == "" then
+        return
+    end
+
+    local authorizations = self._spawnAuthorizationsByUserId[userId]
+    local authorization = authorizations and authorizations[token] or nil
+    if not (authorization and authorization.Consumed ~= true) then
+        return
+    end
+
+    if (tonumber(authorization.ExpiresAt) or 0) <= os.clock() then
+        authorizations[token] = nil
+        return
+    end
+
+    authorization.Active = true
+end
+
+function LocalMonsterRewardService:_handleSpawnTokensDiscarded(player, payload)
+    local userId = getUserId(player)
+    if userId <= 0 then
+        return
+    end
+
+    local authorizations = self._spawnAuthorizationsByUserId[userId]
+    if not authorizations then
+        return
+    end
+
+    local rawTokens = type(payload) == "table" and payload.tokens or nil
+    if type(rawTokens) ~= "table" then
+        rawTokens = { payload and (payload.token or payload.Token) }
+    end
+
+    for _, rawToken in ipairs(rawTokens) do
+        local token = tostring(rawToken or "")
+        local authorization = authorizations[token]
+        if authorization and authorization.Consumed ~= true then
+            authorizations[token] = nil
+        end
+    end
+end
+
 function LocalMonsterRewardService:_buildSpawnTokenPayload(authorization, definition)
     if not (authorization and definition) then
         return nil
@@ -179,6 +230,16 @@ function LocalMonsterRewardService:_handleSpawnTokenRequest(player, payload)
     if not (GameConfig.MONSTER.ClientOwnedNormalMonsters and player and player.Parent and self._localMonsterSpawnTokenEvent) then
         return
     end
+
+    if type(payload) == "table" and tostring(payload.eventType or payload.EventType or "") == "Activate" then
+        self:_handleSpawnTokenActivated(player, payload)
+        return
+    end
+    if type(payload) == "table" and tostring(payload.eventType or payload.EventType or "") == "Discard" then
+        self:_handleSpawnTokensDiscarded(player, payload)
+        return
+    end
+
     if not self:_isPlayerLoaded(player) then
         self._localMonsterSpawnTokenEvent:FireClient(player, {
             eventType = "Denied",
@@ -225,6 +286,25 @@ function LocalMonsterRewardService:_normalizeDeathPosition(player, deathPosition
     return rootPart and rootPart.Position or Vector3.zero
 end
 
+function LocalMonsterRewardService:_fireKillAck(player, payload, eventType, reason)
+    if not (self._localMonsterKilledEvent and player and player.Parent and type(payload) == "table") then
+        return
+    end
+
+    local requestId = tostring(payload.requestId or payload.RequestId or "")
+    if requestId == "" then
+        return
+    end
+
+    self._localMonsterKilledEvent:FireClient(player, {
+        eventType = eventType,
+        requestId = requestId,
+        token = tostring(payload.token or payload.Token or ""),
+        reason = reason,
+        timestamp = os.clock(),
+    })
+end
+
 function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
     if not (GameConfig.MONSTER.ClientOwnedNormalMonsters and player and player.Parent) then
         return
@@ -232,16 +312,16 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
 
     local state = self._playerStateService and self._playerStateService:GetState(player) or nil
     if not (isArenaPlayer(state) and self:_isPlayerLoaded(player)) then
+        self:_fireKillAck(player, payload, "KillRejected", "PlayerInactive")
         return
     end
 
-    if not self:_consumeRateLimit(self._killReportWindows, player, GameConfig.MONSTER.LocalKillReportsPerSecond) then
-        return
-    end
+    self:_consumeRateLimit(self._killReportWindows, player, GameConfig.MONSTER.LocalKillReportsPerSecond)
 
     local token = tostring(payload and payload.token or payload and payload.Token or "")
     if token == "" then
         warn("[LocalMonsterRewardService] 拒绝旧版本地怪击杀上报，缺少 token: " .. tostring(player.Name))
+        self:_fireKillAck(player, payload, "KillRejected", "MissingToken")
         return
     end
 
@@ -255,16 +335,19 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
 
     local duplicateWindowSeconds = pruneRecentKills(recentKills, now)
     if recentKills[token] then
+        self:_fireKillAck(player, payload, "KillAccepted", "Duplicate")
         return
     end
 
     local authorization = self:_getAuthorization(player, token)
     if not (authorization and authorization.Consumed ~= true) then
+        self:_fireKillAck(player, payload, "KillRejected", "InvalidToken")
         return
     end
 
     local monsterDefinition = MonsterCatalog.GetDefinition(authorization.MonsterDefinitionId)
     if not MonsterCatalog.IsNormalMonsterDefinition(monsterDefinition) then
+        self:_fireKillAck(player, payload, "KillRejected", "InvalidMonsterDefinition")
         return
     end
     authorization.Consumed = true
@@ -293,6 +376,8 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
     elseif self._playerStateService then
         self._playerStateService:AddExperienceWithMultiplier(player, totalExperience)
     end
+
+    self:_fireKillAck(player, payload, "KillAccepted")
 end
 
 function LocalMonsterRewardService:_handleLocalMonsterHitPlayer(player, payload)

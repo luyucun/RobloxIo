@@ -39,6 +39,7 @@ local WheelConfig = requireSharedModule("WheelConfig")
 local WheelController = {}
 
 WheelController._localPlayer = nil
+WheelController._audioSettings = nil
 WheelController._connections = {}
 WheelController._buttonBindings = {}
 WheelController._mainGui = nil
@@ -72,6 +73,10 @@ WheelController._panelTweens = {}
 WheelController._panelAnimationSerial = 0
 WheelController._warningToken = 0
 WheelController._spinTween = nil
+WheelController._spinSegmentSoundActive = false
+WheelController._spinSegmentSoundStartRotation = nil
+WheelController._spinSegmentSoundLastRelativeRotation = 0
+WheelController._spinSegmentSoundNextThreshold = nil
 WheelController._wheelClaimPopupSerial = 0
 WheelController._wheelClaimTweens = {}
 
@@ -98,6 +103,8 @@ local WHEEL_CLAIM_OVERSHOOT_SCALE = 1.12
 local WHEEL_CLAIM_POP_DURATION = 0.18
 local WHEEL_CLAIM_SETTLE_DURATION = 0.1
 local WHEEL_CLAIM_MODAL_OWNER = "WheelClaim"
+local WHEEL_SEGMENT_SOUND_FIRST_THRESHOLD_DEGREES = 30
+local WHEEL_SEGMENT_SOUND_INTERVAL_DEGREES = 60
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -428,6 +435,10 @@ function WheelController:_showWheelClaim(reward)
         return
     end
 
+    if self._audioSettings and self._audioSettings.PlaySfxByPath then
+        self._audioSettings:PlaySfxByPath("UI", { "Banana collect 18" }, true)
+    end
+
     self._wheelClaimPopupSerial += 1
     local serial = self._wheelClaimPopupSerial
     self:_cancelWheelClaimTweens()
@@ -637,6 +648,65 @@ function WheelController:_showWarning(message)
     end)
 end
 
+function WheelController:_resetSpinSegmentSound()
+    self._spinSegmentSoundActive = false
+    self._spinSegmentSoundStartRotation = nil
+    self._spinSegmentSoundLastRelativeRotation = 0
+    self._spinSegmentSoundNextThreshold = nil
+end
+
+function WheelController:_beginSpinSegmentSound(startRotation)
+    self._spinSegmentSoundActive = true
+    self._spinSegmentSoundStartRotation = tonumber(startRotation) or 0
+    self._spinSegmentSoundLastRelativeRotation = 0
+    self._spinSegmentSoundNextThreshold = WHEEL_SEGMENT_SOUND_FIRST_THRESHOLD_DEGREES
+end
+
+function WheelController:_playWheelSegmentSound()
+    if not self._audioSettings then
+        return
+    end
+
+    if self._audioSettings.PlaySfxOneShotByPath then
+        self._audioSettings:PlaySfxOneShotByPath("UI", { "wheel" })
+    elseif self._audioSettings.PlaySfxByPath then
+        self._audioSettings:PlaySfxByPath("UI", { "wheel" }, true)
+    end
+end
+
+function WheelController:_updateSpinSegmentSound(currentRotation)
+    if self._spinSegmentSoundActive ~= true then
+        return
+    end
+
+    local startRotation = self._spinSegmentSoundStartRotation
+    if type(startRotation) ~= "number" then
+        return
+    end
+
+    local rotation = tonumber(currentRotation)
+    if not rotation then
+        if not (self._wheelColorBg and self._wheelColorBg.Parent) then
+            return
+        end
+        rotation = tonumber(self._wheelColorBg.Rotation) or startRotation
+    end
+
+    local relativeRotation = rotation - startRotation
+    if relativeRotation < 0 then
+        return
+    end
+
+    local nextThreshold = self._spinSegmentSoundNextThreshold or WHEEL_SEGMENT_SOUND_FIRST_THRESHOLD_DEGREES
+    while relativeRotation >= nextThreshold do
+        self:_playWheelSegmentSound()
+        nextThreshold += WHEEL_SEGMENT_SOUND_INTERVAL_DEGREES
+    end
+
+    self._spinSegmentSoundNextThreshold = nextThreshold
+    self._spinSegmentSoundLastRelativeRotation = relativeRotation
+end
+
 function WheelController:_promptPurchase(productId)
     local resolvedProductId = tonumber(productId) or 0
     if resolvedProductId <= 0 then
@@ -673,11 +743,13 @@ function WheelController:_requestSpin()
     end
 
     self._isSpinning = true
+    self:_resetSpinSegmentSound()
     self._requestSpinEvent:FireServer()
 end
 
 function WheelController:_playSpinTo(targetRotation, onComplete)
     if not self._wheelColorBg then
+        self:_resetSpinSegmentSound()
         if type(onComplete) == "function" then
             onComplete()
         end
@@ -688,6 +760,7 @@ function WheelController:_playSpinTo(targetRotation, onComplete)
         self._spinTween:Cancel()
         self._spinTween = nil
     end
+    self:_resetSpinSegmentSound()
 
     local startRotation = tonumber(self._wheelColorBg.Rotation) or 0
     local normalizedStart = startRotation % 360
@@ -699,10 +772,21 @@ function WheelController:_playSpinTo(targetRotation, onComplete)
         Rotation = finalRotation,
     })
     self._spinTween = tween
-    tween.Completed:Connect(function()
-        if self._spinTween == tween then
-            self._spinTween = nil
+    self:_beginSpinSegmentSound(startRotation)
+    tween.Completed:Connect(function(playbackState)
+        if self._spinTween ~= tween then
+            return
         end
+
+        if playbackState ~= Enum.PlaybackState.Completed then
+            self._spinTween = nil
+            self:_resetSpinSegmentSound()
+            return
+        end
+
+        self:_updateSpinSegmentSound(finalRotation)
+        self._spinTween = nil
+        self:_resetSpinSegmentSound()
         if self._wheelColorBg and self._wheelColorBg.Parent then
             self._wheelColorBg.Rotation = normalizedTarget
         end
@@ -715,6 +799,7 @@ end
 
 function WheelController:_handleSpinResult(payload)
     if type(payload) ~= "table" then
+        self:_resetSpinSegmentSound()
         self._isSpinning = false
         return
     end
@@ -724,6 +809,7 @@ function WheelController:_handleSpinResult(payload)
     end
 
     if payload.ok ~= true then
+        self:_resetSpinSegmentSound()
         self._isSpinning = false
         if payload.reason == "NotEnoughSpins" then
             self:_showWarning("Not enough spins.")
@@ -899,6 +985,7 @@ end
 
 function WheelController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
     self:_hideWheelClaim()
@@ -926,6 +1013,7 @@ function WheelController:Init(dependencies)
         if self._wheelIcon and self._wheelIcon.Parent then
             self._wheelIcon.Rotation = (self._wheelIcon.Rotation + (ICON_ROTATION_SPEED * deltaTime)) % 360
         end
+        self:_updateSpinSegmentSound()
         self:_refreshTexts()
     end))
 end

@@ -14,11 +14,15 @@ AudioSettingsController._sfxEnabled = true
 AudioSettingsController._initialBgmSounds = {}
 AudioSettingsController._connections = {}
 AudioSettingsController._watchedSounds = {}
+AudioSettingsController._playerGuiButtonBoundButtons = setmetatable({}, { __mode = "k" })
+AudioSettingsController._playerGuiButtonListenerConnection = nil
+AudioSettingsController._playerGuiButtonListenerTarget = nil
 AudioSettingsController._initialized = false
 
 local BGM_FOLDER_NAME = "BGM"
 local AUDIO_FOLDER_NAME = "Audio"
 local UI_FOLDER_NAME = "UI"
+local RUNTIME_SFX_FOLDER_NAME = "__RuntimeSfx"
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -35,6 +39,94 @@ local function getSoundFolder(folderName)
         return folder
     end
     return SoundService:FindFirstChild(folderName, true)
+end
+
+local function getRuntimeSfxFolder(createIfMissing)
+    local folder = SoundService:FindFirstChild(RUNTIME_SFX_FOLDER_NAME)
+    if folder then
+        return folder
+    end
+
+    if createIfMissing ~= true then
+        return nil
+    end
+
+    folder = Instance.new("Folder")
+    folder.Name = RUNTIME_SFX_FOLDER_NAME
+    folder.Parent = SoundService
+    return folder
+end
+
+local function normalizeSoundPath(soundPath)
+    if type(soundPath) == "table" then
+        local segments = {}
+        for _, segment in ipairs(soundPath) do
+            if type(segment) == "string" then
+                local trimmed = segment:gsub("^%s+", ""):gsub("%s+$", "")
+                if trimmed ~= "" then
+                    table.insert(segments, trimmed)
+                end
+            end
+        end
+        return segments
+    end
+
+    if type(soundPath) == "string" then
+        local segments = {}
+        for segment in string.gmatch(soundPath, "[^/]+") do
+            local trimmed = segment:gsub("^%s+", ""):gsub("%s+$", "")
+            if trimmed ~= "" then
+                table.insert(segments, trimmed)
+            end
+        end
+        if #segments == 0 and soundPath ~= "" then
+            table.insert(segments, soundPath)
+        end
+        return segments
+    end
+
+    return nil
+end
+
+local function findSoundByPath(root, soundPath)
+    local segments = normalizeSoundPath(soundPath)
+    if not (root and segments and #segments > 0) then
+        return nil
+    end
+
+    local current = root
+    for index = 1, #segments - 1 do
+        current = current:FindFirstChild(segments[index])
+        if not current then
+            return nil
+        end
+    end
+
+    local soundName = segments[#segments]
+    if current then
+        local direct = current:FindFirstChild(soundName)
+        if direct and direct:IsA("Sound") then
+            return direct
+        end
+
+        for _, descendant in ipairs(current:GetDescendants()) do
+            if descendant:IsA("Sound") and descendant.Name == soundName then
+                return descendant
+            end
+        end
+    end
+
+    if root:IsA("Sound") and root.Name == soundName then
+        return root
+    end
+
+    for _, descendant in ipairs(root:GetDescendants()) do
+        if descendant:IsA("Sound") and descendant.Name == soundName then
+            return descendant
+        end
+    end
+
+    return nil
 end
 
 local function collectSounds(root)
@@ -189,6 +281,7 @@ function AudioSettingsController:SetSfxEnabled(enabled)
     if self._sfxEnabled ~= true then
         stopSounds(getSoundFolder(AUDIO_FOLDER_NAME))
         stopSounds(getSoundFolder(UI_FOLDER_NAME))
+        stopSounds(getRuntimeSfxFolder(false))
     end
 end
 
@@ -242,9 +335,138 @@ function AudioSettingsController:PlaySfx(sound, restart)
     return true
 end
 
+function AudioSettingsController:PlaySfxByPath(folderName, soundPath, restart)
+    local folder = getSoundFolder(folderName)
+    if not folder then
+        return false
+    end
+
+    local sound = findSoundByPath(folder, soundPath)
+    if not sound then
+        return false
+    end
+
+    return self:PlaySfx(sound, restart)
+end
+
+function AudioSettingsController:PlaySfxOneShotByPath(folderName, soundPath)
+    if self._sfxEnabled ~= true then
+        return false
+    end
+
+    local folder = getSoundFolder(folderName)
+    if not folder then
+        return false
+    end
+
+    local sound = findSoundByPath(folder, soundPath)
+    if not sound then
+        return false
+    end
+
+    local runtimeFolder = getRuntimeSfxFolder(true)
+    if not runtimeFolder then
+        return false
+    end
+
+    local clone = sound:Clone()
+    clone.Name = string.format("%s_OneShot_%d", sound.Name, math.floor(os.clock() * 1000))
+    clone.Parent = runtimeFolder
+
+    local cleanupConnections = {}
+    local cleanedUp = false
+    local function cleanup()
+        if cleanedUp then
+            return
+        end
+        cleanedUp = true
+
+        for _, connection in ipairs(cleanupConnections) do
+            if connection and connection.Connected then
+                connection:Disconnect()
+            end
+        end
+
+        if clone and clone.Parent then
+            clone:Destroy()
+        end
+    end
+
+    local okEnded, endedConnection = pcall(function()
+        return clone.Ended:Connect(cleanup)
+    end)
+    if okEnded and endedConnection then
+        table.insert(cleanupConnections, endedConnection)
+    end
+
+    local okStopped, stoppedConnection = pcall(function()
+        return clone.Stopped:Connect(cleanup)
+    end)
+    if okStopped and stoppedConnection then
+        table.insert(cleanupConnections, stoppedConnection)
+    end
+
+    task.delay(math.max(1, (tonumber(clone.TimeLength) or 0) + 1), cleanup)
+
+    pcall(function()
+        clone:Play()
+    end)
+    return true
+end
+
+function AudioSettingsController:PlayUiClickSound()
+    return self:PlaySfxByPath(UI_FOLDER_NAME, { "Click Sound" }, true)
+end
+
+function AudioSettingsController:_bindPlayerGuiButton(button)
+    if not (button and button:IsA("GuiButton")) then
+        return
+    end
+
+    if self._playerGuiButtonBoundButtons[button] then
+        return
+    end
+
+    self._playerGuiButtonBoundButtons[button] = true
+    table.insert(self._connections, button.Activated:Connect(function()
+        self:PlayUiClickSound()
+    end))
+end
+
+function AudioSettingsController:BindPlayerGuiButtonClicks(playerGui)
+    if not (playerGui and playerGui:IsA("PlayerGui")) then
+        return false
+    end
+
+    if self._playerGuiButtonListenerTarget == playerGui and self._playerGuiButtonListenerConnection and self._playerGuiButtonListenerConnection.Connected then
+        return true
+    end
+
+    if self._playerGuiButtonListenerConnection and self._playerGuiButtonListenerConnection.Connected then
+        self._playerGuiButtonListenerConnection:Disconnect()
+    end
+
+    self._playerGuiButtonListenerTarget = playerGui
+    table.clear(self._playerGuiButtonBoundButtons)
+
+    self._playerGuiButtonListenerConnection = playerGui.DescendantAdded:Connect(function(descendant)
+        self:_bindPlayerGuiButton(descendant)
+    end)
+    table.insert(self._connections, self._playerGuiButtonListenerConnection)
+
+    for _, descendant in ipairs(playerGui:GetDescendants()) do
+        self:_bindPlayerGuiButton(descendant)
+    end
+
+    return true
+end
+
 function AudioSettingsController:Init()
     disconnectAll(self._connections)
     table.clear(self._watchedSounds)
+    table.clear(self._playerGuiButtonBoundButtons)
+    self._playerGuiButtonListenerConnection = nil
+    self._playerGuiButtonListenerTarget = nil
     self:_captureInitialBgm()
     self:_watchFolder(BGM_FOLDER_NAME)
     self:_watchFolder(AUDIO_FOLDER_NAME)
