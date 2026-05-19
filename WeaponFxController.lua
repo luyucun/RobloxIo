@@ -47,8 +47,11 @@ WeaponFxController._hiddenServerEffects = {}
 WeaponFxController._lastWeaponSignature = nil
 WeaponFxController._runtimeWeaponsFolder = nil
 WeaponFxController._runtimeWeaponFolderConnections = {}
+WeaponFxController._runtimeWeaponInstanceConnections = {}
 WeaponFxController._serverWeaponVisibilityDirty = true
 WeaponFxController._nextServerWeaponVisibilityRefreshClock = 0
+WeaponFxController._perfStats = nil
+WeaponFxController._nextPerfLogClock = 0
 
 local TIER_COLORS = {
     T1 = Color3.fromRGB(214, 255, 77),
@@ -190,6 +193,33 @@ local function getWeaponOrbitDistance()
     return 6
 end
 
+local function isPerformanceDebugEnabled()
+    return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function countMapEntries(map)
+    local count = 0
+    for _ in pairs(map or {}) do
+        count += 1
+    end
+    return count
+end
+
+local function countDescendants(instance)
+    if not instance then
+        return 0
+    end
+
+    local ok, descendants = pcall(function()
+        return instance:GetDescendants()
+    end)
+    return ok and #descendants or 0
+end
+
 local function getRuntimeWeaponParts(weaponsFolder)
     local result = {}
     for _, child in ipairs(weaponsFolder:GetChildren()) do
@@ -270,27 +300,86 @@ function WeaponFxController:_markServerWeaponVisibilityDirty()
     self._nextServerWeaponVisibilityRefreshClock = 0
 end
 
+function WeaponFxController:_bindRuntimeWeaponInstance(instance)
+    if not instance or self._runtimeWeaponInstanceConnections[instance] then
+        return
+    end
+
+    local connections = {}
+    self._runtimeWeaponInstanceConnections[instance] = connections
+    self:_addPerfStat("RuntimeInstanceBinds")
+
+    table.insert(connections, instance:GetAttributeChangedSignal("OwnerUserId"):Connect(function()
+        self:_markServerWeaponVisibilityDirty()
+    end))
+
+    for _, descendant in ipairs(instance:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            table.insert(connections, descendant:GetAttributeChangedSignal("OwnerUserId"):Connect(function()
+                self:_markServerWeaponVisibilityDirty()
+            end))
+        end
+    end
+
+    table.insert(connections, instance.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("BasePart") then
+            self:_markServerWeaponVisibilityDirty()
+            table.insert(connections, descendant:GetAttributeChangedSignal("OwnerUserId"):Connect(function()
+                self:_markServerWeaponVisibilityDirty()
+            end))
+        end
+    end))
+end
+
+function WeaponFxController:_unbindRuntimeWeaponInstance(instance)
+    local connections = self._runtimeWeaponInstanceConnections[instance]
+    if not connections then
+        return
+    end
+
+    disconnectAll(connections)
+    self._runtimeWeaponInstanceConnections[instance] = nil
+    self:_addPerfStat("RuntimeInstanceUnbinds")
+end
+
+function WeaponFxController:_clearRuntimeWeaponInstanceConnections()
+    for instance in pairs(self._runtimeWeaponInstanceConnections) do
+        self:_unbindRuntimeWeaponInstance(instance)
+    end
+end
+
 function WeaponFxController:_resolveRuntimeWeaponsFolder()
     local weaponsFolder = getRuntimeWeaponsFolder()
     if weaponsFolder ~= self._runtimeWeaponsFolder then
         disconnectAll(self._runtimeWeaponFolderConnections)
+        self:_clearRuntimeWeaponInstanceConnections()
         self._runtimeWeaponsFolder = weaponsFolder
         self:_markServerWeaponVisibilityDirty()
 
         if weaponsFolder then
-            table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildAdded:Connect(function()
+            for _, child in ipairs(weaponsFolder:GetChildren()) do
+                self:_bindRuntimeWeaponInstance(child)
+            end
+            table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildAdded:Connect(function(child)
+                self:_bindRuntimeWeaponInstance(child)
                 self:_markServerWeaponVisibilityDirty()
             end))
-            table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildRemoved:Connect(function()
+            table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildRemoved:Connect(function(child)
+                self:_unbindRuntimeWeaponInstance(child)
                 self:_markServerWeaponVisibilityDirty()
             end))
         end
     elseif weaponsFolder and #self._runtimeWeaponFolderConnections <= 0 then
         self:_markServerWeaponVisibilityDirty()
-        table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildAdded:Connect(function()
+        for _, child in ipairs(weaponsFolder:GetChildren()) do
+            self:_bindRuntimeWeaponInstance(child)
+        end
+        table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildAdded:Connect(function(child)
+            self:_bindRuntimeWeaponInstance(child)
             self:_markServerWeaponVisibilityDirty()
         end))
-        table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildRemoved:Connect(function()
+        table.insert(self._runtimeWeaponFolderConnections, weaponsFolder.ChildRemoved:Connect(function(child)
+            self:_unbindRuntimeWeaponInstance(child)
             self:_markServerWeaponVisibilityDirty()
         end))
     end
@@ -422,6 +511,7 @@ function WeaponFxController:_createLocalWeaponState(weaponIndex, weaponTier, tem
         OrbitDirection = previousDirection,
     }
     self:_updateLocalWeaponState(weaponState, weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle)
+    self:_addPerfStat("LocalWeaponsCreated")
     return weaponState
 end
 
@@ -518,27 +608,47 @@ function WeaponFxController:_buildWeaponCFrame(centerPosition, weaponState)
 end
 
 function WeaponFxController:_updateLocalWeaponTransforms(deltaTime)
+    local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
     if #self._localWeaponStates <= 0 then
+        if startedAt then
+            self:_addPerfStat("RenderFrames")
+            self:_logPerfStats(os.clock())
+        end
         return
     end
 
     local character = self._localPlayer and self._localPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     if not rootPart then
+        if startedAt then
+            self:_addPerfStat("RenderFrames")
+            self:_logPerfStats(os.clock())
+        end
         return
     end
 
     local centerPosition = self:_calculateOrbitCenter(rootPart)
+    local updatedCount = 0
     for _, weaponState in ipairs(self._localWeaponStates) do
         if weaponState.Instance and weaponState.Instance.Parent then
             weaponState.OrbitSpeed = getWeaponOrbitSpeed()
             weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
             setWorldCFrame(weaponState.Instance, self:_buildWeaponCFrame(centerPosition, weaponState))
+            updatedCount += 1
         end
+    end
+
+    if startedAt then
+        self:_addPerfStat("RenderFrames")
+        self:_addPerfStat("LocalWeaponSamples", #self._localWeaponStates)
+        self:_addPerfStat("LocalWeaponUpdates", updatedCount)
+        self:_addPerfStat("TransformElapsedSeconds", os.clock() - startedAt)
+        self:_logPerfStats(os.clock())
     end
 end
 
 function WeaponFxController:_hideOwnedServerWeapons()
+    local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
     local localUserId = self._localPlayer and self._localPlayer.UserId
     if not localUserId then
         return
@@ -579,6 +689,7 @@ function WeaponFxController:_hideOwnedServerWeapons()
         if not self._hiddenServerParts[basePart] and resolveOwnerUserId(basePart) == localUserId then
             self._hiddenServerParts[basePart] = true
             basePart.LocalTransparencyModifier = 1
+            self:_addPerfStat("ServerPartsHidden")
         end
     end
 
@@ -586,11 +697,19 @@ function WeaponFxController:_hideOwnedServerWeapons()
         if not self._hiddenServerEffects[effect] and resolveOwnerUserId(effect) == localUserId then
             self._hiddenServerEffects[effect] = effect.Enabled
             effect.Enabled = false
+            self:_addPerfStat("ServerEffectsHidden")
         end
+    end
+
+    if startedAt then
+        self:_addPerfStat("VisibilityRefreshes")
+        self:_addPerfStat("VisibilityElapsedSeconds", os.clock() - startedAt)
     end
 end
 
 function WeaponFxController:_onWeaponStateSync(payload)
+    self:_addPerfStat("WeaponStateSyncEvents")
+    self:_markServerWeaponVisibilityDirty()
     self:_rebuildLocalWeapons({
         weaponTier = tostring(payload and payload.weaponTier or "None"),
         weaponCount = math.max(0, math.floor(tonumber(payload and payload.weaponCount) or 0)),
@@ -603,12 +722,80 @@ function WeaponFxController:GetLocalWeaponStates()
     return self._localWeaponStates
 end
 
+function WeaponFxController:_resetPerfStats()
+    self._perfStats = {
+        RenderFrames = 0,
+        LocalWeaponSamples = 0,
+        LocalWeaponUpdates = 0,
+        LocalWeaponsCreated = 0,
+        WeaponStateSyncEvents = 0,
+        RuntimeInstanceBinds = 0,
+        RuntimeInstanceUnbinds = 0,
+        VisibilityRefreshes = 0,
+        ServerPartsHidden = 0,
+        ServerEffectsHidden = 0,
+        TransformElapsedSeconds = 0,
+        VisibilityElapsedSeconds = 0,
+    }
+end
+
+function WeaponFxController:_addPerfStat(key, amount)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if not self._perfStats then
+        self:_resetPerfStats()
+    end
+    self._perfStats[key] = (self._perfStats[key] or 0) + (amount or 1)
+end
+
+function WeaponFxController:_logPerfStats(now)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if now < (self._nextPerfLogClock or 0) then
+        return
+    end
+
+    local stats = self._perfStats
+    if stats and stats.RenderFrames and stats.RenderFrames > 0 then
+        local localFolder = self._localWeaponFolder
+        local runtimeFolder = self._runtimeWeaponsFolder
+        print(string.format(
+            "[Diag][WeaponFxController] frames=%d localWeapons=%d localFolderChildren=%d localFolderDesc=%d runtimeChildren=%d runtimeDesc=%d runtimeBinds=%d hiddenParts=%d hiddenEffects=%d weaponSync=%d created=%d updates=%d visibilityRefreshes=%d partsHidden=%d effectsHidden=%d transformMs=%.3f visibilityMs=%.3f",
+            stats.RenderFrames,
+            #self._localWeaponStates,
+            localFolder and #localFolder:GetChildren() or 0,
+            countDescendants(localFolder),
+            runtimeFolder and #runtimeFolder:GetChildren() or 0,
+            countDescendants(runtimeFolder),
+            countMapEntries(self._runtimeWeaponInstanceConnections),
+            countMapEntries(self._hiddenServerParts),
+            countMapEntries(self._hiddenServerEffects),
+            stats.WeaponStateSyncEvents or 0,
+            stats.LocalWeaponsCreated or 0,
+            stats.LocalWeaponUpdates or 0,
+            stats.VisibilityRefreshes or 0,
+            stats.ServerPartsHidden or 0,
+            stats.ServerEffectsHidden or 0,
+            (stats.TransformElapsedSeconds or 0) * 1000,
+            (stats.VisibilityElapsedSeconds or 0) * 1000
+        ))
+    end
+
+    self:_resetPerfStats()
+    self._nextPerfLogClock = now + getPerformanceLogInterval()
+end
+
 function WeaponFxController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._runtimeWeaponFolderConnections)
+    self:_clearRuntimeWeaponInstanceConnections()
     self._runtimeWeaponsFolder = nil
     self._serverWeaponVisibilityDirty = true
     self._nextServerWeaponVisibilityRefreshClock = 0
+    self:_resetPerfStats()
+    self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
 
     local eventsFolder = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
     local battleEventsFolder = eventsFolder:WaitForChild(RemoteNames.BattleEventsFolder)

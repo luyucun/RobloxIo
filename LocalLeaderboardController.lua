@@ -51,15 +51,22 @@ LocalLeaderboardController._latestPayload = nil
 LocalLeaderboardController._latestPlayerState = nil
 LocalLeaderboardController._isCollapsed = false
 LocalLeaderboardController._bindRetryQueued = false
+LocalLeaderboardController._renderQueued = false
+LocalLeaderboardController._avatarRequestPendingByUserId = {}
+LocalLeaderboardController._avatarFailedAtByUserId = {}
 
 local GENERATED_ROW_ATTRIBUTE = "GeneratedLocalLeaderboardRow"
 local COLLAPSED_TAG_POSITION = UDim2.new(0.85, 0, 0.5, 0)
 local EXPANDED_TAG_POSITION = UDim2.new(-0.05, 0, 0.5, 0)
 local HOVER_SCALE = 1.04
 local PRESS_SCALE = 0.92
+local HIDE_HIT_AREA_NAME = "HideHitArea"
+local HIDE_HIT_AREA_SIZE = UDim2.fromOffset(44, 44)
 local HOVER_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local PRESS_TWEEN_INFO = TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local RESET_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local AVATAR_RETRY_SECONDS = 30
+local AVATAR_RENDER_DEBOUNCE_SECONDS = 0.25
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -100,6 +107,42 @@ local function ensureUiScale(guiObject)
     uiScale.Scale = 1
     uiScale.Parent = guiObject
     return uiScale
+end
+
+local function ensureHideHitArea(button)
+    if not (button and button:IsA("GuiButton")) then
+        return nil
+    end
+
+    local parent = button.Parent
+    if not (parent and parent:IsA("GuiObject")) then
+        return button
+    end
+
+    local hitArea = parent:FindFirstChild(HIDE_HIT_AREA_NAME)
+    if not (hitArea and hitArea:IsA("GuiButton")) then
+        if hitArea then
+            hitArea:Destroy()
+        end
+        hitArea = Instance.new("TextButton")
+        hitArea.Name = HIDE_HIT_AREA_NAME
+        hitArea.Text = ""
+        hitArea.BackgroundTransparency = 1
+        hitArea.TextTransparency = 1
+        hitArea.AutoButtonColor = false
+        hitArea.Parent = parent
+    end
+
+    hitArea.Visible = true
+    hitArea.Active = true
+    hitArea.Selectable = button.Selectable
+    hitArea.AnchorPoint = button.AnchorPoint
+    hitArea.Position = button.Position
+    hitArea.Size = HIDE_HIT_AREA_SIZE
+    hitArea.Rotation = 0
+    hitArea.ZIndex = button.ZIndex + 1
+    hitArea.LayoutOrder = button.LayoutOrder
+    return hitArea
 end
 
 local function setText(container, childName, text)
@@ -145,19 +188,44 @@ function LocalLeaderboardController:_getAvatarImage(userId)
         return self._avatarCacheByUserId[userId]
     end
 
+    local failedAt = tonumber(self._avatarFailedAtByUserId[userId]) or 0
+    if failedAt > 0 and os.clock() - failedAt < AVATAR_RETRY_SECONDS then
+        return ""
+    end
+
+    if self._avatarRequestPendingByUserId[userId] then
+        return ""
+    end
+
+    self._avatarRequestPendingByUserId[userId] = true
     task.spawn(function()
         local success, image = pcall(function()
             return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
         end)
+        self._avatarRequestPendingByUserId[userId] = nil
         if success and image then
+            self._avatarFailedAtByUserId[userId] = nil
             self._avatarCacheByUserId[userId] = image
-            if self._latestPayload then
-                self:_renderRows(self._latestPayload)
-            end
+            self:_queueRenderRows()
+        else
+            self._avatarFailedAtByUserId[userId] = os.clock()
         end
     end)
 
     return ""
+end
+
+function LocalLeaderboardController:_queueRenderRows()
+    if self._renderQueued then
+        return
+    end
+    self._renderQueued = true
+    task.delay(AVATAR_RENDER_DEBOUNCE_SECONDS, function()
+        self._renderQueued = false
+        if self._latestPayload then
+            self:_renderRows(self._latestPayload)
+        end
+    end)
 end
 
 function LocalLeaderboardController:_clearGeneratedRows()
@@ -167,7 +235,9 @@ function LocalLeaderboardController:_clearGeneratedRows()
 
     for _, child in ipairs(self._scrollingFrame:GetChildren()) do
         if child:GetAttribute(GENERATED_ROW_ATTRIBUTE) == true then
-            child:Destroy()
+            if child:IsA("GuiObject") then
+                child.Visible = false
+            end
         end
     end
 
@@ -207,11 +277,15 @@ function LocalLeaderboardController:_renderRows(payload)
     local rows = getRows(payload)
     local template = self._scrollingFrame:FindFirstChild("RankTemplate")
     for rank, rowData in ipairs(rows) do
+        local generatedName = string.format("Rank%02dGenerated", rank)
         local row = self._scrollingFrame:FindFirstChild(string.format("Rank%02d", rank))
-        if rank >= 4 or not row then
+        if rank >= 4 then
+            row = self._scrollingFrame:FindFirstChild(generatedName)
+        end
+        if not row then
             if template and template:IsA("GuiObject") then
                 row = template:Clone()
-                row.Name = string.format("Rank%02dGenerated", rank)
+                row.Name = generatedName
                 row:SetAttribute(GENERATED_ROW_ATTRIBUTE, true)
                 row.Parent = self._scrollingFrame
             end
@@ -261,11 +335,12 @@ end
 function LocalLeaderboardController:_bindHideButton()
     disconnectAll(self._rowConnections)
     local button = self._hideButton
-    if not (button and button:IsA("GuiObject")) then
+    if not (button and button:IsA("GuiButton")) then
         return
     end
 
     button.Active = true
+    local inputTarget = ensureHideHitArea(button) or button
     local uiScale = ensureUiScale(button)
     if not uiScale then
         return
@@ -294,16 +369,16 @@ function LocalLeaderboardController:_bindHideButton()
         tween:Play()
     end
 
-    table.insert(self._rowConnections, button.MouseEnter:Connect(function()
+    table.insert(self._rowConnections, inputTarget.MouseEnter:Connect(function()
         isHovered = true
         applyButtonState()
     end))
-    table.insert(self._rowConnections, button.MouseLeave:Connect(function()
+    table.insert(self._rowConnections, inputTarget.MouseLeave:Connect(function()
         isHovered = false
         isPressed = false
         applyButtonState()
     end))
-    table.insert(self._rowConnections, button.InputBegan:Connect(function(inputObject)
+    table.insert(self._rowConnections, inputTarget.InputBegan:Connect(function(inputObject)
         local inputType = inputObject.UserInputType
         if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
             isPressed = true
@@ -313,19 +388,18 @@ function LocalLeaderboardController:_bindHideButton()
             applyButtonState()
         end
     end))
-    table.insert(self._rowConnections, button.InputEnded:Connect(function(inputObject)
+    table.insert(self._rowConnections, inputTarget.InputEnded:Connect(function(inputObject)
         local inputType = inputObject.UserInputType
         if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
-            local wasPressed = isPressed
             isPressed = false
             if inputType == Enum.UserInputType.Touch then
                 isHovered = false
             end
             applyButtonState()
-            if wasPressed then
-                self:_setCollapsed(not self._isCollapsed)
-            end
         end
+    end))
+    table.insert(self._rowConnections, inputTarget.Activated:Connect(function()
+        self:_setCollapsed(not self._isCollapsed)
     end))
 end
 
@@ -388,6 +462,9 @@ function LocalLeaderboardController:Init(dependencies)
     self._latestPayload = nil
     self._latestPlayerState = nil
     self._avatarCacheByUserId = {}
+    self._avatarRequestPendingByUserId = {}
+    self._avatarFailedAtByUserId = {}
+    self._renderQueued = false
     self._isCollapsed = false
     disconnectAll(self._connections)
     disconnectAll(self._rowConnections)

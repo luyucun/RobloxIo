@@ -41,14 +41,19 @@ ArenaProgressController._progressRoot = nil
 ArenaProgressController._template = nil
 ArenaProgressController._generatedByUserId = {}
 ArenaProgressController._avatarCacheByUserId = {}
+ArenaProgressController._avatarRequestPendingByUserId = {}
+ArenaProgressController._avatarFailedAtByUserId = {}
 ArenaProgressController._latestPayload = nil
 ArenaProgressController._latestPlayerState = nil
 ArenaProgressController._bindRetryQueued = false
+ArenaProgressController._renderQueued = false
 
 local GENERATED_ATTRIBUTE = "ArenaProgressGenerated"
 local PLAYER_NODE_PREFIX = "Player_"
 local UI_BIND_RETRY_COUNT = 80
 local UI_BIND_RETRY_INTERVAL_SECONDS = 0.25
+local AVATAR_RETRY_SECONDS = 30
+local AVATAR_RENDER_DEBOUNCE_SECONDS = 0.25
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -105,19 +110,44 @@ function ArenaProgressController:_getAvatarImage(userId)
         return self._avatarCacheByUserId[userId]
     end
 
+    local failedAt = tonumber(self._avatarFailedAtByUserId[userId]) or 0
+    if failedAt > 0 and os.clock() - failedAt < AVATAR_RETRY_SECONDS then
+        return ""
+    end
+
+    if self._avatarRequestPendingByUserId[userId] then
+        return ""
+    end
+
+    self._avatarRequestPendingByUserId[userId] = true
     task.spawn(function()
         local success, image = pcall(function()
             return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
         end)
+        self._avatarRequestPendingByUserId[userId] = nil
         if success and image then
+            self._avatarFailedAtByUserId[userId] = nil
             self._avatarCacheByUserId[userId] = image
-            if self._latestPayload then
-                self:_render(self._latestPayload)
-            end
+            self:_queueRender()
+        else
+            self._avatarFailedAtByUserId[userId] = os.clock()
         end
     end)
 
     return ""
+end
+
+function ArenaProgressController:_queueRender()
+    if self._renderQueued then
+        return
+    end
+    self._renderQueued = true
+    task.delay(AVATAR_RENDER_DEBOUNCE_SECONDS, function()
+        self._renderQueued = false
+        if self._latestPayload then
+            self:_render(self._latestPayload)
+        end
+    end)
 end
 
 function ArenaProgressController:_clearGenerated()
@@ -269,6 +299,9 @@ function ArenaProgressController:Init(dependencies)
     self._latestPlayerState = nil
     self._generatedByUserId = {}
     self._avatarCacheByUserId = {}
+    self._avatarRequestPendingByUserId = {}
+    self._avatarFailedAtByUserId = {}
+    self._renderQueued = false
     disconnectAll(self._connections)
 
     local eventsRoot = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)

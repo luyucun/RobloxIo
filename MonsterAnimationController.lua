@@ -42,6 +42,8 @@ MonsterAnimationController._renderConnection = nil
 MonsterAnimationController._folderConnections = {}
 MonsterAnimationController._statesByInstance = {}
 MonsterAnimationController._rescanClock = 0
+MonsterAnimationController._perfStats = nil
+MonsterAnimationController._nextPerfLogClock = 0
 
 local LOOP_FADE_SECONDS = 0.15
 local ATTACK_FADE_SECONDS = 0.05
@@ -50,6 +52,33 @@ local RESCAN_INTERVAL_SECONDS = 5
 local SMOOTH_FOLLOW_SPEED = 18
 local SNAP_DISTANCE = 24
 local ORIGINAL_TRANSPARENCY_ATTRIBUTE = "__ClientOriginalTransparency"
+
+local function isPerformanceDebugEnabled()
+    return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function countMapEntries(map)
+    local count = 0
+    for _ in pairs(map or {}) do
+        count += 1
+    end
+    return count
+end
+
+local function countDescendants(instance)
+    if not instance then
+        return 0
+    end
+
+    local ok, descendants = pcall(function()
+        return instance:GetDescendants()
+    end)
+    return ok and #descendants or 0
+end
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -442,6 +471,7 @@ function MonsterAnimationController:_trackMonster(instance)
 
     self._statesByInstance[instance] = state
     self:_setLoop(state, "Idle")
+    self:_addPerfStat("Tracked")
 end
 
 function MonsterAnimationController:_untrackMonster(instance)
@@ -464,6 +494,7 @@ function MonsterAnimationController:_untrackMonster(instance)
         state.VisualInstance:Destroy()
     end
     self._statesByInstance[instance] = nil
+    self:_addPerfStat("Untracked")
 end
 
 function MonsterAnimationController:_scanMonsters()
@@ -574,6 +605,59 @@ function MonsterAnimationController:_stepMonster(state, deltaTime)
     end
 end
 
+function MonsterAnimationController:_resetPerfStats()
+    self._perfStats = {
+        RenderFrames = 0,
+        Tracked = 0,
+        Untracked = 0,
+        StateSamples = 0,
+        VisualUpdates = 0,
+        Rescans = 0,
+        StepElapsedSeconds = 0,
+    }
+end
+
+function MonsterAnimationController:_addPerfStat(key, amount)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if not self._perfStats then
+        self:_resetPerfStats()
+    end
+    self._perfStats[key] = (self._perfStats[key] or 0) + (amount or 1)
+end
+
+function MonsterAnimationController:_logPerfStats(now)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if now < (self._nextPerfLogClock or 0) then
+        return
+    end
+
+    local stats = self._perfStats
+    if stats and stats.RenderFrames and stats.RenderFrames > 0 then
+        print(string.format(
+            "[Diag][MonsterAnimationController] frames=%d trackedNow=%d monsterFolderChildren=%d monsterFolderDesc=%d visualChildren=%d visualDesc=%d trackedNew=%d untracked=%d stateSamples=%d visualUpdates=%d rescans=%d stepMs=%.3f",
+            stats.RenderFrames,
+            countMapEntries(self._statesByInstance),
+            self._monsterFolder and #self._monsterFolder:GetChildren() or 0,
+            countDescendants(self._monsterFolder),
+            self._visualFolder and #self._visualFolder:GetChildren() or 0,
+            countDescendants(self._visualFolder),
+            stats.Tracked or 0,
+            stats.Untracked or 0,
+            stats.StateSamples or 0,
+            stats.VisualUpdates or 0,
+            stats.Rescans or 0,
+            (stats.StepElapsedSeconds or 0) * 1000
+        ))
+    end
+
+    self:_resetPerfStats()
+    self._nextPerfLogClock = now + getPerformanceLogInterval()
+end
+
 function MonsterAnimationController:Init()
     disconnectAll(self._folderConnections)
     for instance in pairs(self._statesByInstance) do
@@ -587,20 +671,33 @@ function MonsterAnimationController:Init()
 
     self._monsterFolder = nil
     self._rescanClock = 0
+    self:_resetPerfStats()
+    self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
     self:_createVisualFolder()
     self:_resolveMonsterFolder()
     self._rescanClock = os.clock() + RESCAN_INTERVAL_SECONDS
 
     self._renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
+        local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
         local now = os.clock()
         if now >= self._rescanClock then
             self._rescanClock = now + RESCAN_INTERVAL_SECONDS
             self:_resolveMonsterFolder()
             self:_scanMonsters()
+            self:_addPerfStat("Rescans")
         end
 
+        local updateCount = 0
         for _, state in pairs(self._statesByInstance) do
             self:_stepMonster(state, deltaTime)
+            updateCount += 1
+        end
+        if startedAt then
+            self:_addPerfStat("RenderFrames")
+            self:_addPerfStat("StateSamples", countMapEntries(self._statesByInstance))
+            self:_addPerfStat("VisualUpdates", updateCount)
+            self:_addPerfStat("StepElapsedSeconds", os.clock() - startedAt)
+            self:_logPerfStats(os.clock())
         end
     end)
 end

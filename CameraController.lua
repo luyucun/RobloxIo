@@ -41,6 +41,7 @@ CameraController._connections = {}
 CameraController._applySerial = 0
 CameraController._spawnLookSerial = 0
 CameraController._portalCameraBindName = "IOFacePortalCamera"
+CameraController._skipNextSpawnLookUntil = 0
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -154,6 +155,11 @@ end
 function CameraController:_scheduleFaceCameraToPortal(delaySeconds)
     self._spawnLookSerial += 1
     local spawnLookSerial = self._spawnLookSerial
+    if os.clock() <= (self._skipNextSpawnLookUntil or 0) then
+        self._skipNextSpawnLookUntil = 0
+        self:_unbindPortalCameraLook()
+        return
+    end
 
     task.delay(math.max(0, tonumber(delaySeconds) or 0), function()
         if self._spawnLookSerial ~= spawnLookSerial then
@@ -203,6 +209,7 @@ end
 
 function CameraController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    self._skipNextSpawnLookUntil = 0
     disconnectAll(self._connections)
     self:_unbindPortalCameraLook()
 
@@ -226,6 +233,9 @@ function CameraController:Init(dependencies)
 
         if payload.status == "ReturnHome" and payload.spawnMode == "SpawnLocation" then
             self:_scheduleFaceCameraToPortal(0.05)
+        elseif payload.status == "SkipSpawnCameraLook" and payload.spawnMode == "ArenaRevive" then
+            self._skipNextSpawnLookUntil = os.clock() + 5
+            self:_unbindPortalCameraLook()
         end
     end))
 end

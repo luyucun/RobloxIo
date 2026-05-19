@@ -8,6 +8,7 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/NewWeaponUnlo
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
@@ -68,6 +69,7 @@ local CHILD_IN = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.
 local CLAIM_IN = TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 local MODAL_OWNER_ID = "NewWeaponUnlock"
 local MODAL_Z_INDEX = 10
+local ORIGINAL_Z_INDEX_ATTRIBUTE = "NewWeaponUnlockOriginalZIndex"
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -136,12 +138,45 @@ local function raiseModalRootZIndex(root, zIndex)
     end
 end
 
+local function raiseDescendantZIndex(root, baseZIndex)
+    if not root then
+        return
+    end
+
+    for _, descendant in ipairs(root:GetDescendants()) do
+        if descendant:IsA("GuiObject") then
+            local originalZIndex = descendant:GetAttribute(ORIGINAL_Z_INDEX_ATTRIBUTE)
+            if typeof(originalZIndex) ~= "number" then
+                originalZIndex = descendant.ZIndex
+                descendant:SetAttribute(ORIGINAL_Z_INDEX_ATTRIBUTE, originalZIndex)
+            end
+
+            descendant.ZIndex = baseZIndex + originalZIndex
+        end
+    end
+end
+
 local function normalizeTierIndex(value)
     local tierIndex = tonumber(value)
     if not tierIndex then
         return nil
     end
     return math.floor(tierIndex)
+end
+
+local function isInputInsideGuiObject(guiObject, inputObject)
+    if not (guiObject and guiObject:IsA("GuiObject") and guiObject.Visible == true and inputObject) then
+        return false
+    end
+
+    local inputPosition = inputObject.Position
+    local pointer = Vector2.new(inputPosition.X, inputPosition.Y)
+    local absolutePosition = guiObject.AbsolutePosition
+    local absoluteSize = guiObject.AbsoluteSize
+    return pointer.X >= absolutePosition.X
+        and pointer.X <= absolutePosition.X + absoluteSize.X
+        and pointer.Y >= absolutePosition.Y
+        and pointer.Y <= absolutePosition.Y + absoluteSize.Y
 end
 
 function NewWeaponUnlockController:_getActiveTierIndex()
@@ -242,10 +277,13 @@ function NewWeaponUnlockController:_playOpen(payload)
     self:_cancelTweens()
     self:_rememberPositions()
 
+    local activeTierIndex = normalizeTierIndex(payload and payload.tierIndex)
+    if not activeTierIndex then
+        return false
+    end
     self._isOpen = true
     self._isClaiming = false
     self._activePayload = payload
-    local activeTierIndex = normalizeTierIndex(payload and payload.tierIndex)
     if activeTierIndex then
         self._activeTierKey = tostring(activeTierIndex)
     else
@@ -257,6 +295,7 @@ function NewWeaponUnlockController:_playOpen(payload)
         self._mainGui.Enabled = true
     end
     raiseModalRootZIndex(self._panel, MODAL_Z_INDEX)
+    raiseDescendantZIndex(self._panel, MODAL_Z_INDEX)
     self._panel:SetAttribute("ActiveWeaponUnlockTierIndex", activeTierIndex)
     ModalUiController:Acquire(MODAL_OWNER_ID, self._panel)
     self._panel.Visible = true
@@ -438,7 +477,7 @@ function NewWeaponUnlockController:_requestClaim()
         self._activeTierKey = tostring(activeTierIndex)
     end
 
-    if self._isClaiming or not (activeTierIndex and self._requestClaimEvent) then
+    if self._isClaiming or not self._requestClaimEvent then
         return
     end
 
@@ -453,11 +492,11 @@ function NewWeaponUnlockController:_handleFeedback(payload)
     end
 
     local eventType = tostring(payload.eventType or "")
+    if payload.clearPending == true then
+        table.clear(self._pendingPayloads)
+        table.clear(self._queuedTierIndexes)
+    end
     if eventType == "Success" then
-        if payload.clearPending == true then
-            table.clear(self._pendingPayloads)
-            table.clear(self._queuedTierIndexes)
-        end
         self:_playClose(function()
             self._activePayload = nil
             self._activeTierKey = nil
@@ -472,6 +511,17 @@ function NewWeaponUnlockController:_handleFeedback(payload)
 
     self._isClaiming = false
     setGuiEnabled(self._claimButton, true)
+    local message = tostring(payload.message or "")
+    if message == "InvalidTier" or message == "NoPendingReward" or message == "AlreadyClaimed" then
+        self:_playClose(function()
+            self._activePayload = nil
+            self._activeTierKey = nil
+            if self._requestStateSyncEvent then
+                self._requestStateSyncEvent:FireServer()
+            end
+            self:_showNextQueued()
+        end)
+    end
 end
 
 function NewWeaponUnlockController:_disconnectButtonBindings()
@@ -517,6 +567,31 @@ function NewWeaponUnlockController:_bindUi(silent)
     if self._claimButton and self._claimButton:IsA("GuiButton") then
         table.insert(self._buttonConnections, self._claimButton.Activated:Connect(function()
             self:_requestClaim()
+        end))
+        table.insert(self._buttonConnections, self._claimButton.InputEnded:Connect(function(inputObject)
+            if inputObject.UserInputType == Enum.UserInputType.MouseButton1
+                or inputObject.UserInputType == Enum.UserInputType.Touch
+            then
+                if not UserInputService:GetFocusedTextBox() then
+                    self:_requestClaim()
+                end
+            end
+        end))
+        table.insert(self._buttonConnections, UserInputService.InputEnded:Connect(function(inputObject, gameProcessed)
+            if gameProcessed then
+                return
+            end
+            if not self._isOpen or self._isClaiming then
+                return
+            end
+            if inputObject.UserInputType ~= Enum.UserInputType.MouseButton1
+                and inputObject.UserInputType ~= Enum.UserInputType.Touch
+            then
+                return
+            end
+            if isInputInsideGuiObject(self._claimButton, inputObject) and not UserInputService:GetFocusedTextBox() then
+                self:_requestClaim()
+            end
         end))
     end
     return true

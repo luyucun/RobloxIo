@@ -151,6 +151,52 @@ local function findButton(root, name)
     return nil, nil
 end
 
+local function setText(textObject, value)
+    if textObject and (textObject:IsA("TextLabel") or textObject:IsA("TextButton") or textObject:IsA("TextBox")) then
+        textObject.Text = tostring(value)
+    end
+end
+
+local function formatRobuxPrice(value)
+    local price = tonumber(value)
+    if not price then
+        return nil
+    end
+    return tostring(math.max(0, math.floor(price + 0.5)))
+end
+
+local function setSubscriptionPrice(textObject, subscriptionId)
+    if not textObject then
+        return
+    end
+
+    local resolvedSubscriptionId = tostring(subscriptionId or "")
+    if resolvedSubscriptionId == "" then
+        return
+    end
+
+    local fallbackText = tostring(textObject.Text or "")
+    setText(textObject, "...")
+    task.spawn(function()
+        local success, productInfo = pcall(function()
+            return MarketplaceService:GetSubscriptionProductInfoAsync(resolvedSubscriptionId)
+        end)
+        if not (success and type(productInfo) == "table") then
+            if fallbackText ~= "" then
+                setText(textObject, fallbackText)
+            end
+            return
+        end
+
+        local priceText = formatRobuxPrice(productInfo.PriceInRobux)
+        if priceText then
+            setText(textObject, priceText)
+        elseif fallbackText ~= "" then
+            setText(textObject, fallbackText)
+        end
+    end)
+end
+
 local function getFirstChildByNames(parent, names)
     for _, name in ipairs(names) do
         local child = parent and parent:FindFirstChild(name)
@@ -631,6 +677,7 @@ function SubscriptionController:_bindUi(silent)
     self._startFrame = self._panel and self._panel:FindFirstChild("Start", true) or nil
     self._claimFrame = self._panel and getFirstChildByNames(self._panel, { "Claim", "CLaim" }) or nil
     self._buyButton = self._panel and select(1, findButton(self._panel, "BuyButton")) or nil
+    setSubscriptionPrice(self._buyButton and self._buyButton:FindFirstChild("RMoney", true), SubscriptionConfig.SubscriptionId)
     self._claimButton = self._panel and (select(1, findButton(self._panel, "Claim")) or select(1, findButton(self._panel, "CLaim"))) or nil
     if self._claimButton and self._claimButton == self._claimFrame then
         self._claimFrame = nil

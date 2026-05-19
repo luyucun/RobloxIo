@@ -77,9 +77,9 @@ AutoBattleController._autoBannerBaseGradient = nil
 AutoBattleController._isAutoButtonHovered = false
 AutoBattleController._isAutoButtonPressed = false
 
-local MOVE_TO_REFRESH_SECONDS = 0.12
+local MOVE_TO_REFRESH_SECONDS = 0.18
 local MOVE_TO_POSITION_EPSILON = 1.5
-local AUTO_TARGET_REFRESH_SECONDS = 0.12
+local AUTO_TARGET_REFRESH_SECONDS = 0.25
 local AUTO_TARGET_SWITCH_COOLDOWN_SECONDS = 0.18
 local AUTO_STUCK_CHECK_INTERVAL_SECONDS = 0.8
 local AUTO_STUCK_MIN_MOVE_DISTANCE = 1.2

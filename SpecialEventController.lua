@@ -33,6 +33,7 @@ end
 
 local RemoteNames = requireSharedModule("RemoteNames")
 local SpecialEventConfig = requireSharedModule("SpecialEventConfig")
+local GameConfig = requireSharedModule("GameConfig")
 
 local SpecialEventController = {}
 
@@ -51,6 +52,8 @@ SpecialEventController._lightingDefaultObbySky = nil
 SpecialEventController._lightingEventFolder = nil
 SpecialEventController._lightingMovedEventChildren = {}
 SpecialEventController._lastBoardUpdateClock = 0
+SpecialEventController._perfStats = nil
+SpecialEventController._nextPerfLogClock = 0
 
 local EVENT_BOARD_PATHS = {
     { "BattleSenceEventBoard" },
@@ -66,6 +69,25 @@ local function disconnectAll(connections)
         end
     end
     table.clear(connections)
+end
+
+local function isPerformanceDebugEnabled()
+    return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function countDescendants(instance)
+    if not instance then
+        return 0
+    end
+
+    local ok, descendants = pcall(function()
+        return instance:GetDescendants()
+    end)
+    return ok and #descendants or 0
 end
 
 local function splitPath(path)
@@ -198,6 +220,7 @@ end
 function SpecialEventController:_clearActiveClone()
     if self._activeClone and self._activeClone.Parent then
         self._activeClone:Destroy()
+        self:_addPerfStat("ClonesDestroyed")
     end
 
     self._activeClone = nil
@@ -312,6 +335,7 @@ function SpecialEventController:_cloneEventScene(activeEvent)
     clone.Parent = Workspace
     self._activeClone = clone
     self._activeCloneEventId = eventId
+    self:_addPerfStat("ClonesCreated")
 end
 
 function SpecialEventController:_applyPayload(payload)
@@ -325,6 +349,7 @@ function SpecialEventController:_applyPayload(payload)
     end
 
     self._payload = payload
+    self:_addPerfStat("SyncEvents")
     self:_refreshScene()
     self:_updateBoards()
 end
@@ -422,12 +447,60 @@ function SpecialEventController:_updateBoards()
     end
 end
 
+function SpecialEventController:_resetPerfStats()
+    self._perfStats = {
+        RenderFrames = 0,
+        SyncEvents = 0,
+        ClonesCreated = 0,
+        ClonesDestroyed = 0,
+        BoardUpdates = 0,
+    }
+end
+
+function SpecialEventController:_addPerfStat(key, amount)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if not self._perfStats then
+        self:_resetPerfStats()
+    end
+    self._perfStats[key] = (self._perfStats[key] or 0) + (amount or 1)
+end
+
+function SpecialEventController:_logPerfStats(now)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if now < (self._nextPerfLogClock or 0) then
+        return
+    end
+
+    local stats = self._perfStats or {}
+    print(string.format(
+        "[Diag][SpecialEventController] frames=%d activeEventId=%s cloneName=%s cloneDesc=%d movedLighting=%d syncEvents=%d clonesCreated=%d clonesDestroyed=%d boardUpdates=%d",
+        stats.RenderFrames or 0,
+        tostring(self._activeCloneEventId),
+        tostring(self._activeClone and self._activeClone.Name or "nil"),
+        countDescendants(self._activeClone),
+        #self._lightingMovedEventChildren,
+        stats.SyncEvents or 0,
+        stats.ClonesCreated or 0,
+        stats.ClonesDestroyed or 0,
+        stats.BoardUpdates or 0
+    ))
+
+    self:_resetPerfStats()
+    self._nextPerfLogClock = now + getPerformanceLogInterval()
+end
+
 function SpecialEventController:Init()
     disconnectAll(self._connections)
     self:_clearActiveClone()
     self:_restoreLightingState()
     self._payload = nil
     self._serverClockOffset = 0
+    self:_resetPerfStats()
+    self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
     self._lastBoardUpdateClock = 0
 
     if self._renderConnection then
@@ -453,8 +526,11 @@ function SpecialEventController:Init()
     end))
 
     self._renderConnection = RunService.RenderStepped:Connect(function()
+        self:_addPerfStat("RenderFrames")
         self:_refreshScene()
         self:_updateBoards()
+        self:_addPerfStat("BoardUpdates")
+        self:_logPerfStats(os.clock())
     end)
 
     if self._requestSpecialEventSyncEvent and self._requestSpecialEventSyncEvent:IsA("RemoteEvent") then

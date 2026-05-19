@@ -82,6 +82,7 @@ local JoinGameController = requireLocalModule("JoinGameController")
 local RebirthController = requireLocalModule("RebirthController")
 local WeaponIndexController = requireLocalModule("WeaponIndexController")
 local PotionController = requireLocalModule("PotionController")
+local ModalUiController = requireLocalModule("ModalUiController")
 local MonetizationController = requireLocalModule("MonetizationController")
 local DefeatedController = requireLocalModule("DefeatedController")
 local CameraController = requireLocalModule("CameraController")
@@ -101,8 +102,14 @@ local OptionController = requireLocalModule("OptionController")
 local BossHitFeedbackController = requireLocalModule("BossHitFeedbackController")
 local NoobMachineController = requireLocalModule("NoobMachineController")
 local GuideController = requireLocalModule("GuideController")
+local FavoritePlacePromptController = requireLocalModule("FavoritePlacePromptController")
 
 initController("AudioSettingsController", AudioSettingsController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
+initController("ModalUiController", ModalUiController, {
     LocalPlayer = localPlayer,
     RootScript = script,
 })
@@ -256,6 +263,11 @@ initController("NoobMachineController", NoobMachineController, {
 initController("GuideController", GuideController, {
 	LocalPlayer = localPlayer,
 	RootScript = script,
+})
+
+initController("FavoritePlacePromptController", FavoritePlacePromptController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
 })
 
 initController("DefeatedController", DefeatedController, {

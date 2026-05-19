@@ -39,6 +39,7 @@ RespawnService._arenaService = nil
 RespawnService._botService = nil
 RespawnService._requestDefeatedActionEvent = nil
 RespawnService._requestDefeatedActionConnection = nil
+RespawnService._arenaTransitionFeedbackEvent = nil
 RespawnService._deathSerialByActorId = {}
 RespawnService._defeatRecordsByUserId = {}
 RespawnService._arenaRevivePendingByUserId = {}
@@ -115,6 +116,18 @@ function RespawnService:ConsumeArenaReviveRequest(player)
     return true
 end
 
+function RespawnService:_fireSkipSpawnCameraLook(player)
+    if not (self._arenaTransitionFeedbackEvent and ActorUtils.IsPlayer(player) and player.Parent) then
+        return
+    end
+
+    self._arenaTransitionFeedbackEvent:FireClient(player, {
+        status = "SkipSpawnCameraLook",
+        spawnMode = "ArenaRevive",
+        timestamp = os.clock(),
+    })
+end
+
 function RespawnService:_waitForUsableCharacter(player, timeoutSeconds)
     local deadline = os.clock() + math.max(0.2, tonumber(timeoutSeconds) or 3)
     repeat
@@ -164,6 +177,7 @@ function RespawnService:_revivePlayerNow(player)
     local rootPart = ActorUtils.GetRootPart(player)
     if not (humanoid and rootPart and humanoid.Health > 0) then
         self:_setArenaRevivePending(player)
+        self:_fireSkipSpawnCameraLook(player)
         local didLoad = pcall(function()
             player:LoadCharacter()
         end)
@@ -286,6 +300,7 @@ function RespawnService:Init(dependencies)
     self._arenaService = dependencies.ArenaService
     self._botService = dependencies.BotService
     self._requestDefeatedActionEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestDefeatedAction") or nil
+    self._arenaTransitionFeedbackEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("ArenaTransitionFeedback") or nil
     self._deathSerialByActorId = {}
     self._defeatRecordsByUserId = {}
     self._arenaRevivePendingByUserId = {}

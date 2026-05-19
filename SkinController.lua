@@ -131,6 +131,46 @@ local function setText(textObject, value)
     end
 end
 
+local function formatRobuxPrice(value)
+    local price = tonumber(value)
+    if not price then
+        return nil
+    end
+    return tostring(math.max(0, math.floor(price + 0.5)))
+end
+
+local function setMarketplaceGamePassPrice(textObject, gamePassId)
+    if not textObject then
+        return
+    end
+
+    local resolvedGamePassId = math.floor(tonumber(gamePassId) or 0)
+    if resolvedGamePassId <= 0 then
+        return
+    end
+
+    local fallbackText = tostring(textObject.Text or "")
+    setText(textObject, "...")
+    task.spawn(function()
+        local success, productInfo = pcall(function()
+            return MarketplaceService:GetProductInfoAsync(resolvedGamePassId, Enum.InfoType.GamePass)
+        end)
+        if not (success and type(productInfo) == "table") then
+            if fallbackText ~= "" then
+                setText(textObject, fallbackText)
+            end
+            return
+        end
+
+        local priceText = formatRobuxPrice(productInfo.PriceInRobux)
+        if priceText then
+            setText(textObject, priceText)
+        elseif fallbackText ~= "" then
+            setText(textObject, fallbackText)
+        end
+    end)
+end
+
 local function setImage(imageObject, image)
     if imageObject and (imageObject:IsA("ImageLabel") or imageObject:IsA("ImageButton")) then
         imageObject.Image = tostring(image or "")
@@ -444,6 +484,7 @@ function SkinController:_populateItem(frame, skin)
     if robuxButton then
         local priceLabel = robuxScaleTarget and robuxScaleTarget:FindFirstChild("RMoney", true)
         setText(priceLabel, "299")
+        setMarketplaceGamePassPrice(priceLabel, skin.gamePassId)
         self:_bindItemButton(robuxButton, function()
             if self._requestPurchaseEvent then
                 self._requestPurchaseEvent:FireServer(skin.id)

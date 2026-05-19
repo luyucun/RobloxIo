@@ -52,8 +52,27 @@ WeaponService._brokenDebrisStates = {}
 WeaponService._weaponRestorationByCombatUserId = {}
 WeaponService._heartbeatConnection = nil
 WeaponService._nextWeaponId = 1
+WeaponService._weaponTransformFrameIndex = 0
+WeaponService._perfStats = nil
+WeaponService._nextPerfLogClock = 0
 
 local WEAPON_RESTORE_INTERVAL_SECONDS = 5
+
+local function isPerformanceDebugEnabled()
+    return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 5)
+end
+
+local function getRemoteWeaponNearDistance()
+    return math.max(0, tonumber(GameConfig.COMBAT and GameConfig.COMBAT.RemoteWeaponNearDistance) or 140)
+end
+
+local function getRemoteWeaponFarUpdateStride()
+    return math.max(1, math.floor(tonumber(GameConfig.COMBAT and GameConfig.COMBAT.RemoteWeaponFarUpdateStride) or 1))
+end
 
 local function findOrCreateFolder(parent, folderName)
     for _, child in ipairs(parent:GetChildren()) do
@@ -347,6 +366,7 @@ function WeaponService:_destroyWeaponState(weaponState)
 
     if weaponState.RuntimeInstance and weaponState.RuntimeInstance.Parent then
         weaponState.RuntimeInstance:Destroy()
+        self:_addPerfStat("WeaponsDestroyed")
     end
 
     weaponState.RuntimeInstance = nil
@@ -383,6 +403,7 @@ function WeaponService:_fireWeaponStateSync(actor, tier, count, weaponStates)
     if not ActorUtils.IsPlayer(actor) then
         return
     end
+    self:_addPerfStat("WeaponSyncEvents")
 
     local syncTier = tostring(tier or "None")
     local syncTierIndex = WeaponTierConfig.GetTierIndex(syncTier)
@@ -614,6 +635,7 @@ function WeaponService:_spawnBrokenWeaponDebris(weaponState, context)
         OriginalTransparencyByPart = originalTransparencyByPart,
         BaseParts = baseParts,
     })
+    self:_addPerfStat("BrokenDebrisSpawned")
 
     Debris:AddItem(debrisInstance, GameConfig.WEAPON.BrokenDebrisDurationSeconds + 0.25)
 end
@@ -631,12 +653,14 @@ function WeaponService:_updateBrokenDebris(deltaTime)
         local instance = debrisState.Instance
         if not (instance and instance.Parent) then
             table.remove(self._brokenDebrisStates, index)
+            self:_addPerfStat("BrokenDebrisDestroyed")
         else
             debrisState.Elapsed += deltaTime
             local progress = debrisState.Elapsed / debrisState.Duration
             if progress >= 1 then
                 instance:Destroy()
                 table.remove(self._brokenDebrisStates, index)
+                self:_addPerfStat("BrokenDebrisDestroyed")
             else
                 local t = debrisState.Elapsed
                 local displacement = Vector3.new(
@@ -711,7 +735,6 @@ function WeaponService:_createWeaponState(actor, tier, weaponIndex, totalCount, 
         previousState.RuntimeInstance:Destroy()
     end
     runtimeWeapon.Name = string.format("%s_%s_%d", tostring(visualTemplateName), tostring(getCombatUserId(actor)), weaponIndex)
-    runtimeWeapon.Parent = self._runtimeFolder
     local hitPart = self:_configureRuntimeInstance(runtimeWeapon)
     if not hitPart then
         runtimeWeapon:Destroy()
@@ -746,8 +769,18 @@ function WeaponService:_createWeaponState(actor, tier, weaponIndex, totalCount, 
     end
 
     applyWeaponAttributes(runtimeWeapon, weaponState)
+    local rootPart = ActorUtils.GetRootPart(actor)
+    if rootPart then
+        self:_setRuntimeCFrame(runtimeWeapon, self:_buildWeaponCFrame(self:_calculateOrbitCenter(rootPart), weaponState))
+    end
+    if runtimeWeapon.Parent ~= self._runtimeFolder then
+        runtimeWeapon.Parent = self._runtimeFolder
+    end
 
     self._weaponByPart[hitPart] = weaponState
+    if not previousState then
+        self:_addPerfStat("WeaponsCreated")
+    end
     return weaponState
 end
 
@@ -783,28 +816,198 @@ function WeaponService:_buildWeaponCFrame(centerPosition, weaponState)
     return CFrame.fromMatrix(position, outward, Vector3.yAxis, outward:Cross(Vector3.yAxis))
 end
 
+function WeaponService:_buildArenaPlayerPositions()
+    local positions = {}
+    if not self._playerStateService then
+        return positions
+    end
+
+    for _, player in ipairs(self._playerStateService:GetArenaPlayers()) do
+        local rootPart = ActorUtils.GetRootPart(player)
+        if rootPart then
+            table.insert(positions, rootPart.Position)
+        end
+    end
+    return positions
+end
+
+function WeaponService:_isNearAnyArenaPlayer(position, arenaPlayerPositions, nearDistanceSq)
+    if typeof(position) ~= "Vector3" then
+        return true
+    end
+
+    for _, playerPosition in ipairs(arenaPlayerPositions or {}) do
+        local delta = position - playerPosition
+        if (delta.X * delta.X) + (delta.Z * delta.Z) <= nearDistanceSq then
+            return true
+        end
+    end
+    return false
+end
+
+function WeaponService:_resetPerfStats()
+    self._perfStats = {
+        Steps = 0,
+        ActorCount = 0,
+        WeaponCount = 0,
+        TransformCount = 0,
+        WeaponSyncEvents = 0,
+        Rebuilds = 0,
+        WeaponsCreated = 0,
+        WeaponsDestroyed = 0,
+        BrokenDebrisSpawned = 0,
+        BrokenDebrisDestroyed = 0,
+        RestorationChecks = 0,
+        RestorationRebuilds = 0,
+        ElapsedSeconds = 0,
+    }
+end
+
+function WeaponService:_addPerfStat(key, amount)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if not self._perfStats then
+        self:_resetPerfStats()
+    end
+    self._perfStats[key] = (self._perfStats[key] or 0) + (amount or 1)
+end
+
+function WeaponService:_logPerfStats(now)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if now < (self._nextPerfLogClock or 0) then
+        return
+    end
+
+    local stats = self._perfStats
+    if stats and stats.Steps and stats.Steps > 0 then
+        print(string.format(
+            "[Perf][WeaponService] steps=%d actorSamples=%d weaponSamples=%d transforms=%d elapsedMs=%.3f",
+            stats.Steps,
+            stats.ActorCount or 0,
+            stats.WeaponCount or 0,
+            stats.TransformCount or 0,
+            (stats.ElapsedSeconds or 0) * 1000
+        ))
+        local runtimeChildren = self._runtimeFolder and #self._runtimeFolder:GetChildren() or 0
+        local runtimeDesc = 0
+        if self._runtimeFolder then
+            local ok, descendants = pcall(function()
+                return self._runtimeFolder:GetDescendants()
+            end)
+            runtimeDesc = ok and #descendants or 0
+        end
+        local debrisChildren = self._brokenDebrisFolder and #self._brokenDebrisFolder:GetChildren() or 0
+        local actorBuckets = 0
+        local aliveWeapons = 0
+        for _, weaponStates in pairs(self._weaponsByCombatUserId or {}) do
+            actorBuckets += 1
+            for _, weaponState in ipairs(weaponStates or {}) do
+                if weaponState.Alive and weaponState.RuntimeInstance and weaponState.RuntimeInstance.Parent then
+                    aliveWeapons += 1
+                end
+            end
+        end
+        local restorationBuckets = 0
+        for _ in pairs(self._weaponRestorationByCombatUserId or {}) do
+            restorationBuckets += 1
+        end
+        print(string.format(
+            "[Diag][WeaponService] actorBuckets=%d aliveWeapons=%d runtimeChildren=%d runtimeDesc=%d weaponByPart=%d debrisChildren=%d debrisStates=%d restorationBuckets=%d syncEvents=%d rebuilds=%d created=%d destroyed=%d debrisSpawned=%d debrisDestroyed=%d restorationChecks=%d restorationRebuilds=%d",
+            actorBuckets,
+            aliveWeapons,
+            runtimeChildren,
+            runtimeDesc,
+            (function()
+                local count = 0
+                for _ in pairs(self._weaponByPart or {}) do
+                    count += 1
+                end
+                return count
+            end)(),
+            debrisChildren,
+            (function()
+                local count = 0
+                for _ in pairs(self._brokenDebrisStates or {}) do
+                    count += 1
+                end
+                return count
+            end)(),
+            restorationBuckets,
+            stats.WeaponSyncEvents or 0,
+            stats.Rebuilds or 0,
+            stats.WeaponsCreated or 0,
+            stats.WeaponsDestroyed or 0,
+            stats.BrokenDebrisSpawned or 0,
+            stats.BrokenDebrisDestroyed or 0,
+            stats.RestorationChecks or 0,
+            stats.RestorationRebuilds or 0
+        ))
+    end
+
+    self:_resetPerfStats()
+    self._nextPerfLogClock = now + getPerformanceLogInterval()
+end
+
 function WeaponService:_updateWeaponTransforms(deltaTime)
+    local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
+    local actorCount = 0
+    local weaponCount = 0
+    local transformCount = 0
+    local farUpdateStride = getRemoteWeaponFarUpdateStride()
+    self._weaponTransformFrameIndex = ((self._weaponTransformFrameIndex or 0) + 1) % farUpdateStride
+    local nearDistance = getRemoteWeaponNearDistance()
+    local nearDistanceSq = nearDistance * nearDistance
+    local arenaPlayerPositions = self:_buildArenaPlayerPositions()
+
     for _, actor in ipairs(self._playerStateService:GetAllActors()) do
         local weaponStates = self:GetWeaponStates(actor)
         if #weaponStates > 0 then
+            actorCount += 1
+            weaponCount += #weaponStates
             local rootPart = ActorUtils.GetRootPart(actor)
             if rootPart then
                 local centerPosition = self:_calculateOrbitCenter(rootPart)
+                local actorIsPlayer = ActorUtils.IsPlayer(actor)
+                local isNearPlayer = self:_isNearAnyArenaPlayer(centerPosition, arenaPlayerPositions, nearDistanceSq)
+                local shouldUpdateTransform = isNearPlayer or farUpdateStride <= 1
+                if actorIsPlayer then
+                    shouldUpdateTransform = true
+                end
+                if not shouldUpdateTransform then
+                    local combatUserId = getCombatUserId(actor)
+                    shouldUpdateTransform = (math.abs(math.floor(tonumber(combatUserId) or 0)) % farUpdateStride) == self._weaponTransformFrameIndex
+                end
                 for _, weaponState in ipairs(weaponStates) do
                     if weaponState.Alive and weaponState.RuntimeInstance and weaponState.RuntimeInstance.Parent then
                         weaponState.OrbitSpeed = getWeaponOrbitSpeed()
                         weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
-                        self:_setRuntimeCFrame(weaponState.RuntimeInstance, self:_buildWeaponCFrame(centerPosition, weaponState))
+                        if shouldUpdateTransform then
+                            self:_setRuntimeCFrame(weaponState.RuntimeInstance, self:_buildWeaponCFrame(centerPosition, weaponState))
+                            transformCount += 1
+                        end
                     end
                 end
             end
         end
+    end
+
+    if startedAt then
+        self:_addPerfStat("Steps")
+        self:_addPerfStat("ActorCount", actorCount)
+        self:_addPerfStat("WeaponCount", weaponCount)
+        self:_addPerfStat("TransformCount", transformCount)
+        self:_addPerfStat("ElapsedSeconds", os.clock() - startedAt)
+        self:_logPerfStats(os.clock())
     end
 end
 
 function WeaponService:_updateWeaponRestoration(_deltaTime)
     local now = os.clock()
     for combatUserId, restorationState in pairs(self._weaponRestorationByCombatUserId) do
+        self:_addPerfStat("RestorationChecks")
         local actor = self:_resolveActorByCombatUserId(combatUserId)
         if not actor then
             self._weaponRestorationByCombatUserId[combatUserId] = nil
@@ -827,6 +1030,7 @@ function WeaponService:_updateWeaponRestoration(_deltaTime)
 
         local nextRestoreAt = tonumber(restorationState.NextRestoreAt) or now
         if now >= nextRestoreAt then
+            self:_addPerfStat("RestorationRebuilds")
             self:_rebuildWeaponsForActorToCount(actor, math.min(currentCount + 1, desiredCount))
             local refreshedState = self._weaponRestorationByCombatUserId[combatUserId]
             if refreshedState then
@@ -906,6 +1110,7 @@ function WeaponService:_rebuildWeaponsForActorToCount(actor, targetCount)
     if not actor then
         return
     end
+    self:_addPerfStat("Rebuilds")
 
     local combatUserId = getCombatUserId(actor)
     local state = self._playerStateService:GetState(actor)
@@ -1073,21 +1278,6 @@ function WeaponService:AdjustAttackScore(actor, delta)
     return state.Experience
 end
 
-function WeaponService:_reverseLastWeaponOrbit(weaponState, actor)
-    local currentDirection = tonumber(weaponState.OrbitDirection) or 1
-    weaponState.OrbitDirection = currentDirection >= 0 and -1 or 1
-    self:SyncWeaponRuntimeState(weaponState)
-
-    local ownerUserId = weaponState.OwnerUserId
-    local aliveWeaponStates = {}
-    for _, currentWeaponState in ipairs(self._weaponsByCombatUserId[ownerUserId] or {}) do
-        if currentWeaponState.Alive and currentWeaponState.RuntimeInstance and currentWeaponState.RuntimeInstance.Parent then
-            table.insert(aliveWeaponStates, currentWeaponState)
-        end
-    end
-    self:_fireWeaponStateSync(actor, weaponState.Tier, #aliveWeaponStates, aliveWeaponStates)
-end
-
 function WeaponService:HandleBrokenWeapon(weaponState, context)
     if not weaponState or not weaponState.Alive then
         return false
@@ -1107,11 +1297,6 @@ function WeaponService:HandleBrokenWeapon(weaponState, context)
     end
 
     if aliveWeaponCount <= 1 then
-        local sourceTierIndex = tonumber(context and context.sourceTierIndex) or 0
-        local targetTierIndex = tonumber(weaponState.TierIndex) or 0
-        if sourceTierIndex > targetTierIndex then
-            self:_reverseLastWeaponOrbit(weaponState, actor)
-        end
         return false
     end
 
@@ -1179,6 +1364,9 @@ function WeaponService:Init(dependencies)
     self._brokenDebrisStates = {}
     self._weaponRestorationByCombatUserId = {}
     self._nextWeaponId = 1
+    self._weaponTransformFrameIndex = 0
+    self:_resetPerfStats()
+    self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
     self:_clearRuntimeFolder()
     self:_clearBrokenDebrisFolder()
 

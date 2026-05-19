@@ -44,12 +44,14 @@ LeaderboardService._playtimeStore = nil
 LeaderboardService._killStore = nil
 LeaderboardService._rebirthStore = nil
 LeaderboardService._playtimeBaseByUserId = {}
+LeaderboardService._lastGlobalWriteByMetricByUserId = {}
 LeaderboardService._nameCacheByUserId = {}
 LeaderboardService._readFailureByUserId = {
     playtime = {},
     kills = {},
     rebirth = {},
 }
+LeaderboardService._globalSyncInProgress = false
 LeaderboardService._globalRows = {
     playtime = {},
     kills = {},
@@ -58,6 +60,18 @@ LeaderboardService._globalRows = {
 
 local function getGlobalMaxRows()
     return math.max(1, math.floor(tonumber(GameConfig.LEADERBOARD.GlobalMaxRows) or tonumber(GameConfig.LEADERBOARD.MaxRows) or 50))
+end
+
+local function getGlobalSyncInterval()
+    return math.max(60, tonumber(GameConfig.LEADERBOARD.GlobalSyncIntervalSeconds) or 300)
+end
+
+local function getGlobalInitialSyncDelay()
+    return math.max(10, tonumber(GameConfig.LEADERBOARD.GlobalInitialSyncDelaySeconds) or 60)
+end
+
+local function getGlobalWriteMinInterval()
+    return math.max(60, tonumber(GameConfig.LEADERBOARD.GlobalWriteMinIntervalSeconds) or 300)
 end
 
 local function safeOrderedStore(storeName)
@@ -192,6 +206,53 @@ function LeaderboardService:_writeStoredValue(store, playerOrUserId, value)
     return success
 end
 
+function LeaderboardService:_getWriteState(metricKey, userId)
+    local metricWrites = self._lastGlobalWriteByMetricByUserId[metricKey]
+    if not metricWrites then
+        metricWrites = {}
+        self._lastGlobalWriteByMetricByUserId[metricKey] = metricWrites
+    end
+
+    local normalizedUserId = tonumber(userId) or 0
+    local writeState = metricWrites[normalizedUserId]
+    if not writeState then
+        writeState = {
+            value = nil,
+            clock = 0,
+        }
+        metricWrites[normalizedUserId] = writeState
+    end
+    return writeState
+end
+
+function LeaderboardService:_writeStoredValueThrottled(metricKey, store, playerOrUserId, value, force)
+    if not store then
+        return false
+    end
+
+    local userId = typeof(playerOrUserId) == "Instance" and playerOrUserId.UserId or tonumber(playerOrUserId)
+    userId = tonumber(userId) or 0
+    local normalizedValue = normalizeValue(value)
+    local writeState = self:_getWriteState(metricKey, userId)
+    local now = os.clock()
+    if force ~= true then
+        if writeState.value == normalizedValue then
+            return false
+        end
+        local lastWriteClock = tonumber(writeState.clock) or 0
+        if lastWriteClock > 0 and now - lastWriteClock < getGlobalWriteMinInterval() then
+            return false
+        end
+    end
+
+    local success = self:_writeStoredValue(store, playerOrUserId, normalizedValue)
+    if success then
+        writeState.value = normalizedValue
+        writeState.clock = now
+    end
+    return success
+end
+
 function LeaderboardService:_markReadFailure(metricKey, userId, failed)
     local failureTable = self._readFailureByUserId[metricKey]
     if not failureTable then
@@ -234,7 +295,7 @@ function LeaderboardService:_loadPlayerTotals(player)
     end
 end
 
-function LeaderboardService:_updateGlobalEntry(player, state)
+function LeaderboardService:_updateGlobalEntry(player, state, options)
     if not (player and state) then
         return
     end
@@ -243,13 +304,14 @@ function LeaderboardService:_updateGlobalEntry(player, state)
     end
 
     local userId = player.UserId
+    local force = type(options) == "table" and options.force == true
     if not self:_hasReadFailure("playtime", userId) then
-        self:_writeStoredValue(self._playtimeStore, player, self:_getPlaytimeValue(state))
+        self:_writeStoredValueThrottled("playtime", self._playtimeStore, player, self:_getPlaytimeValue(state), force)
     end
     if not self:_hasReadFailure("kills", userId) then
-        self:_writeStoredValue(self._killStore, player, state.TotalPlayerKills)
+        self:_writeStoredValueThrottled("kills", self._killStore, player, state.TotalPlayerKills, force)
     end
-    self:_writeStoredValue(self._rebirthStore, player, state.Rebirth)
+    self:_writeStoredValueThrottled("rebirth", self._rebirthStore, player, state.Rebirth, force)
 end
 
 function LeaderboardService:_readOrderedStore(store)
@@ -314,6 +376,12 @@ function LeaderboardService:_buildMemoryGlobalRows(metricKey)
 end
 
 function LeaderboardService:_syncGlobal()
+    if self._globalSyncInProgress then
+        return false
+    end
+    self._globalSyncInProgress = true
+
+    local ok, err = pcall(function()
     if not GameConfig.LEADERBOARD.EnableDataStores then
         self._globalRows = {
             playtime = {},
@@ -323,27 +391,35 @@ function LeaderboardService:_syncGlobal()
         return
     end
 
-    local usePersistentStores = GameConfig.ShouldUsePersistentDataStores(RunService:IsStudio())
-    for _, player in ipairs(Players:GetPlayers()) do
-        local state = self._playerStateService:GetState(player)
-        if state then
-            self:_updateGlobalEntry(player, state)
+        local usePersistentStores = GameConfig.ShouldUsePersistentDataStores(RunService:IsStudio())
+        for _, player in ipairs(Players:GetPlayers()) do
+            local state = self._playerStateService:GetState(player)
+            if state then
+                self:_updateGlobalEntry(player, state)
+            end
         end
-    end
 
-    if usePersistentStores then
-        self._globalRows = {
-            playtime = self:_readOrderedStore(self._playtimeStore),
-            kills = self:_readOrderedStore(self._killStore),
-            rebirth = self:_readOrderedStore(self._rebirthStore),
-        }
-    else
-        self._globalRows = {
-            playtime = self:_buildMemoryGlobalRows("playtime"),
-            kills = self:_buildMemoryGlobalRows("kills"),
-            rebirth = self:_buildMemoryGlobalRows("rebirth"),
-        }
+        if usePersistentStores then
+            self._globalRows = {
+                playtime = self:_readOrderedStore(self._playtimeStore),
+                kills = self:_readOrderedStore(self._killStore),
+                rebirth = self:_readOrderedStore(self._rebirthStore),
+            }
+        else
+            self._globalRows = {
+                playtime = self:_buildMemoryGlobalRows("playtime"),
+                kills = self:_buildMemoryGlobalRows("kills"),
+                rebirth = self:_buildMemoryGlobalRows("rebirth"),
+            }
+        end
+    end)
+
+    self._globalSyncInProgress = false
+    if not ok then
+        warn("[LeaderboardService] 同步全服排行榜失败: " .. tostring(err))
+        return false
     end
+    return true
 end
 
 function LeaderboardService:_getSelfRank(metricKey, userId)
@@ -413,9 +489,10 @@ end
 function LeaderboardService:_step()
     local now = os.clock()
     if now >= self._nextGlobalSyncClock then
-        self._nextGlobalSyncClock = now + math.max(5, tonumber(GameConfig.LEADERBOARD.GlobalSyncIntervalSeconds) or 180)
-        self:_syncGlobal()
-        self._dirty = true
+        self._nextGlobalSyncClock = now + getGlobalSyncInterval()
+        if self:_syncGlobal() then
+            self._dirty = true
+        end
     end
 
     if not self._dirty and now < self._nextSyncClock then
@@ -433,7 +510,9 @@ function LeaderboardService:SavePlayer(player)
     end
     local state = self._playerStateService:GetState(player)
     if state then
-        self:_updateGlobalEntry(player, state)
+        self:_updateGlobalEntry(player, state, {
+            force = true,
+        })
     end
 end
 
@@ -446,7 +525,6 @@ end
 function LeaderboardService:OnPlayerAdded(player)
     task.spawn(function()
         self:_loadPlayerTotals(player)
-        self:_syncGlobal()
         self._dirty = true
     end)
 end
@@ -456,6 +534,9 @@ function LeaderboardService:OnPlayerRemoving(player)
     self._playtimeBaseByUserId[player.UserId] = nil
     self:_markReadFailure("playtime", player.UserId, false)
     self:_markReadFailure("kills", player.UserId, false)
+    for _, metricWrites in pairs(self._lastGlobalWriteByMetricByUserId) do
+        metricWrites[player.UserId] = nil
+    end
     self._dirty = true
 end
 
@@ -464,8 +545,9 @@ function LeaderboardService:Init(dependencies)
     self._leaderboardSyncEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LeaderboardSync") or nil
     self._dirty = true
     self._nextSyncClock = 0
-    self._nextGlobalSyncClock = os.clock() + 2
+    self._nextGlobalSyncClock = os.clock() + getGlobalInitialSyncDelay()
     self._playtimeBaseByUserId = {}
+    self._lastGlobalWriteByMetricByUserId = {}
     self._nameCacheByUserId = {}
     self._readFailureByUserId = {
         playtime = {},
@@ -477,6 +559,7 @@ function LeaderboardService:Init(dependencies)
         kills = {},
         rebirth = {},
     }
+    self._globalSyncInProgress = false
 
     local isStudio = RunService:IsStudio()
     if GameConfig.LEADERBOARD.EnableDataStores and GameConfig.ShouldUsePersistentDataStores(isStudio) then

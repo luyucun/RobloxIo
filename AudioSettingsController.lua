@@ -6,6 +6,26 @@ Purpose: Client-side music/SFX gates driven by the persisted option state.
 ]]
 
 local SoundService = game:GetService("SoundService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local function requireSharedModule(moduleName)
+    local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+    if sharedFolder then
+        local moduleInShared = sharedFolder:FindFirstChild(moduleName)
+        if moduleInShared and moduleInShared:IsA("ModuleScript") then
+            return require(moduleInShared)
+        end
+    end
+
+    local moduleInRoot = ReplicatedStorage:FindFirstChild(moduleName)
+    if moduleInRoot and moduleInRoot:IsA("ModuleScript") then
+        return require(moduleInRoot)
+    end
+
+    return nil
+end
+
+local GameConfig = requireSharedModule("GameConfig")
 
 local AudioSettingsController = {}
 
@@ -18,11 +38,41 @@ AudioSettingsController._playerGuiButtonBoundButtons = setmetatable({}, { __mode
 AudioSettingsController._playerGuiButtonListenerConnection = nil
 AudioSettingsController._playerGuiButtonListenerTarget = nil
 AudioSettingsController._initialized = false
+AudioSettingsController._buttonBindCount = 0
+AudioSettingsController._buttonDescendantAddedCount = 0
+AudioSettingsController._nextDiagClock = 0
 
 local BGM_FOLDER_NAME = "BGM"
 local AUDIO_FOLDER_NAME = "Audio"
 local UI_FOLDER_NAME = "UI"
 local RUNTIME_SFX_FOLDER_NAME = "__RuntimeSfx"
+
+local function isPerformanceDebugEnabled()
+    return GameConfig and GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig and GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function countMapEntries(map)
+    local count = 0
+    for _ in pairs(map or {}) do
+        count += 1
+    end
+    return count
+end
+
+local function countDescendants(instance)
+    if not instance then
+        return 0
+    end
+
+    local ok, descendants = pcall(function()
+        return instance:GetDescendants()
+    end)
+    return ok and #descendants or 0
+end
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -428,9 +478,34 @@ function AudioSettingsController:_bindPlayerGuiButton(button)
     end
 
     self._playerGuiButtonBoundButtons[button] = true
+    self._buttonBindCount = (self._buttonBindCount or 0) + 1
     table.insert(self._connections, button.Activated:Connect(function()
         self:PlayUiClickSound()
     end))
+end
+
+function AudioSettingsController:_logDiagnostics(force)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+
+    local now = os.clock()
+    if force ~= true and now < (self._nextDiagClock or 0) then
+        return
+    end
+    self._nextDiagClock = now + getPerformanceLogInterval()
+
+    local runtimeFolder = getRuntimeSfxFolder(false)
+    print(string.format(
+        "[Diag][AudioSettingsController] boundButtons=%d buttonBinds=%d buttonDescAdded=%d totalConnections=%d watchedSounds=%d runtimeSfxChildren=%d runtimeSfxDesc=%d",
+        countMapEntries(self._playerGuiButtonBoundButtons),
+        self._buttonBindCount or 0,
+        self._buttonDescendantAddedCount or 0,
+        #self._connections,
+        countMapEntries(self._watchedSounds),
+        runtimeFolder and #runtimeFolder:GetChildren() or 0,
+        countDescendants(runtimeFolder)
+    ))
 end
 
 function AudioSettingsController:BindPlayerGuiButtonClicks(playerGui)
@@ -450,7 +525,9 @@ function AudioSettingsController:BindPlayerGuiButtonClicks(playerGui)
     table.clear(self._playerGuiButtonBoundButtons)
 
     self._playerGuiButtonListenerConnection = playerGui.DescendantAdded:Connect(function(descendant)
+        self._buttonDescendantAddedCount = (self._buttonDescendantAddedCount or 0) + 1
         self:_bindPlayerGuiButton(descendant)
+        self:_logDiagnostics(false)
     end)
     table.insert(self._connections, self._playerGuiButtonListenerConnection)
 
@@ -458,6 +535,7 @@ function AudioSettingsController:BindPlayerGuiButtonClicks(playerGui)
         self:_bindPlayerGuiButton(descendant)
     end
 
+    self:_logDiagnostics(true)
     return true
 end
 
@@ -467,6 +545,9 @@ function AudioSettingsController:Init()
     table.clear(self._playerGuiButtonBoundButtons)
     self._playerGuiButtonListenerConnection = nil
     self._playerGuiButtonListenerTarget = nil
+    self._buttonBindCount = 0
+    self._buttonDescendantAddedCount = 0
+    self._nextDiagClock = 0
     self:_captureInitialBgm()
     self:_watchFolder(BGM_FOLDER_NAME)
     self:_watchFolder(AUDIO_FOLDER_NAME)

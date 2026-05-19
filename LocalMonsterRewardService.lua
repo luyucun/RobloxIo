@@ -48,6 +48,8 @@ LocalMonsterRewardService._killReportWindows = {}
 LocalMonsterRewardService._hitReportWindows = {}
 LocalMonsterRewardService._recentKillIdsByUserId = {}
 LocalMonsterRewardService._spawnAuthorizationsByUserId = {}
+LocalMonsterRewardService._perfStats = nil
+LocalMonsterRewardService._nextPerfLogClock = 0
 
 local function getUserId(player)
     return player and player.UserId or 0
@@ -55,6 +57,22 @@ end
 
 local function isArenaPlayer(playerState)
     return playerState and playerState.Alive == true and playerState.IsInArena == true
+end
+
+local function isPerformanceDebugEnabled()
+    return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function countMapEntries(map)
+    local count = 0
+    for _ in pairs(map or {}) do
+        count += 1
+    end
+    return count
 end
 
 local function pruneRecentKills(recentKills, now)
@@ -90,6 +108,97 @@ function LocalMonsterRewardService:_consumeRateLimit(bucketByUserId, player, lim
 
     bucket.Count += 1
     return true
+end
+
+function LocalMonsterRewardService:_resetPerfStats()
+    self._perfStats = {
+        TokenRequests = 0,
+        TokensIssued = 0,
+        TokenActivates = 0,
+        TokensDiscarded = 0,
+        KillBatchRequests = 0,
+        KillPayloads = 0,
+        KillsAccepted = 0,
+        KillsRejected = 0,
+        HitReports = 0,
+        NukeSweeps = 0,
+        NukeTokensConsumed = 0,
+    }
+end
+
+function LocalMonsterRewardService:_addPerfStat(key, amount)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if not self._perfStats then
+        self:_resetPerfStats()
+    end
+    self._perfStats[key] = (self._perfStats[key] or 0) + (amount or 1)
+end
+
+function LocalMonsterRewardService:_getAuthorizationCounts()
+    local users = 0
+    local total = 0
+    local active = 0
+    local consumed = 0
+    for _, authorizations in pairs(self._spawnAuthorizationsByUserId or {}) do
+        users += 1
+        for _, authorization in pairs(authorizations or {}) do
+            total += 1
+            if authorization.Active == true then
+                active += 1
+            end
+            if authorization.Consumed == true then
+                consumed += 1
+            end
+        end
+    end
+    return users, total, active, consumed
+end
+
+function LocalMonsterRewardService:_getRecentKillCount()
+    local total = 0
+    for _, recentKills in pairs(self._recentKillIdsByUserId or {}) do
+        total += countMapEntries(recentKills)
+    end
+    return total
+end
+
+function LocalMonsterRewardService:_logPerfStats(now)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if now < (self._nextPerfLogClock or 0) then
+        return
+    end
+
+    local stats = self._perfStats or {}
+    local authUsers, authTotal, authActive, authConsumed = self:_getAuthorizationCounts()
+    print(string.format(
+        "[Diag][LocalMonsterRewardService] authUsers=%d authTotal=%d authActive=%d authConsumed=%d recentKills=%d tokenWindows=%d killWindows=%d hitWindows=%d tokenReq=%d tokensIssued=%d activates=%d discarded=%d killBatchReq=%d killPayloads=%d killsAccepted=%d killsRejected=%d hitReports=%d nukeSweeps=%d nukeConsumed=%d",
+        authUsers,
+        authTotal,
+        authActive,
+        authConsumed,
+        self:_getRecentKillCount(),
+        countMapEntries(self._spawnTokenRequestWindows),
+        countMapEntries(self._killReportWindows),
+        countMapEntries(self._hitReportWindows),
+        stats.TokenRequests or 0,
+        stats.TokensIssued or 0,
+        stats.TokenActivates or 0,
+        stats.TokensDiscarded or 0,
+        stats.KillBatchRequests or 0,
+        stats.KillPayloads or 0,
+        stats.KillsAccepted or 0,
+        stats.KillsRejected or 0,
+        stats.HitReports or 0,
+        stats.NukeSweeps or 0,
+        stats.NukeTokensConsumed or 0
+    ))
+
+    self:_resetPerfStats()
+    self._nextPerfLogClock = now + getPerformanceLogInterval()
 end
 
 function LocalMonsterRewardService:_isPlayerLoaded(player)
@@ -177,6 +286,7 @@ function LocalMonsterRewardService:_handleSpawnTokenActivated(player, payload)
     end
 
     authorization.Active = true
+    self:_addPerfStat("TokenActivates")
 end
 
 function LocalMonsterRewardService:_handleSpawnTokensDiscarded(player, payload)
@@ -200,6 +310,7 @@ function LocalMonsterRewardService:_handleSpawnTokensDiscarded(player, payload)
         local authorization = authorizations[token]
         if authorization and authorization.Consumed ~= true then
             authorizations[token] = nil
+            self:_addPerfStat("TokensDiscarded")
         end
     end
 end
@@ -230,6 +341,8 @@ function LocalMonsterRewardService:_handleSpawnTokenRequest(player, payload)
     if not (GameConfig.MONSTER.ClientOwnedNormalMonsters and player and player.Parent and self._localMonsterSpawnTokenEvent) then
         return
     end
+
+    self:_logPerfStats(os.clock())
 
     if type(payload) == "table" and tostring(payload.eventType or payload.EventType or "") == "Activate" then
         self:_handleSpawnTokenActivated(player, payload)
@@ -269,6 +382,8 @@ function LocalMonsterRewardService:_handleSpawnTokenRequest(player, payload)
             table.insert(tokens, tokenPayload)
         end
     end
+    self:_addPerfStat("TokenRequests")
+    self:_addPerfStat("TokensIssued", #tokens)
 
     self._localMonsterSpawnTokenEvent:FireClient(player, {
         eventType = "Tokens",
@@ -305,27 +420,35 @@ function LocalMonsterRewardService:_fireKillAck(player, payload, eventType, reas
     })
 end
 
-function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
-    if not (GameConfig.MONSTER.ClientOwnedNormalMonsters and player and player.Parent) then
+function LocalMonsterRewardService:_fireKillBatchAck(player, acceptedRequestIds, rejectedRequests)
+    if not (self._localMonsterKilledEvent and player and player.Parent) then
         return
     end
 
-    local state = self._playerStateService and self._playerStateService:GetState(player) or nil
-    if not (isArenaPlayer(state) and self:_isPlayerLoaded(player)) then
-        self:_fireKillAck(player, payload, "KillRejected", "PlayerInactive")
-        return
-    end
+    self._localMonsterKilledEvent:FireClient(player, {
+        eventType = "KillBatchResult",
+        acceptedRequestIds = acceptedRequestIds or {},
+        rejected = rejectedRequests or {},
+        timestamp = os.clock(),
+    })
+end
 
-    self:_consumeRateLimit(self._killReportWindows, player, GameConfig.MONSTER.LocalKillReportsPerSecond)
+function LocalMonsterRewardService:_buildKillRewardAccumulator()
+    return {
+        TotalScore = 0,
+        TotalExperience = 0,
+        VisualOrbCount = 0,
+        DropPosition = nil,
+    }
+end
 
+function LocalMonsterRewardService:_processLocalMonsterKill(player, payload, now, rewardAccumulator)
     local token = tostring(payload and payload.token or payload and payload.Token or "")
     if token == "" then
         warn("[LocalMonsterRewardService] 拒绝旧版本地怪击杀上报，缺少 token: " .. tostring(player.Name))
-        self:_fireKillAck(player, payload, "KillRejected", "MissingToken")
-        return
+        return false, "MissingToken"
     end
 
-    local now = os.clock()
     local userId = getUserId(player)
     local recentKills = self._recentKillIdsByUserId[userId]
     if not recentKills then
@@ -335,39 +458,61 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
 
     local duplicateWindowSeconds = pruneRecentKills(recentKills, now)
     if recentKills[token] then
-        self:_fireKillAck(player, payload, "KillAccepted", "Duplicate")
-        return
+        return true, "Duplicate"
     end
 
     local authorization = self:_getAuthorization(player, token)
     if not (authorization and authorization.Consumed ~= true) then
-        self:_fireKillAck(player, payload, "KillRejected", "InvalidToken")
-        return
+        self:_addPerfStat("KillsRejected")
+        return false, "InvalidToken"
     end
 
     local monsterDefinition = MonsterCatalog.GetDefinition(authorization.MonsterDefinitionId)
     if not MonsterCatalog.IsNormalMonsterDefinition(monsterDefinition) then
-        self:_fireKillAck(player, payload, "KillRejected", "InvalidMonsterDefinition")
-        return
+        self:_addPerfStat("KillsRejected")
+        return false, "InvalidMonsterDefinition"
     end
     authorization.Consumed = true
     recentKills[token] = now + duplicateWindowSeconds
+    self:_addPerfStat("KillsAccepted")
 
-    if self._playerStateService then
-        self._playerStateService:AddRebirthScore(
-            player,
-            monsterDefinition.KillScoreReward or GameConfig.MONSTER.KillScoreReward
-        )
+    if rewardAccumulator then
+        rewardAccumulator.TotalScore += monsterDefinition.KillScoreReward or GameConfig.MONSTER.KillScoreReward
+        local experienceDropCount = monsterDefinition.ExperienceDropCount or GameConfig.MONSTER.ExperienceDropCount
+        local experiencePerOrb = monsterDefinition.ExperiencePerOrb or GameConfig.MONSTER.ExperiencePerOrb
+        rewardAccumulator.TotalExperience += experienceDropCount * experiencePerOrb
+        rewardAccumulator.VisualOrbCount += experienceDropCount
+        rewardAccumulator.DropPosition = rewardAccumulator.DropPosition or self:_normalizeDeathPosition(player, payload and payload.deathPosition)
     end
 
-    local experienceDropCount = monsterDefinition.ExperienceDropCount or GameConfig.MONSTER.ExperienceDropCount
-    local experiencePerOrb = monsterDefinition.ExperiencePerOrb or GameConfig.MONSTER.ExperiencePerOrb
-    local totalExperience = experienceDropCount * experiencePerOrb
+    return true, nil
+end
+
+function LocalMonsterRewardService:_grantLocalMonsterKillRewards(player, rewardAccumulator)
+    if not rewardAccumulator then
+        return
+    end
+
+    local totalScore = math.max(0, math.floor(tonumber(rewardAccumulator.TotalScore) or 0))
+    if totalScore > 0 and self._playerStateService then
+        self._playerStateService:AddRebirthScore(player, totalScore)
+    end
+
+    local totalExperience = math.max(0, math.floor(tonumber(rewardAccumulator.TotalExperience) or 0))
+    if totalExperience <= 0 then
+        return
+    end
+
+    local visualOrbCount = math.max(1, math.floor(tonumber(rewardAccumulator.VisualOrbCount) or 1))
+    local maxBatchOrbCount = math.max(1, math.floor(tonumber(GameConfig.MONSTER.LocalKillBatchExperienceOrbCount) or visualOrbCount))
+    visualOrbCount = math.min(visualOrbCount, maxBatchOrbCount)
+    local dropPosition = rewardAccumulator.DropPosition or self:_normalizeDeathPosition(player, nil)
+
     if self._experienceOrbService then
         self._experienceOrbService:DropExperience(
-            self:_normalizeDeathPosition(player, payload and payload.deathPosition),
+            dropPosition,
             totalExperience,
-            experienceDropCount,
+            visualOrbCount,
             player,
             {
                 applyExperienceMultiplier = true,
@@ -376,14 +521,119 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
     elseif self._playerStateService then
         self._playerStateService:AddExperienceWithMultiplier(player, totalExperience)
     end
+end
 
-    self:_fireKillAck(player, payload, "KillAccepted")
+function LocalMonsterRewardService:_handleLocalMonsterKilledBatch(player, payload)
+    local kills = type(payload) == "table" and payload.kills or nil
+    if type(kills) ~= "table" or #kills <= 0 then
+        return
+    end
+    self:_addPerfStat("KillBatchRequests")
+    self:_addPerfStat("KillPayloads", #kills)
+    local maxBatchSize = math.max(1, math.floor(tonumber(GameConfig.MONSTER.LocalKillReportBatchSize) or 24))
+
+    local state = self._playerStateService and self._playerStateService:GetState(player) or nil
+    if not (isArenaPlayer(state) and self:_isPlayerLoaded(player)) then
+        local rejected = {}
+        for index, killPayload in ipairs(kills) do
+            if index > maxBatchSize then
+                break
+            end
+            table.insert(rejected, {
+                requestId = tostring(type(killPayload) == "table" and (killPayload.requestId or killPayload.RequestId) or ""),
+                token = tostring(type(killPayload) == "table" and (killPayload.token or killPayload.Token) or ""),
+                reason = "PlayerInactive",
+            })
+        end
+        self:_fireKillBatchAck(player, {}, rejected)
+        return
+    end
+
+    if not self:_consumeRateLimit(self._killReportWindows, player, GameConfig.MONSTER.LocalKillReportsPerSecond) then
+        local rejected = {}
+        for index, killPayload in ipairs(kills) do
+            if index > maxBatchSize then
+                break
+            end
+            table.insert(rejected, {
+                requestId = tostring(type(killPayload) == "table" and (killPayload.requestId or killPayload.RequestId) or ""),
+                token = tostring(type(killPayload) == "table" and (killPayload.token or killPayload.Token) or ""),
+                reason = "RateLimited",
+            })
+        end
+        self:_fireKillBatchAck(player, {}, rejected)
+        return
+    end
+
+    local now = os.clock()
+    local rewardAccumulator = self:_buildKillRewardAccumulator()
+    local acceptedRequestIds = {}
+    local rejected = {}
+
+    for index, killPayload in ipairs(kills) do
+        if index > maxBatchSize then
+            break
+        end
+        if type(killPayload) == "table" then
+            local requestId = tostring(killPayload.requestId or killPayload.RequestId or "")
+            local accepted, reason = self:_processLocalMonsterKill(player, killPayload, now, rewardAccumulator)
+            if accepted then
+                if requestId ~= "" then
+                    table.insert(acceptedRequestIds, requestId)
+                end
+            else
+                table.insert(rejected, {
+                    requestId = requestId,
+                    token = tostring(killPayload.token or killPayload.Token or ""),
+                    reason = reason or "Rejected",
+                })
+            end
+        end
+    end
+
+    self:_grantLocalMonsterKillRewards(player, rewardAccumulator)
+    self:_fireKillBatchAck(player, acceptedRequestIds, rejected)
+end
+
+function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
+    if not (GameConfig.MONSTER.ClientOwnedNormalMonsters and player and player.Parent) then
+        return
+    end
+
+    if type(payload) == "table" and tostring(payload.eventType or payload.EventType or "") == "Batch" then
+        self:_handleLocalMonsterKilledBatch(player, payload)
+        self:_logPerfStats(os.clock())
+        return
+    end
+
+    local state = self._playerStateService and self._playerStateService:GetState(player) or nil
+    if not (isArenaPlayer(state) and self:_isPlayerLoaded(player)) then
+        self:_fireKillAck(player, payload, "KillRejected", "PlayerInactive")
+        return
+    end
+
+    if not self:_consumeRateLimit(self._killReportWindows, player, GameConfig.MONSTER.LocalKillReportsPerSecond) then
+        self:_fireKillAck(player, payload, "KillRejected", "RateLimited")
+        return
+    end
+
+    local rewardAccumulator = self:_buildKillRewardAccumulator()
+    local accepted, reason = self:_processLocalMonsterKill(player, payload, os.clock(), rewardAccumulator)
+    if accepted then
+        self:_grantLocalMonsterKillRewards(player, rewardAccumulator)
+        self:_fireKillAck(player, payload, "KillAccepted", reason)
+    else
+        self:_fireKillAck(player, payload, "KillRejected", reason)
+    end
+    self:_logPerfStats(os.clock())
 end
 
 function LocalMonsterRewardService:_handleLocalMonsterHitPlayer(player, payload)
     if not (GameConfig.MONSTER.ClientOwnedNormalMonsters and player and player.Parent) then
         return
     end
+    self:_addPerfStat("HitReports")
+    self:_logPerfStats(os.clock())
 
     local state = self._playerStateService and self._playerStateService:GetState(player) or nil
     if not (isArenaPlayer(state) and self:_isPlayerLoaded(player)) then
@@ -423,6 +673,7 @@ function LocalMonsterRewardService:ConsumeNukeSweepTokens(player, tokens)
     if not self:_isPlayerLoaded(player) then
         return 0, 0
     end
+    self:_addPerfStat("NukeSweeps")
 
     local remainingCount = math.max(0, math.floor(tonumber(GameConfig.MONSTER.MaxActiveCount) or 0))
     local totalExperience = 0
@@ -453,6 +704,8 @@ function LocalMonsterRewardService:ConsumeNukeSweepTokens(player, tokens)
         end
     end
 
+    self:_addPerfStat("NukeTokensConsumed", consumedCount)
+    self:_logPerfStats(os.clock())
     return consumedCount, totalScore, totalExperience
 end
 
@@ -480,6 +733,8 @@ function LocalMonsterRewardService:Init(dependencies)
     self._hitReportWindows = {}
     self._recentKillIdsByUserId = {}
     self._spawnAuthorizationsByUserId = {}
+    self:_resetPerfStats()
+    self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
 
     if self._localMonsterSpawnTokenEvent then
         self._localMonsterSpawnTokenEvent.OnServerEvent:Connect(function(player, payload)

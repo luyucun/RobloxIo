@@ -46,6 +46,8 @@ ClientEventController._latestFeedbackByName = {}
 ClientEventController._localOrbFolder = nil
 ClientEventController._localOrbs = {}
 ClientEventController._audioSettings = nil
+ClientEventController._perfStats = nil
+ClientEventController._nextPerfLogClock = 0
 
 local LEVEL_UP_TEXT_SLIDE_OFFSET = UDim2.fromScale(0, 0.35)
 local LEVEL_UP_TEXT_TWEEN_INFO = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
@@ -70,6 +72,25 @@ local function connectEvent(connections, event, callback)
         return
     end
     table.insert(connections, event.OnClientEvent:Connect(callback))
+end
+
+local function isPerformanceDebugEnabled()
+    return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function countDescendants(instance)
+    if not instance then
+        return 0
+    end
+
+    local ok, descendants = pcall(function()
+        return instance:GetDescendants()
+    end)
+    return ok and #descendants or 0
 end
 
 local function findOrCreateLocalFolder(parent, folderName)
@@ -150,6 +171,9 @@ local function attachOrbTrail(orb)
     if not orb or not orb:IsA("BasePart") then
         return
     end
+    if GameConfig.EXPERIENCE and GameConfig.EXPERIENCE.LocalOrbTrailEnabled == false then
+        return
+    end
 
     local halfY = orb.Size.Y * 0.5
     local frontAttachment = Instance.new("Attachment")
@@ -182,6 +206,18 @@ local function attachOrbTrail(orb)
     })
     trail.Color = ColorSequence.new(orb.Color)
     trail.Parent = orb
+end
+
+local function getMaxLocalVisualOrbsPerDrop()
+    return math.max(0, math.floor(tonumber(GameConfig.EXPERIENCE and GameConfig.EXPERIENCE.MaxLocalVisualOrbsPerDrop) or 3))
+end
+
+local function getMaxLocalActiveOrbs()
+    return math.max(0, math.floor(tonumber(GameConfig.EXPERIENCE and GameConfig.EXPERIENCE.MaxLocalActiveOrbs) or 45))
+end
+
+local function getLocalOrbMaxLifetimeSeconds()
+    return math.max(0.5, tonumber(GameConfig.EXPERIENCE and GameConfig.EXPERIENCE.LocalOrbMaxLifetimeSeconds) or 5)
 end
 
 local function getCharacterRoot(player)
@@ -255,6 +291,8 @@ end
 
 function ClientEventController:_recordFeedback(eventName, payload)
     self._latestFeedbackByName[eventName] = payload
+    self:_addPerfStat("FeedbackEvents")
+    self:_addPerfStat(tostring(eventName or "Unknown") .. "Events")
 end
 
 function ClientEventController:GetLatestPlayerState()
@@ -278,6 +316,27 @@ function ClientEventController:_createLocalOrbFolder()
     table.clear(self._localOrbs)
 end
 
+function ClientEventController:_destroyLocalOrbAt(index)
+    local orbState = self._localOrbs[index]
+    if not orbState then
+        return
+    end
+
+    local orb = orbState.Instance
+    if orb then
+        orb:Destroy()
+    end
+    table.remove(self._localOrbs, index)
+end
+
+function ClientEventController:_trimLocalOrbsToBudget()
+    local maxActiveOrbs = getMaxLocalActiveOrbs()
+    while maxActiveOrbs >= 0 and #self._localOrbs > maxActiveOrbs do
+        self:_addPerfStat("OrbsTrimmed")
+        self:_destroyLocalOrbAt(1)
+    end
+end
+
 function ClientEventController:_spawnExperienceDrop(payload)
     if not (payload and typeof(payload.orbs) == "table") then
         return
@@ -290,8 +349,16 @@ function ClientEventController:_spawnExperienceDrop(payload)
     local templates = resolveExperienceTemplates()
     local now = os.clock()
     local dropId = tostring(payload.dropId or now)
+    local maxVisualOrbs = getMaxLocalVisualOrbsPerDrop()
+    if maxVisualOrbs <= 0 then
+        return
+    end
 
+    local spawnedCount = 0
     for _, orbPayload in ipairs(payload.orbs) do
+        if spawnedCount >= maxVisualOrbs then
+            break
+        end
         local position = orbPayload.position
         if typeof(position) == "Vector3" then
             local template = nil
@@ -316,6 +383,7 @@ function ClientEventController:_spawnExperienceDrop(payload)
             table.insert(self._localOrbs, {
                 Instance = orb,
                 SpawnClock = now,
+                ExpireClock = now + getLocalOrbMaxLifetimeSeconds(),
                 FallEndClock = now + fallSeconds,
                 HomingStartClock = now + fallSeconds + settleSeconds + math.max(0, tonumber(orbPayload.homingDelaySeconds) or GameConfig.EXPERIENCE.HomingDelaySeconds),
                 HomingSpeed = math.max(1, tonumber(orbPayload.homingSpeed) or GameConfig.EXPERIENCE.HomingSpeed),
@@ -328,19 +396,31 @@ function ClientEventController:_spawnExperienceDrop(payload)
                     math.cos((tonumber(orbPayload.index) or 1) * 1.73) * 0.55
                 ),
             })
+            spawnedCount += 1
         end
     end
+    self:_addPerfStat("ExperienceDrops")
+    self:_addPerfStat("OrbsSpawned", spawnedCount)
+    self:_trimLocalOrbsToBudget()
 end
 
 function ClientEventController:_updateLocalExperienceOrbs(deltaTime)
+    local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
     local rootPart = getCharacterRoot(self._localPlayer)
     local now = os.clock()
+    local updatedCount = 0
+    local destroyedCount = 0
 
     for index = #self._localOrbs, 1, -1 do
         local orbState = self._localOrbs[index]
         local orb = orbState.Instance
         if not (orb and orb.Parent) then
             table.remove(self._localOrbs, index)
+            continue
+        end
+        if now >= (orbState.ExpireClock or math.huge) then
+            self:_destroyLocalOrbAt(index)
+            destroyedCount += 1
             continue
         end
 
@@ -350,12 +430,14 @@ function ClientEventController:_updateLocalExperienceOrbs(deltaTime)
             local easedAlpha = 1 - ((1 - alpha) * (1 - alpha))
             local position = orbState.SpawnPosition:Lerp(orbState.GroundPosition, easedAlpha)
             orb.CFrame = CFrame.new(position)
+            updatedCount += 1
             continue
         end
 
         if now < orbState.HomingStartClock then
             local bob = math.sin((now - orbState.SpawnClock) * 7) * 0.04
             orb.CFrame = CFrame.new(orbState.GroundPosition + Vector3.new(0, bob, 0))
+            updatedCount += 1
             continue
         end
 
@@ -371,14 +453,88 @@ function ClientEventController:_updateLocalExperienceOrbs(deltaTime)
         local offset = rootPart.Position - orb.Position
         local distance = offset.Magnitude
         if distance <= orbState.ConsumeRadius then
-            orb:Destroy()
-            table.remove(self._localOrbs, index)
+            self:_destroyLocalOrbAt(index)
+            destroyedCount += 1
         elseif distance > 0 then
             local speedMultiplier = 1 + math.clamp((now - orbState.HomingStartClock) * 1.25, 0, 3)
             local stepDistance = math.min(distance, orbState.HomingSpeed * speedMultiplier * deltaTime)
             orb.CFrame = CFrame.new(orb.Position + (offset.Unit * stepDistance))
+            updatedCount += 1
         end
     end
+
+    if startedAt then
+        self:_addPerfStat("RenderFrames")
+        self:_addPerfStat("OrbSamples", #self._localOrbs)
+        self:_addPerfStat("OrbUpdates", updatedCount)
+        self:_addPerfStat("OrbsDestroyed", destroyedCount)
+        self:_addPerfStat("UpdateElapsedSeconds", os.clock() - startedAt)
+        self:_logPerfStats(os.clock())
+    end
+end
+
+function ClientEventController:_resetPerfStats()
+    self._perfStats = {
+        RenderFrames = 0,
+        OrbSamples = 0,
+        OrbUpdates = 0,
+        OrbsSpawned = 0,
+        OrbsDestroyed = 0,
+        OrbsTrimmed = 0,
+        ExperienceDrops = 0,
+        FeedbackEvents = 0,
+        PlayerStateSyncEvents = 0,
+        LevelUpFeedbackEvents = 0,
+        ExperienceFeedbackEvents = 0,
+        CombatFeedbackEvents = 0,
+        UpdateElapsedSeconds = 0,
+    }
+end
+
+function ClientEventController:_addPerfStat(key, amount)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if not self._perfStats then
+        self:_resetPerfStats()
+    end
+    self._perfStats[key] = (self._perfStats[key] or 0) + (amount or 1)
+end
+
+function ClientEventController:_logPerfStats(now)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if now < (self._nextPerfLogClock or 0) then
+        return
+    end
+
+    local stats = self._perfStats
+    if stats and stats.RenderFrames and stats.RenderFrames > 0 then
+        local folder = self._localOrbFolder
+        print(string.format(
+            "[Diag][ClientEventController] frames=%d localOrbs=%d orbFolderChildren=%d orbFolderDesc=%d orbSamples=%d orbUpdates=%d spawned=%d destroyed=%d trimmed=%d drops=%d feedback=%d playerState=%d levelUp=%d experience=%d combat=%d updateMs=%.3f",
+            stats.RenderFrames,
+            #self._localOrbs,
+            folder and #folder:GetChildren() or 0,
+            countDescendants(folder),
+            stats.OrbSamples or 0,
+            stats.OrbUpdates or 0,
+            stats.OrbsSpawned or 0,
+            stats.OrbsDestroyed or 0,
+            stats.OrbsTrimmed or 0,
+            stats.ExperienceDrops or 0,
+            stats.FeedbackEvents or 0,
+            stats.PlayerStateSyncEvents or 0,
+            stats.LevelUpFeedbackEvents or 0,
+            stats.ExperienceFeedbackEvents or 0,
+            stats.CombatFeedbackEvents or 0,
+            (stats.UpdateElapsedSeconds or 0) * 1000
+        ))
+    end
+
+    self:_resetPerfStats()
+    self._nextPerfLogClock = now + getPerformanceLogInterval()
 end
 
 function ClientEventController:_playSound(soundName, soundId)
@@ -546,6 +702,8 @@ function ClientEventController:Init(dependencies)
         self._renderConnection = nil
     end
     self:_createLocalOrbFolder()
+    self:_resetPerfStats()
+    self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
 
     if self._audioSettings and self._audioSettings.BindPlayerGuiButtonClicks and self._localPlayer then
         local playerGui = self._localPlayer:FindFirstChild("PlayerGui") or self._localPlayer:WaitForChild("PlayerGui", 10)

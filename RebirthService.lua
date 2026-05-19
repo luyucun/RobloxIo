@@ -57,6 +57,7 @@ RebirthService._loadStateByUserId = {}
 RebirthService._loadRetryClockByUserId = {}
 RebirthService._heartbeatConnection = nil
 RebirthService._nextSaveClock = 0
+RebirthService._shutdownInProgress = false
 
 local function getUserId(player)
     return player and player.UserId or 0
@@ -67,10 +68,42 @@ local function getDataKey(playerOrUserId)
     return tostring(userId or 0)
 end
 
+local function asNonNegativeInteger(value)
+    return math.max(0, math.floor(tonumber(value) or 0))
+end
+
+local function getUtcDayKey(timestamp)
+    return math.floor(asNonNegativeInteger(timestamp) / 86400)
+end
+
+local function normalizeFavoritePromptState(favoritePromptState)
+    local source = type(favoritePromptState) == "table" and favoritePromptState or {}
+    local promptedAt = asNonNegativeInteger(source.PromptedAt or source.promptedAt)
+    local lastPromptUtcDay = asNonNegativeInteger(source.LastPromptUtcDay or source.lastPromptUtcDay)
+    if lastPromptUtcDay <= 0 and promptedAt > 0 then
+        lastPromptUtcDay = getUtcDayKey(promptedAt)
+    end
+
+    local lastPromptResult = tostring(source.LastPromptResult or source.lastPromptResult or "")
+    local legacyHasPrompted = source.HasPrompted == true or source.hasPrompted == true
+    local hasFavorited = source.HasFavorited == true
+        or source.hasFavorited == true
+        or (legacyHasPrompted and lastPromptResult == "Success")
+
+    return {
+        HasFavorited = hasFavorited == true,
+        PromptedAt = promptedAt,
+        LastPromptUtcDay = lastPromptUtcDay,
+        LastPromptResult = lastPromptResult,
+        LastResultAt = asNonNegativeInteger(source.LastResultAt or source.lastResultAt),
+    }
+end
+
 local function normalizeSavedData(data)
     if type(data) ~= "table" then
         return 0, 0, GameConfig.PLAYER.BaseLevel, {
             guideCompleted = false,
+            favoritePromptState = normalizeFavoritePromptState(nil),
         }
     end
 
@@ -152,6 +185,8 @@ local function normalizeSavedData(data)
     elseif type(data.GuideCompleted) == "boolean" then
         guideCompleted = data.GuideCompleted
     end
+
+    local favoritePromptState = normalizeFavoritePromptState(data.favoritePromptState or data.FavoritePromptState)
 
     local ownedSkins = {}
     local savedOwnedSkins = type(data.ownedSkins) == "table" and data.ownedSkins or data.OwnedSkins
@@ -247,6 +282,25 @@ local function normalizeSavedData(data)
         activePotions[tostring(legacyActivePotion.Id)] = legacyActivePotion
     end
 
+    local combatSnapshot = nil
+    local savedCombatSnapshot = type(data.combatSnapshot) == "table" and data.combatSnapshot or data.CombatSnapshot
+    if type(savedCombatSnapshot) == "table" then
+        local restoreEligible = savedCombatSnapshot.restoreEligible == true
+        local savedAt = math.floor(tonumber(savedCombatSnapshot.savedAt) or 0)
+        local level = math.floor(tonumber(savedCombatSnapshot.level) or 0)
+        local experience = math.max(0, math.floor(tonumber(savedCombatSnapshot.experience) or 0))
+        local maxAge = math.max(1, tonumber(GameConfig.REBIRTH.CombatSnapshotMaxAgeSeconds) or 1800)
+        if restoreEligible and savedAt > 0 and level >= 1 and (os.time() - savedAt) <= maxAge then
+            combatSnapshot = {
+                schemaVersion = math.max(1, math.floor(tonumber(savedCombatSnapshot.schemaVersion) or 1)),
+                restoreEligible = true,
+                savedAt = savedAt,
+                level = math.clamp(level, 1, GameConfig.PLAYER.MaxSupportedLevel),
+                experience = experience,
+            }
+        end
+    end
+
     return rebirth, rebirthScore, highestLevelReached, {
         diamonds = math.max(0, math.floor(tonumber(data.diamonds) or tonumber(data.Diamonds) or 0)),
         wheelSpins = math.max(0, math.floor(tonumber(data.wheelSpins) or tonumber(data.WheelSpins) or 0)),
@@ -256,9 +310,11 @@ local function normalizeSavedData(data)
         shopClaims = shopClaims,
         options = options,
         guideCompleted = guideCompleted,
+        favoritePromptState = favoritePromptState,
         ownedSkins = ownedSkins,
         equippedSkinId = equippedSkinId,
         weaponUnlockRewards = normalizeWeaponUnlockRewards(data.weaponUnlockRewards or data.WeaponUnlockRewards),
+        combatSnapshot = combatSnapshot,
         activePotions = activePotions,
         activePotion = legacyActivePotion,
     }
@@ -350,21 +406,37 @@ function RebirthService:_loadPlayer(player)
     if data == nil then
         self:_awardNewPlayerBadge(player)
     end
-    self._dirtyByUserId[userId] = nil
     self._loadStateByUserId[userId] = "Loaded"
     self._loadRetryClockByUserId[userId] = nil
+    if savedProgress and savedProgress.combatSnapshot then
+        self._dirtyByUserId[userId] = true
+    else
+        self._dirtyByUserId[userId] = nil
+    end
 end
 
-function RebirthService:_savePlayer(player)
+function RebirthService:_buildSavePayload(player, options)
     if not (player and self._dataStore and self._playerStateService) then
-        return false
+        return nil
     end
 
     if not self:CanWritePersistentProgress(player) then
-        return false
+        return nil
     end
 
     local state = self._playerStateService:GetState(player)
+    local includeCombatSnapshot = options and options.includeCombatSnapshot == true
+    local combatSnapshot = nil
+    if includeCombatSnapshot and state and state.IsInArena == true and state.Alive == true then
+        combatSnapshot = {
+            schemaVersion = 1,
+            restoreEligible = true,
+            savedAt = os.time(),
+            level = math.max(1, math.floor(tonumber(state.Level) or GameConfig.PLAYER.BaseLevel)),
+            experience = math.max(0, math.floor(tonumber(state.Experience) or 0)),
+        }
+    end
+
     local payload = {
         rebirth = math.max(0, math.floor(tonumber(state.Rebirth) or 0)),
         rebirthScore = math.max(0, math.floor(tonumber(state.RebirthScore) or 0)),
@@ -377,13 +449,24 @@ function RebirthService:_savePlayer(player)
         shopClaims = state.ShopClaims or {},
         options = state.Options or { Music = true, Sfx = true },
         guideCompleted = state.GuideCompleted == true,
+        favoritePromptState = self._playerStateService.GetFavoritePromptState and self._playerStateService:GetFavoritePromptState(player) or state.FavoritePromptState or {},
         ownedSkins = state.OwnedSkins or {},
         equippedSkinId = state.EquippedSkinId,
         weaponUnlockRewards = state.WeaponUnlockRewards or {},
+        combatSnapshot = combatSnapshot,
         activePotions = self._playerStateService:GetActivePotions(player),
         activePotion = self._playerStateService:GetActivePotion(player),
         updatedAt = os.time(),
     }
+
+    return payload
+end
+
+function RebirthService:_savePlayer(player, options)
+    local payload = self:_buildSavePayload(player, options)
+    if not payload then
+        return false
+    end
 
     local success = pcall(function()
         self._dataStore:SetAsync(getDataKey(player), payload)
@@ -396,11 +479,22 @@ function RebirthService:_savePlayer(player)
     return success
 end
 
+function RebirthService:SaveAllPlayersForShutdown()
+    self._shutdownInProgress = true
+    local savedCount = 0
+    for _, player in ipairs(Players:GetPlayers()) do
+        if self:_savePlayer(player, { includeCombatSnapshot = true }) then
+            savedCount += 1
+        end
+    end
+    return savedCount
+end
+
 function RebirthService:_saveDirtyPlayers()
     for userId in pairs(self._dirtyByUserId) do
         local player = Players:GetPlayerByUserId(userId)
         if player then
-            self:_savePlayer(player)
+            self:_savePlayer(player, { includeCombatSnapshot = self._shutdownInProgress == true })
         else
             self._dirtyByUserId[userId] = nil
         end
@@ -444,7 +538,7 @@ function RebirthService:TryRebirth(player, options)
 
     local state = self._playerStateService:ApplyRebirth(player, not paid)
     self:MarkDirty(player)
-    self:_savePlayer(player)
+    self:_savePlayer(player, { includeCombatSnapshot = self._shutdownInProgress == true })
     self:_fireFeedback(player, paid and "PaidSuccess" or "Success")
     return true, state
 end
@@ -623,6 +717,7 @@ function RebirthService:Init(dependencies)
     self._loadStateByUserId = {}
     self._loadRetryClockByUserId = {}
     self._nextSaveClock = os.clock() + math.max(5, tonumber(GameConfig.REBIRTH.AutoSaveIntervalSeconds) or 30)
+    self._shutdownInProgress = false
 
     local isStudio = RunService:IsStudio()
     local success, store = false, nil
@@ -667,7 +762,7 @@ function RebirthService:OnPlayerAdded(player)
 end
 
 function RebirthService:OnPlayerRemoving(player)
-    self:_savePlayer(player)
+    self:_savePlayer(player, { includeCombatSnapshot = self._shutdownInProgress == true })
     local userId = getUserId(player)
     self._dirtyByUserId[userId] = nil
     self._loadedByUserId[userId] = nil

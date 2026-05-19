@@ -452,6 +452,12 @@ function DefeatedController:_bindClickTarget(guiObject, onActivated)
         connections = {},
     }
 
+    if guiObject:IsA("GuiButton") then
+        table.insert(binding.connections, guiObject.Activated:Connect(function()
+            onActivated()
+        end))
+    end
+
     table.insert(binding.connections, guiObject.MouseEnter:Connect(function()
         binding.isHovered = true
         self:_applyButtonState(binding)
@@ -483,7 +489,7 @@ function DefeatedController:_bindClickTarget(guiObject, onActivated)
                 binding.isHovered = false
             end
             self:_applyButtonState(binding)
-            if wasPressed then
+            if wasPressed and not guiObject:IsA("GuiButton") then
                 onActivated()
             end
         end

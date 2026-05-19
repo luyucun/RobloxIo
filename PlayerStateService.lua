@@ -67,6 +67,9 @@ PlayerStateService._healthService = nil
 PlayerStateService._subscriptionService = nil
 PlayerStateService._friendBonusRefreshToken = 0
 PlayerStateService._friendBonusLoopToken = 0
+PlayerStateService._characterCollisionConnectionsByActorId = {}
+PlayerStateService._perfStats = nil
+PlayerStateService._nextPerfLogClock = 0
 
 local function getActorId(actor)
     local actorId = ActorUtils.GetActorId(actor)
@@ -74,6 +77,22 @@ local function getActorId(actor)
         error("[PlayerStateService] 无法解析 ActorId。")
     end
     return actorId
+end
+
+local function isPerformanceDebugEnabled()
+    return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function countMapEntries(map)
+    local count = 0
+    for _ in pairs(map or {}) do
+        count += 1
+    end
+    return count
 end
 
 local function buildWeaponLoadout(level)
@@ -300,6 +319,37 @@ local function copyBooleanMap(values)
     return result
 end
 
+local function normalizeNonNegativeInteger(value)
+    return math.max(0, math.floor(tonumber(value) or 0))
+end
+
+local function getUtcDayKey(timestamp)
+    return math.floor(normalizeNonNegativeInteger(timestamp) / 86400)
+end
+
+local function normalizeFavoritePromptState(favoritePromptState)
+    local source = type(favoritePromptState) == "table" and favoritePromptState or {}
+    local promptedAt = normalizeNonNegativeInteger(source.PromptedAt or source.promptedAt)
+    local lastPromptUtcDay = normalizeNonNegativeInteger(source.LastPromptUtcDay or source.lastPromptUtcDay)
+    if lastPromptUtcDay <= 0 and promptedAt > 0 then
+        lastPromptUtcDay = getUtcDayKey(promptedAt)
+    end
+
+    local lastPromptResult = tostring(source.LastPromptResult or source.lastPromptResult or "")
+    local legacyHasPrompted = source.HasPrompted == true or source.hasPrompted == true
+    local hasFavorited = source.HasFavorited == true
+        or source.hasFavorited == true
+        or (legacyHasPrompted and lastPromptResult == "Success")
+
+    return {
+        HasFavorited = hasFavorited == true,
+        PromptedAt = promptedAt,
+        LastPromptUtcDay = lastPromptUtcDay,
+        LastPromptResult = lastPromptResult,
+        LastResultAt = normalizeNonNegativeInteger(source.LastResultAt or source.lastResultAt),
+    }
+end
+
 local function normalizeWeaponUnlockRewards(rewards, maxPromptedTierIndex)
     local maxPromptedTier = normalizeTierIndex(maxPromptedTierIndex)
     local normalized = {
@@ -521,6 +571,37 @@ local function configureCharacterCollision(character)
     end)
 end
 
+function PlayerStateService:_configureCharacterCollision(actor, character)
+    if not character then
+        return
+    end
+
+    local actorId = getActorId(actor)
+    local oldConnection = self._characterCollisionConnectionsByActorId[actorId]
+    if oldConnection and oldConnection.Connected then
+        oldConnection:Disconnect()
+    end
+    self._characterCollisionConnectionsByActorId[actorId] = nil
+
+    local characterGroup = getCharacterCollisionGroupName()
+    local monsterGroup = getMonsterCollisionGroupName()
+    ensureCollisionGroup(characterGroup)
+    ensureCollisionGroup(monsterGroup)
+    setCollisionRule(characterGroup, monsterGroup, false)
+
+    for _, descendant in ipairs(character:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            setPartCollisionGroup(descendant, characterGroup)
+        end
+    end
+
+    self._characterCollisionConnectionsByActorId[actorId] = character.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("BasePart") then
+            setPartCollisionGroup(descendant, characterGroup)
+        end
+    end)
+end
+
 local function getOrCreateIntValue(parent, valueName)
     local valueObject = parent:FindFirstChild(valueName)
     if valueObject and not valueObject:IsA("IntValue") then
@@ -607,6 +688,7 @@ function PlayerStateService:_applyLevelDerivedState(state)
     state.ShopClaims = normalizeShopClaims(state.ShopClaims)
     state.Options = normalizeOptions(state.Options)
     state.GuideCompleted = normalizeGuideCompleted(state.GuideCompleted, true)
+    state.FavoritePromptState = normalizeFavoritePromptState(state.FavoritePromptState)
     state.OwnedSkins = normalizeOwnedSkins(state.OwnedSkins)
     state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
     state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(
@@ -674,6 +756,7 @@ function PlayerStateService:_createDefaultState(actor)
         ShopClaims = {},
         Options = normalizeOptions(),
         GuideCompleted = true,
+        FavoritePromptState = normalizeFavoritePromptState(nil),
         OwnedSkins = {},
         EquippedSkinId = nil,
         WeaponUnlockRewards = normalizeWeaponUnlockRewards(nil, getMaxUnlockedTierIndexForLevel(GameConfig.PLAYER.BaseLevel)),
@@ -922,8 +1005,86 @@ function PlayerStateService:_getOrCreateState(actor)
     return state
 end
 
+function PlayerStateService:_resetPerfStats()
+    self._perfStats = {
+        PushState = 0,
+        FriendRefreshes = 0,
+        FriendPlayersChecked = 0,
+        FriendPairsChecked = 0,
+        FriendRefreshElapsedSeconds = 0,
+        CharacterAdded = 0,
+    }
+end
+
+function PlayerStateService:_addPerfStat(key, amount)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if not self._perfStats then
+        self:_resetPerfStats()
+    end
+    self._perfStats[key] = (self._perfStats[key] or 0) + (amount or 1)
+end
+
+function PlayerStateService:_getStateCounts()
+    local total = 0
+    local players = 0
+    local bots = 0
+    local arena = 0
+    local alive = 0
+    for _, state in pairs(self._statesByActorId or {}) do
+        total += 1
+        if state.ActorRef then
+            if ActorUtils.IsPlayer(state.ActorRef) then
+                players += 1
+            elseif ActorUtils.IsBot(state.ActorRef) then
+                bots += 1
+            end
+        end
+        if state.IsInArena == true then
+            arena += 1
+        end
+        if state.Alive == true then
+            alive += 1
+        end
+    end
+    return total, players, bots, arena, alive
+end
+
+function PlayerStateService:_logPerfStats(now)
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+    if now < (self._nextPerfLogClock or 0) then
+        return
+    end
+
+    local total, players, bots, arena, alive = self:_getStateCounts()
+    local stats = self._perfStats or {}
+    print(string.format(
+        "[Diag][PlayerStateService] playersNow=%d states=%d playerStates=%d botStates=%d arena=%d alive=%d collisionConns=%d pushState=%d friendRefreshes=%d friendPlayers=%d friendPairs=%d friendRefreshMs=%.3f characterAdded=%d",
+        #Players:GetPlayers(),
+        total,
+        players,
+        bots,
+        arena,
+        alive,
+        countMapEntries(self._characterCollisionConnectionsByActorId),
+        stats.PushState or 0,
+        stats.FriendRefreshes or 0,
+        stats.FriendPlayersChecked or 0,
+        stats.FriendPairsChecked or 0,
+        (stats.FriendRefreshElapsedSeconds or 0) * 1000,
+        stats.CharacterAdded or 0
+    ))
+
+    self:_resetPerfStats()
+    self._nextPerfLogClock = now + getPerformanceLogInterval()
+end
+
 function PlayerStateService:Init(dependencies)
     self._statesByActorId = {}
+    self._characterCollisionConnectionsByActorId = {}
     self._friendBonusRefreshToken = 0
     self._friendBonusLoopToken += 1
     local friendBonusLoopToken = self._friendBonusLoopToken
@@ -939,6 +1100,8 @@ function PlayerStateService:Init(dependencies)
     self._requestOptionStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestOptionStateSync") or nil
     self._requestOptionUpdateEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestOptionUpdate") or nil
     self._levelUpFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LevelUpFeedback") or nil
+    self:_resetPerfStats()
+    self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
 
     if self._requestStateConnection then
         self._requestStateConnection:Disconnect()
@@ -1060,6 +1223,8 @@ function PlayerStateService:BuildStatePayload(actor)
     state.WeaponUnlockRewards = weaponUnlockRewards
     local options = normalizeOptions(state.Options)
     state.Options = options
+    local favoritePromptState = normalizeFavoritePromptState(state.FavoritePromptState)
+    state.FavoritePromptState = favoritePromptState
     local ownedSkins = normalizeOwnedSkins(state.OwnedSkins)
     state.OwnedSkins = ownedSkins
     state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, ownedSkins)
@@ -1105,6 +1270,13 @@ function PlayerStateService:BuildStatePayload(actor)
         subscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims),
         shopClaims = copyBooleanMap(normalizeShopClaims(state.ShopClaims)),
         guideCompleted = state.GuideCompleted == true,
+        favoritePromptState = {
+            hasFavorited = favoritePromptState.HasFavorited == true,
+            promptedAt = favoritePromptState.PromptedAt,
+            lastPromptUtcDay = favoritePromptState.LastPromptUtcDay,
+            lastPromptResult = favoritePromptState.LastPromptResult,
+            lastResultAt = favoritePromptState.LastResultAt,
+        },
         options = {
             musicEnabled = options.Music == true,
             sfxEnabled = options.Sfx == true,
@@ -1150,6 +1322,7 @@ function PlayerStateService:PushState(actor)
         return
     end
 
+    self:_addPerfStat("PushState")
     self._playerStateSyncEvent:FireClient(actor, self:BuildStatePayload(actor))
 end
 
@@ -1639,6 +1812,7 @@ function PlayerStateService:_countServerFriends(player)
     local friendCount = 0
     for _, otherPlayer in ipairs(Players:GetPlayers()) do
         if otherPlayer ~= player and otherPlayer.Parent then
+            self:_addPerfStat("FriendPairsChecked")
             local success, isFriend = pcall(function()
                 return player:IsFriendsWith(otherPlayer.UserId)
             end)
@@ -1651,8 +1825,11 @@ function PlayerStateService:_countServerFriends(player)
 end
 
 function PlayerStateService:RefreshFriendExperienceBonuses()
+    local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
+    self:_addPerfStat("FriendRefreshes")
     for _, player in ipairs(Players:GetPlayers()) do
         if player and player.Parent then
+            self:_addPerfStat("FriendPlayersChecked")
             local state = self:_getOrCreateState(player)
             local friendCount = self:_countServerFriends(player)
             local friendBonus = friendCount * FRIEND_EXPERIENCE_BONUS_PER_FRIEND
@@ -1665,6 +1842,10 @@ function PlayerStateService:RefreshFriendExperienceBonuses()
                 self:PushState(player)
             end
         end
+    end
+    if startedAt then
+        self:_addPerfStat("FriendRefreshElapsedSeconds", os.clock() - startedAt)
+        self:_logPerfStats(os.clock())
     end
 end
 
@@ -1749,6 +1930,7 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.ShopClaims = normalizeShopClaims(savedProgress.shopClaims or savedProgress.ShopClaims)
         state.Options = normalizeOptions(savedProgress.options or savedProgress.Options)
         state.GuideCompleted = readGuideCompleted(savedProgress, true)
+        state.FavoritePromptState = normalizeFavoritePromptState(savedProgress.favoritePromptState or savedProgress.FavoritePromptState)
         state.OwnedSkins = normalizeOwnedSkins(savedProgress.ownedSkins or savedProgress.OwnedSkins)
         state.EquippedSkinId = normalizeEquippedSkinId(savedProgress.equippedSkinId or savedProgress.EquippedSkinId, state.OwnedSkins)
         local savedWeaponUnlockRewards = savedProgress.weaponUnlockRewards or savedProgress.WeaponUnlockRewards
@@ -1758,8 +1940,31 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         else
             state.WeaponUnlockRewards = buildHandledWeaponUnlockRewardsForLevel(state.HighestLevelReached)
         end
+        local combatSnapshot = savedProgress.combatSnapshot or savedProgress.CombatSnapshot
+        if type(combatSnapshot) == "table" then
+            local restoreEligible = combatSnapshot.restoreEligible == true
+            local savedAt = math.floor(tonumber(combatSnapshot.savedAt) or 0)
+            local maxAge = math.max(1, tonumber(GameConfig.REBIRTH.CombatSnapshotMaxAgeSeconds) or 1800)
+            local snapshotLevel = math.max(1, math.floor(tonumber(combatSnapshot.level) or 0))
+            local snapshotExperience = math.max(0, math.floor(tonumber(combatSnapshot.experience) or 0))
+            if restoreEligible and savedAt > 0 and (os.time() - savedAt) <= maxAge then
+                local restoredLevel = math.clamp(snapshotLevel, 1, GameConfig.PLAYER.MaxSupportedLevel)
+                state.Level = restoredLevel
+                state.Experience = math.min(snapshotExperience, GameConfig.GetNextLevelExperience(restoredLevel))
+                state.HighestLevelReached = math.max(state.HighestLevelReached, restoredLevel)
+                state.IsInArena = false
+                state.Alive = true
+                state.KillCount = 0
+                state.Buffs = {}
+                state.CurrentHealth = GameConfig.GetMaxHealthForLevel(restoredLevel)
+            end
+        end
         state.ActivePotions = normalizeActivePotions(savedProgress.activePotions or savedProgress.ActivePotions, savedProgress.activePotion or savedProgress.ActivePotion)
         state.ActivePotion = nil
+    end
+    self:_applyLevelDerivedState(state)
+    if state.IsInArena ~= true then
+        state.CurrentHealth = state.MaxHealth
     end
     self:_syncLeaderstats(actor, state)
     self:SyncHumanoidMovement(actor)
@@ -1819,6 +2024,12 @@ function PlayerStateService:MarkGroupReward(actor, groupId)
     end
     state.GroupRewards[key] = true
     return true
+end
+
+function PlayerStateService:GetFavoritePromptState(actor)
+    local state = self:_getOrCreateState(actor)
+    state.FavoritePromptState = normalizeFavoritePromptState(state.FavoritePromptState)
+    return state.FavoritePromptState
 end
 
 function PlayerStateService:GetWeaponUnlockRewards(actor)
@@ -2061,13 +2272,14 @@ function PlayerStateService:CaptureHumanoidHealth(actor)
 end
 
 function PlayerStateService:OnCharacterAdded(actor)
+    self:_addPerfStat("CharacterAdded")
     local wasInArena = self:_getOrCreateState(actor).IsInArena == true
     local state = self:_getOrCreateState(actor)
     state.IsInArena = false
     state.Alive = true
     self:_applyLevelDerivedState(state)
     state.CurrentHealth = state.MaxHealth
-    configureCharacterCollision(ActorUtils.GetCharacter(actor))
+    self:_configureCharacterCollision(actor, ActorUtils.GetCharacter(actor))
     self:SyncCharacterState(actor)
     self:_syncLeaderstats(actor, state)
     self:UpdateOverheadHealthBar(actor)
@@ -2077,12 +2289,18 @@ function PlayerStateService:OnCharacterAdded(actor)
     if wasInArena then
         self:_markArenaProgressDirty()
     end
+    self:_logPerfStats(os.clock())
 end
 
 function PlayerStateService:OnPlayerRemoving(player)
     local state = self._statesByActorId[getActorId(player)]
     local wasInArena = state and state.IsInArena == true
     self._statesByActorId[getActorId(player)] = nil
+    local collisionConnection = self._characterCollisionConnectionsByActorId[getActorId(player)]
+    if collisionConnection and collisionConnection.Connected then
+        collisionConnection:Disconnect()
+    end
+    self._characterCollisionConnectionsByActorId[getActorId(player)] = nil
     self:QueueFriendBonusRefresh()
     if wasInArena then
         self:_markArenaProgressDirty()

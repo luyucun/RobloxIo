@@ -17,6 +17,28 @@ ModalUiController._blurEffect = nil
 ModalUiController._blurOriginalEnabled = nil
 ModalUiController._childAddedConnection = nil
 ModalUiController._hiddenVisibleConnectionsByNode = {}
+ModalUiController._dormantRootStatesByRoot = {}
+ModalUiController._dormantRootConnectionsByRoot = {}
+ModalUiController._dormantRootPrepared = false
+
+local DEFAULT_DORMANT_ROOT_NAMES = {
+    "Index",
+    "Shop",
+    "Sevendays",
+    "SevenDays",
+    "Skin",
+    "Upgrade",
+    "RewardClaimTips",
+    "SugarClub",
+    "Potion",
+    "WheelBg",
+    "WheelClaim",
+    "Rebirth",
+    "GroupReward",
+    "Option",
+    "NewWeaponUnlock",
+    "Defeated",
+}
 
 local function findBlurEffect()
     local blur = Lighting:FindFirstChild("Blur")
@@ -58,6 +80,36 @@ local function disconnectConnection(connection)
     if connection and connection.Connected then
         connection:Disconnect()
     end
+end
+
+local function isGuiImageObject(instance)
+    return instance and (instance:IsA("ImageLabel") or instance:IsA("ImageButton"))
+end
+
+local function collectGuiImages(root)
+    local images = {}
+    if isGuiImageObject(root) then
+        table.insert(images, root)
+    end
+    if not root then
+        return images
+    end
+
+    for _, descendant in ipairs(root:GetDescendants()) do
+        if isGuiImageObject(descendant) then
+            table.insert(images, descendant)
+        end
+    end
+    return images
+end
+
+local function findMainGui(localPlayer)
+    local playerGui = localPlayer and (localPlayer:FindFirstChild("PlayerGui") or localPlayer:WaitForChild("PlayerGui", 5))
+    if not playerGui then
+        return nil
+    end
+
+    return playerGui:FindFirstChild("Main") or playerGui:FindFirstChild("Main", true)
 end
 
 function ModalUiController:_hasOwners()
@@ -157,6 +209,136 @@ end
 function ModalUiController:_clearChildWatcher()
     disconnectConnection(self._childAddedConnection)
     self._childAddedConnection = nil
+end
+
+function ModalUiController:_getDormantRootState(root)
+    if not (root and root:IsA("GuiObject")) then
+        return nil
+    end
+
+    local state = self._dormantRootStatesByRoot[root]
+    if state then
+        return state
+    end
+
+    state = {
+        ImagesByNode = {},
+        Active = false,
+    }
+    for _, imageObject in ipairs(collectGuiImages(root)) do
+        state.ImagesByNode[imageObject] = imageObject.Image
+    end
+    self._dormantRootStatesByRoot[root] = state
+    return state
+end
+
+function ModalUiController:DeactivateDormantRoot(root)
+    local state = self:_getDormantRootState(root)
+    if not state or state.Active == false then
+        return
+    end
+
+    for imageObject, originalImage in pairs(state.ImagesByNode) do
+        if imageObject and imageObject.Parent and isGuiImageObject(imageObject) then
+            imageObject.Image = originalImage or ""
+        end
+    end
+    state.Active = false
+end
+
+function ModalUiController:ActivateDormantRoot(root)
+    local state = self:_getDormantRootState(root)
+    if not state or state.Active == true then
+        return
+    end
+
+    for imageObject in pairs(state.ImagesByNode) do
+        if imageObject and imageObject.Parent and isGuiImageObject(imageObject) then
+            imageObject.Image = ""
+        end
+    end
+    state.Active = true
+end
+
+function ModalUiController:RegisterDormantRoot(root)
+    if not (root and root:IsA("GuiObject")) then
+        return false
+    end
+
+    self:_getDormantRootState(root)
+    if self._dormantRootConnectionsByRoot[root] then
+        if root.Visible ~= true then
+            self:ActivateDormantRoot(root)
+        end
+        return true
+    end
+
+    self._dormantRootConnectionsByRoot[root] = root:GetPropertyChangedSignal("Visible"):Connect(function()
+        if root.Visible == true then
+            self:DeactivateDormantRoot(root)
+        else
+            self:ActivateDormantRoot(root)
+        end
+    end)
+
+    if root.Visible == true then
+        self:DeactivateDormantRoot(root)
+    else
+        self:ActivateDormantRoot(root)
+    end
+    return true
+end
+
+function ModalUiController:RegisterDefaultDormantRoots(localPlayer)
+    if self._dormantRootPrepared then
+        return true
+    end
+
+    local mainGui = findMainGui(localPlayer or Players.LocalPlayer)
+    if not mainGui then
+        return false
+    end
+
+    self._dormantRootPrepared = true
+    local registeredRoots = {}
+    local function registerRoot(root)
+        if not (root and root:IsA("GuiObject")) then
+            return
+        end
+        if registeredRoots[root] then
+            return
+        end
+        registeredRoots[root] = true
+        self:RegisterDormantRoot(root)
+    end
+
+    for _, rootName in ipairs(DEFAULT_DORMANT_ROOT_NAMES) do
+        local root = mainGui:FindFirstChild(rootName)
+        registerRoot(root)
+    end
+
+    for _, child in ipairs(mainGui:GetChildren()) do
+        if child:IsA("GuiObject") and child.Visible == false then
+            registerRoot(child)
+        end
+    end
+    return true
+end
+
+function ModalUiController:Init(dependencies)
+    local localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    if self:RegisterDefaultDormantRoots(localPlayer) then
+        return
+    end
+
+    task.spawn(function()
+        for _ = 1, 80 do
+            task.wait(0.25)
+            if self:RegisterDefaultDormantRoots(localPlayer) then
+                return
+            end
+        end
+    end)
 end
 
 function ModalUiController:_applySuppression()

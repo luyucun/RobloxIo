@@ -38,6 +38,7 @@ local RemoteNames = requireSharedModule("RemoteNames")
 local ShopConfig = requireSharedModule("ShopConfig")
 local WheelConfig = requireSharedModule("WheelConfig")
 local SkinConfig = requireSharedModule("SkinConfig")
+local SubscriptionConfig = requireSharedModule("SubscriptionConfig")
 
 local ShopController = {}
 
@@ -154,6 +155,78 @@ local function setText(textObject, value)
     if textObject and (textObject:IsA("TextLabel") or textObject:IsA("TextButton") or textObject:IsA("TextBox")) then
         textObject.Text = tostring(value)
     end
+end
+
+local function formatRobuxPrice(value)
+    local price = tonumber(value)
+    if not price then
+        return nil
+    end
+    return tostring(math.max(0, math.floor(price + 0.5)))
+end
+
+local function setMarketplaceRobuxPrice(textObject, itemId, infoType)
+    if not textObject then
+        return
+    end
+
+    local resolvedItemId = math.floor(tonumber(itemId) or 0)
+    if resolvedItemId <= 0 then
+        return
+    end
+
+    local fallbackText = tostring(textObject.Text or "")
+    setText(textObject, "...")
+    task.spawn(function()
+        local success, productInfo = pcall(function()
+            return MarketplaceService:GetProductInfoAsync(resolvedItemId, infoType)
+        end)
+        if not (success and type(productInfo) == "table") then
+            if fallbackText ~= "" then
+                setText(textObject, fallbackText)
+            end
+            return
+        end
+
+        local priceText = formatRobuxPrice(productInfo.PriceInRobux)
+        if priceText then
+            setText(textObject, priceText)
+        elseif fallbackText ~= "" then
+            setText(textObject, fallbackText)
+        end
+    end)
+end
+
+local function setSubscriptionRobuxPrice(textObject, subscriptionId)
+    if not textObject then
+        return
+    end
+
+    local resolvedSubscriptionId = tostring(subscriptionId or "")
+    if resolvedSubscriptionId == "" then
+        return
+    end
+
+    local fallbackText = tostring(textObject.Text or "")
+    setText(textObject, "...")
+    task.spawn(function()
+        local success, productInfo = pcall(function()
+            return MarketplaceService:GetSubscriptionProductInfoAsync(resolvedSubscriptionId)
+        end)
+        if not (success and type(productInfo) == "table") then
+            if fallbackText ~= "" then
+                setText(textObject, fallbackText)
+            end
+            return
+        end
+
+        local priceText = formatRobuxPrice(productInfo.PriceInRobux)
+        if priceText then
+            setText(textObject, priceText)
+        elseif fallbackText ~= "" then
+            setText(textObject, fallbackText)
+        end
+    end)
 end
 
 local function setImage(imageObject, image)
@@ -795,11 +868,20 @@ function ShopController:_bindUi(silent)
     })
 
     local starterPackButton = self._starterPackFrame and select(1, findButton(self._starterPackFrame, "BuyButton")) or nil
+    setMarketplaceRobuxPrice(
+        self._starterPackFrame and self._starterPackFrame:FindFirstChild("RMoney", true),
+        ShopConfig.StarterPack.GamePassId,
+        Enum.InfoType.GamePass
+    )
     self:_bindButton(starterPackButton, function()
         self:_requestStarterPack()
     end)
 
     local sugarButton = sugarClubFrame and select(1, findButton(sugarClubFrame, "BuyButton")) or nil
+    setSubscriptionRobuxPrice(
+        sugarClubFrame and sugarClubFrame:FindFirstChild("RMoney", true),
+        SubscriptionConfig.SubscriptionId
+    )
     self:_bindButton(sugarButton, function()
         self:_openSugarClubFromShop()
     end)
@@ -815,6 +897,11 @@ function ShopController:_bindUi(silent)
             cashFrame = content and content:FindFirstChild("Cash3")
         end
         local button = cashFrame and select(1, findButton(cashFrame, "BuyButton")) or nil
+        setMarketplaceRobuxPrice(
+            cashFrame and cashFrame:FindFirstChild("RMoney", true),
+            purchase.ProductId,
+            Enum.InfoType.Product
+        )
         self:_bindButton(button, function()
             self:_promptProduct(purchase.ProductId, "Shop")
         end, {
@@ -831,6 +918,12 @@ function ShopController:_bindUi(silent)
         skinButton, skinButtonRoot = findButton(skinFrame, "BuyButton")
     end
     self._skinBuyButtonRoot = skinButtonRoot or skinButton
+    local featuredSkin = SkinConfig.GetSkin(ShopConfig.FeaturedSkinId)
+    setMarketplaceRobuxPrice(
+        skinFrame and skinFrame:FindFirstChild("RMoney", true),
+        featuredSkin and featuredSkin.GamePassId,
+        Enum.InfoType.GamePass
+    )
     self:_bindButton(skinButton, function()
         self:_requestSkinPurchase()
     end)

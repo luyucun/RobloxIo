@@ -245,6 +245,7 @@ function WeaponUnlockRewardService:Claim(player, requestedTierIndex)
 
     local userId = player.UserId
     if self._claimingByUserId[userId] then
+        self:_fireFeedback(player, "Failed", "Busy", requestedTierIndex)
         return false, "Busy"
     end
     self._claimingByUserId[userId] = true
@@ -259,6 +260,12 @@ function WeaponUnlockRewardService:Claim(player, requestedTierIndex)
     local tierIndex = math.floor(tonumber(requestedTierIndex) or tonumber(currentQueuedTierIndex) or 0)
     local requestedKey = tostring(tierIndex)
     local rewardDiamonds = getRewardDiamonds()
+
+    if not currentQueuedTierIndex then
+        self._claimingByUserId[userId] = nil
+        self:_fireFeedback(player, "Failed", "NoPendingReward", tierIndex, rewardDiamonds, 1, true)
+        return false, "NoPendingReward"
+    end
 
     if tierIndex <= 1
         or tierIndex ~= currentQueuedTierIndex

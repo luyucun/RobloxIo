@@ -8,6 +8,8 @@ Studio放置路径: ServerScriptService/MainServer
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local StatsService = game:GetService("Stats")
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -71,6 +73,7 @@ local SpecialEventService = requireServerModule("SpecialEventService")
 local GMCommandService = requireServerModule("GMCommandService")
 local GroupRewardService = requireServerModule("GroupRewardService")
 local WeaponUnlockRewardService = requireServerModule("WeaponUnlockRewardService")
+local FavoritePlacePromptService = requireServerModule("FavoritePlacePromptService")
 local BadgeAwardService = requireServerModule("BadgeAwardService")
 local ArenaProgressService = requireServerModule("ArenaProgressService")
 local WheelService = requireServerModule("WheelService")
@@ -82,6 +85,132 @@ Players.RespawnTime = GameConfig.RESPAWN.DeathRecoverySeconds
 Players.CharacterAutoLoads = false
 
 local studioBotEnsurerStarted = false
+local memoryTrackingSetupAttempted = false
+
+local function isPerformanceDebugEnabled()
+    return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
+end
+
+local function getPerformanceLogInterval()
+    return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function countDescendants(instance)
+    if not instance then
+        return 0
+    end
+
+    local ok, descendants = pcall(function()
+        return instance:GetDescendants()
+    end)
+    return ok and #descendants or 0
+end
+
+local function countMapEntries(map)
+    local count = 0
+    for _ in pairs(map or {}) do
+        count += 1
+    end
+    return count
+end
+
+local function getMemoryMbForTag(tagName)
+    if not memoryTrackingSetupAttempted then
+        memoryTrackingSetupAttempted = true
+        pcall(function()
+            StatsService.MemoryTrackingEnabled = true
+        end)
+    end
+
+    local okEnabled, memoryTrackingEnabled = pcall(function()
+        return StatsService.MemoryTrackingEnabled
+    end)
+    if not okEnabled or memoryTrackingEnabled ~= true then
+        return -1
+    end
+
+    local developerMemoryTag = Enum.DeveloperMemoryTag[tagName]
+    if not developerMemoryTag then
+        return -1
+    end
+
+    local ok, value = pcall(function()
+        return StatsService:GetMemoryUsageMbForTag(developerMemoryTag)
+    end)
+    return ok and tonumber(value) or -1
+end
+
+local function getTotalMemoryMb()
+    local ok, value = pcall(function()
+        return StatsService:GetTotalMemoryUsageMb()
+    end)
+    return ok and tonumber(value) or -1
+end
+
+local function countRuntimeFolder(folderName)
+    local runtimeRoot = Workspace:FindFirstChild("Runtime")
+    local folder = runtimeRoot and runtimeRoot:FindFirstChild(folderName)
+    return folder and #folder:GetChildren() or 0, countDescendants(folder)
+end
+
+local function startServerDiagnostics()
+    if not isPerformanceDebugEnabled() then
+        return
+    end
+
+    task.spawn(function()
+        while true do
+            task.wait(getPerformanceLogInterval())
+            if not isPerformanceDebugEnabled() then
+                continue
+            end
+
+            local runtimeRoot = Workspace:FindFirstChild("Runtime")
+            local weaponChildren, weaponDesc = countRuntimeFolder("Weapons")
+            local debrisChildren, debrisDesc = countRuntimeFolder(GameConfig.WEAPON.BrokenDebrisFolderName or "WeaponDebris")
+            local monsterChildren, monsterDesc = countRuntimeFolder(GameConfig.MONSTER.RuntimeFolderName or "Monsters")
+            local buffChildren, buffDesc = countRuntimeFolder((GameConfig.BUFF and GameConfig.BUFF.RuntimeFolderName) or "Buffs")
+            local eventPayload = SpecialEventService.BuildPayload and SpecialEventService:BuildPayload() or nil
+            local activeEvent = eventPayload and eventPayload.activeEvent or nil
+            local futureEvents = eventPayload and eventPayload.futureEvents or {}
+
+            print(string.format(
+                "[Diag][Server] memTotalMb=%.2f luaHeapMb=%.2f instancesMb=%.2f animationMb=%.2f physicsPartsMb=%.2f players=%d workspaceDesc=%d runtimeDesc=%d weapons=%d/%d debris=%d/%d monsters=%d/%d buffs=%d/%d activeNormalMonsters=%d activeBosses=%d botActors=%d playerStates=%d arenaActors=%d localAuthUsers=%d localAuthTotal=%d specialActive=%s futureEvents=%d",
+                getTotalMemoryMb(),
+                getMemoryMbForTag("LuaHeap"),
+                getMemoryMbForTag("Instances"),
+                getMemoryMbForTag("Animation"),
+                getMemoryMbForTag("PhysicsParts"),
+                #Players:GetPlayers(),
+                countDescendants(Workspace),
+                countDescendants(runtimeRoot),
+                weaponChildren,
+                weaponDesc,
+                debrisChildren,
+                debrisDesc,
+                monsterChildren,
+                monsterDesc,
+                buffChildren,
+                buffDesc,
+                MonsterService.GetActiveMonsterCount and MonsterService:GetActiveMonsterCount() or -1,
+                BossService._activeBosses and #BossService._activeBosses or -1,
+                BotService._botsById and countMapEntries(BotService._botsById) or -1,
+                PlayerStateService.GetAllPlayerStates and #PlayerStateService:GetAllPlayerStates() or -1,
+                PlayerStateService.GetArenaActors and #PlayerStateService:GetArenaActors() or -1,
+                LocalMonsterRewardService._spawnAuthorizationsByUserId and countMapEntries(LocalMonsterRewardService._spawnAuthorizationsByUserId) or -1,
+                (function()
+                    local total = 0
+                    for _, authorizations in pairs(LocalMonsterRewardService._spawnAuthorizationsByUserId or {}) do
+                        total += countMapEntries(authorizations)
+                    end
+                    return total
+                end)(),
+                tostring(activeEvent and activeEvent.name or "nil"),
+                type(futureEvents) == "table" and #futureEvents or 0
+            ))
+        end
+    end)
+end
 
 local function ensureStudioBots()
     if not RunService:IsStudio() then
@@ -164,6 +293,11 @@ GroupRewardService:Init({
     RebirthService = RebirthService,
 })
 WeaponUnlockRewardService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+})
+FavoritePlacePromptService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
@@ -330,6 +464,7 @@ local function onPlayerAdded(player)
     LeaderboardService:OnPlayerAdded(player)
     SpecialEventService:OnPlayerAdded(player)
     ArenaProgressService:OnPlayerAdded(player)
+    FavoritePlacePromptService:OnPlayerAdded(player)
 
     local function handleCharacterAdded()
         local shouldReviveInArena = RespawnService:ConsumeArenaReviveRequest(player)
@@ -373,6 +508,7 @@ local function onPlayerRemoving(player)
     SkinService:OnPlayerRemoving(player)
     SubscriptionService:OnPlayerRemoving(player)
     ShopService:OnPlayerRemoving(player)
+    FavoritePlacePromptService:OnPlayerRemoving(player)
     BadgeAwardService:OnPlayerRemoving(player)
     RebirthService:OnPlayerRemoving(player)
     LeaderboardService:OnPlayerRemoving(player)
@@ -391,6 +527,11 @@ if RunService:IsStudio() then
     task.delay(3, ensureStudioBots)
 end
 
+startServerDiagnostics()
+
 game:BindToClose(function()
+    if RebirthService.SaveAllPlayersForShutdown then
+        RebirthService:SaveAllPlayersForShutdown()
+    end
     LeaderboardService:SaveAllPlayers()
 end)

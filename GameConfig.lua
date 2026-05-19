@@ -80,6 +80,10 @@ GameConfig.EXPERIENCE = {
     GroundSettleSeconds = 0.25,
     TrailLifetime = 0.28,
     TrailWidth = 0.45,
+    MaxLocalVisualOrbsPerDrop = 3,
+    MaxLocalActiveOrbs = 45,
+    LocalOrbMaxLifetimeSeconds = 5,
+    LocalOrbTrailEnabled = false,
 }
 
 GameConfig.LEVEL_UP_EFFECT = {
@@ -125,11 +129,20 @@ GameConfig.WEAPON_UNLOCK = {
     RewardDiamonds = 20,
 }
 
+GameConfig.PERFORMANCE = {
+    DebugEnabled = true,
+    LogIntervalSeconds = 15,
+}
+
 GameConfig.COMBAT = {
+    StepIntervalSeconds = 0.066,
     WeaponVsWeaponHitCooldownSeconds = 0.25,
     WeaponVsPlayerHitCooldownSeconds = 0.35,
     PlayerBodyHitRadius = 3.5,
     WeaponHitRadiusMin = 2.5,
+    ActorCullPadding = 12,
+    RemoteWeaponNearDistance = 140,
+    RemoteWeaponFarUpdateStride = 3,
     PlayerKnockbackSpeed = 42,
     PlayerKnockbackUpwardSpeed = 8,
 }
@@ -160,17 +173,31 @@ GameConfig.MONSTER = {
     BossTemplateName = "Boss001",
     ClientOwnedNormalMonsters = true,
     ServerPopulationEnabled = false,
-    MaxActiveCount = 350,
+    MaxActiveCount = 300,
     SpawnIntervalSeconds = 0.5,
     MaxSpawnPerInterval = 16,
     PreloadSpawnIntervalSeconds = 0.1,
     PreloadMaxSpawnPerInterval = 25,
     EvenSpawnJitterRatio = 0.35,
-    LocalSimulationTickSeconds = 0,
+    LocalSimulationTickSeconds = 0.066,
+    LocalVisualNearDistance = 75,
+    LocalVisualFarUpdateStride = 8,
+    LocalFarSimulationStride = 12,
+    LocalAnimationNearDistance = 70,
+    LocalCombatSleepPadding = 15,
+    LocalDamageNumberPoolSize = 40,
+    LocalDamageNumbersPerSecond = 18,
+    LocalMonsterModelPoolSize = 20,
+    LocalDormantMonstersUseModels = false,
+    LocalMaxMaterializedMonsters = 40,
     LocalSpawnTokenRequestBatchSize = 25,
     LocalSpawnTokenRequestsPerSecond = 4,
     LocalSpawnTokenTtlSeconds = 90,
     LocalKillReportsPerSecond = 8,
+    LocalKillReportBatchSize = 24,
+    LocalKillReportBatchIntervalSeconds = 0.15,
+    LocalKillReportMaxPendingSeconds = 8,
+    LocalKillBatchExperienceOrbCount = 8,
     LocalHitReportsPerSecond = 8,
     LocalDuplicateKillWindowSeconds = 10,
     ThinkIntervalSeconds = 0.2,
@@ -248,7 +275,9 @@ GameConfig.BUFF = {
 
 GameConfig.LEADERBOARD = {
     SyncIntervalSeconds = 5,
-    GlobalSyncIntervalSeconds = 180,
+    GlobalSyncIntervalSeconds = 300,
+    GlobalInitialSyncDelaySeconds = 60,
+    GlobalWriteMinIntervalSeconds = 300,
     MaxRows = 10,
     GlobalMaxRows = 50,
     EnableDataStores = true,
@@ -264,6 +293,11 @@ GameConfig.ECONOMY = {
 GameConfig.DATASTORE = {
     StudioPersistenceEnabled = false,
     StudioNamePrefix = "Studio_",
+}
+
+GameConfig.FAVORITE_PROMPT = {
+    Enabled = true,
+    DelaySeconds = 300,
 }
 
 GameConfig.MONETIZATION = {
@@ -310,6 +344,7 @@ GameConfig.NUKE = {
 GameConfig.REBIRTH = {
     DataStoreName = "IO_PlayerRebirth_v1",
     AutoSaveIntervalSeconds = 30,
+    CombatSnapshotMaxAgeSeconds = 1800,
     BaseRequiredScore = 1500,
     RequiredScoreGrowthMultiplier = 1.34,
     ExperienceBonusPerRebirth = 0.15,
