@@ -7,6 +7,7 @@ Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/SpecialEventC
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
@@ -186,6 +187,21 @@ local function getBoardFrames()
         end
     end
     return frames
+end
+
+local function findEventEndRoot()
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then
+        return nil
+    end
+
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+    local mainGui = playerGui and playerGui:FindFirstChild("Main") or nil
+    local eventEnd = mainGui and mainGui:FindFirstChild("EventEnd", true) or nil
+    if eventEnd and eventEnd:IsA("GuiObject") then
+        return eventEnd
+    end
+    return nil
 end
 
 local function findTextLabel(frame, labelName)
@@ -435,6 +451,30 @@ function SpecialEventController:_updateFrame(frame)
 
 end
 
+function SpecialEventController:_updateEventEnd()
+    local eventEndRoot = findEventEndRoot()
+    if not eventEndRoot then
+        return
+    end
+
+    self:_hideAllEventLabels(eventEndRoot)
+
+    local nowClock = self:_getServerClock()
+    local activeEvent = self:_getActiveEvent()
+    if not activeEvent then
+        eventEndRoot.Visible = false
+        return
+    end
+
+    eventEndRoot.Visible = true
+    local label = findTextLabel(eventEndRoot, activeEvent.textLabelName)
+    setLabel(label, true, string.format(
+        "%s Event Ends In: %s",
+        tostring(activeEvent.name or ""),
+        formatCountdown((tonumber(activeEvent.endClock) or nowClock) - nowClock)
+    ))
+end
+
 function SpecialEventController:_updateBoards()
     local nowClock = os.clock()
     if nowClock - self._lastBoardUpdateClock < 0.2 then
@@ -445,6 +485,8 @@ function SpecialEventController:_updateBoards()
     for _, frame in ipairs(getBoardFrames()) do
         self:_updateFrame(frame)
     end
+
+    self:_updateEventEnd()
 end
 
 function SpecialEventController:_resetPerfStats()

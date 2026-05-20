@@ -160,12 +160,20 @@ local function getLocalMonsterModelPoolSize()
     return math.max(0, math.floor(tonumber(GameConfig.MONSTER and GameConfig.MONSTER.LocalMonsterModelPoolSize) or 80))
 end
 
-local function shouldMaterializeDormantMonsters()
-    return GameConfig.MONSTER and GameConfig.MONSTER.LocalDormantMonstersUseModels == true
+local function getLocalMaxVisibleMonsters()
+    local maxActiveCount = tonumber(GameConfig.MONSTER and GameConfig.MONSTER.MaxActiveCount) or 0
+    if maxActiveCount > 0 then
+        return math.max(1, math.floor(maxActiveCount))
+    end
+    return 300
 end
 
-local function getLocalMaxMaterializedMonsters()
-    return math.max(1, math.floor(tonumber(GameConfig.MONSTER and GameConfig.MONSTER.LocalMaxMaterializedMonsters) or 40))
+local function getLocalMaxCombatActiveMonsters()
+    return math.max(1, math.floor(
+        tonumber(GameConfig.MONSTER and GameConfig.MONSTER.LocalMaxCombatActiveMonsters)
+        or tonumber(GameConfig.MONSTER and GameConfig.MONSTER.LocalMaxMaterializedMonsters)
+        or 40
+    ))
 end
 
 local function getLocalKillReportBatchSize()
@@ -274,6 +282,12 @@ end
 
 local function configureMonsterInstance(instance)
     stripRuntimeOnlyDescendants(instance)
+    for _, descendant in ipairs(instance:GetDescendants()) do
+        if descendant:IsA("Animator") or descendant:IsA("AnimationController") then
+            descendant:Destroy()
+        end
+    end
+
     local baseParts = getBaseParts(instance)
     if instance:IsA("Model") and #baseParts > 0 then
         instance.PrimaryPart = instance.PrimaryPart or instance:FindFirstChild("Root", true) or baseParts[1]
@@ -668,6 +682,10 @@ function LocalMonsterController:_createFallbackMonster(monsterDefinition)
 end
 
 function LocalMonsterController:_loadTracks(instance, monsterDefinition)
+    if not (instance and instance.Parent) then
+        return {}
+    end
+
     local animations = monsterDefinition and monsterDefinition.Animations or {}
     local animator = resolveAnimator(instance)
     if not animator then
@@ -679,6 +697,42 @@ function LocalMonsterController:_loadTracks(instance, monsterDefinition)
         Run = loadTrack(animator, instance, "Run", animations.Run, true, Enum.AnimationPriority.Movement),
         Attack = loadTrack(animator, instance, "Attack", animations.Attack, false, Enum.AnimationPriority.Action),
     }
+end
+
+local function hasMonsterAnimationTracks(tracks)
+    return tracks and (tracks.Idle ~= nil or tracks.Run ~= nil or tracks.Attack ~= nil)
+end
+
+function LocalMonsterController:_ensureMonsterTracks(monsterState)
+    if not (monsterState and monsterState.Instance and monsterState.Instance.Parent) then
+        return false
+    end
+
+    local tracks = monsterState.Tracks
+    if hasMonsterAnimationTracks(tracks) then
+        monsterState.TracksLoadAttempted = true
+        monsterState.TracksLoadFailed = false
+        return true
+    end
+    if monsterState.TracksLoadFailed == true then
+        return false
+    end
+    if monsterState.TracksLoadAttempted == true then
+        return false
+    end
+
+    monsterState.TracksLoadAttempted = true
+    monsterState.Tracks = self:_loadTracks(
+        monsterState.Instance,
+        MonsterCatalog.GetDefinition(monsterState.MonsterDefinitionId)
+    )
+    tracks = monsterState.Tracks
+    if hasMonsterAnimationTracks(tracks) then
+        monsterState.TracksLoadFailed = false
+        return true
+    end
+    monsterState.TracksLoadFailed = true
+    return false
 end
 
 function LocalMonsterController:_getModelPoolKey(monsterDefinitionId, monsterTemplateName)
@@ -763,7 +817,9 @@ function LocalMonsterController:_createMaterializedMonsterInstance(monsterState)
     instance.Parent = self._monsterFolder
 
     monsterState.Instance = instance
-    monsterState.Tracks = tracks or self:_loadTracks(instance, MonsterCatalog.GetDefinition(monsterState.MonsterDefinitionId))
+    monsterState.Tracks = tracks or {}
+    monsterState.TracksLoadAttempted = hasMonsterAnimationTracks(monsterState.Tracks)
+    monsterState.TracksLoadFailed = false
     self:_markMonsterMaterialized(monsterState)
     return instance, monsterState.Tracks
 end
@@ -778,7 +834,7 @@ function LocalMonsterController:_materializeMonster(monsterState)
         self:_addPerfStat("MaterializeSucceeded")
         return true
     end
-    if (self._materializedMonsterCount or 0) >= getLocalMaxMaterializedMonsters() then
+    if (self._materializedMonsterCount or 0) >= getLocalMaxVisibleMonsters() then
         return false
     end
     local didMaterialize = self:_createMaterializedMonsterInstance(monsterState) ~= nil
@@ -838,6 +894,8 @@ function LocalMonsterController:_poolMonsterInstance(monsterState)
     self:_markMonsterDematerialized(monsterState)
     monsterState.Instance = nil
     monsterState.Tracks = {}
+    monsterState.TracksLoadAttempted = false
+    monsterState.TracksLoadFailed = false
     return true
 end
 
@@ -858,6 +916,8 @@ function LocalMonsterController:_destroyMonsterTracks(monsterState)
     end
     if monsterState then
         monsterState.Tracks = {}
+        monsterState.TracksLoadAttempted = false
+        monsterState.TracksLoadFailed = false
     end
 end
 
@@ -869,6 +929,10 @@ function LocalMonsterController:_setMonsterAnimationsEnabled(monsterState, enabl
     enabled = enabled == true
     if monsterState.AnimationsEnabled == enabled then
         return
+    end
+
+    if enabled and not self:_ensureMonsterTracks(monsterState) then
+        enabled = false
     end
 
     monsterState.AnimationsEnabled = enabled
@@ -956,6 +1020,8 @@ function LocalMonsterController:_spawnMonster()
         LoopAnimationSpeed = 1 + ((math.random() * 2 - 1) * math.max(0, tonumber(GameConfig.MONSTER.AnimationSpeedJitter) or 0.08)),
         AttackAnimationSpeed = 1 + ((math.random() * 2 - 1) * math.max(0, tonumber(GameConfig.MONSTER.AnimationSpeedJitter) or 0.08)),
         Tracks = {},
+        TracksLoadAttempted = false,
+        TracksLoadFailed = false,
         AnimationsEnabled = false,
         CurrentLoopName = nil,
         LastPosition = spawnPosition,
@@ -968,9 +1034,7 @@ function LocalMonsterController:_spawnMonster()
         VisualBucket = self._nextMonsterId % getLocalVisualFarUpdateStride(),
         SimulationBucket = self._nextMonsterId % getLocalFarSimulationStride(),
     }
-    if shouldMaterializeDormantMonsters() then
-        self:_materializeMonster(monsterState)
-    end
+    self:_materializeMonster(monsterState)
     self._monstersById[monsterId] = monsterState
     self._localMonsterSpawnTokenEvent:FireServer({
         eventType = "Activate",
@@ -1900,11 +1964,13 @@ function LocalMonsterController:_setMonsterActivityState(monsterState, activityS
     end
 
     activityState = activityState == "CombatActive" and "CombatActive" or "Dormant"
+    if not (monsterState.Instance and monsterState.Instance.Parent) then
+        self:_materializeMonster(monsterState)
+    end
+
     if monsterState.ActivityState == activityState then
         if activityState == "CombatActive" and not (monsterState.Instance and monsterState.Instance.Parent) then
-            if not self:_materializeMonster(monsterState) then
-                monsterState.ActivityState = "Dormant"
-            end
+            monsterState.ActivityState = "Dormant"
         end
         return
     end
@@ -1922,9 +1988,6 @@ function LocalMonsterController:_setMonsterActivityState(monsterState, activityS
         monsterState.KnockbackVelocity = Vector3.zero
         monsterState.KnockbackEndClock = 0
         monsterState.HitStunEndClock = 0
-        if not shouldMaterializeDormantMonsters() then
-            self:_dematerializeMonster(monsterState)
-        end
     end
 end
 
@@ -1937,9 +2000,9 @@ function LocalMonsterController:_refreshMonsterActivityStates(rootPosition)
         return 0
     end
 
-    local activeCount = 0
-    local materializedBudget = getLocalMaxMaterializedMonsters()
+    local combatActiveBudget = getLocalMaxCombatActiveMonsters()
     local sleepPadding = getLocalCombatSleepPadding()
+    local candidates = {}
     for _, monsterState in pairs(self._monstersById) do
         if monsterState.Alive and typeof(monsterState.Position) == "Vector3" then
             local delta = monsterState.Position - rootPosition
@@ -1954,21 +2017,51 @@ function LocalMonsterController:_refreshMonsterActivityStates(rootPosition)
                 end
                 if distanceSq > sleepDistance * sleepDistance then
                     self:_setMonsterActivityState(monsterState, "Dormant")
-                elseif isActive and monsterState.Instance and monsterState.Instance.Parent then
-                    activeCount += 1
+                    isActive = false
+                else
+                    table.insert(candidates, {
+                        MonsterState = monsterState,
+                        DistanceSq = distanceSq,
+                        Sticky = true,
+                    })
                 end
             elseif distanceSq <= wakeDistance * wakeDistance then
-                if (self._materializedMonsterCount or 0) < materializedBudget then
-                    self:_setMonsterActivityState(monsterState, "CombatActive")
-                    if self:_isMonsterCombatActive(monsterState) then
-                        activeCount += 1
-                    end
-                end
+                table.insert(candidates, {
+                    MonsterState = monsterState,
+                    DistanceSq = distanceSq,
+                    Sticky = false,
+                })
             end
         else
             self:_setMonsterActivityState(monsterState, "Dormant")
         end
     end
+
+    table.sort(candidates, function(left, right)
+        if left.DistanceSq == right.DistanceSq then
+            if left.Sticky ~= right.Sticky then
+                return left.Sticky == true
+            end
+            return tostring(left.MonsterState and left.MonsterState.Id or "") < tostring(right.MonsterState and right.MonsterState.Id or "")
+        end
+        return left.DistanceSq < right.DistanceSq
+    end)
+
+    local activeCount = 0
+    for _, candidate in ipairs(candidates) do
+        local monsterState = candidate.MonsterState
+        if activeCount < combatActiveBudget then
+            if not self:_isMonsterCombatActive(monsterState) then
+                self:_setMonsterActivityState(monsterState, "CombatActive")
+            end
+            if self:_isMonsterCombatActive(monsterState) then
+                activeCount += 1
+            end
+        elseif self:_isMonsterCombatActive(monsterState) then
+            self:_setMonsterActivityState(monsterState, "Dormant")
+        end
+    end
+
     return activeCount
 end
 
@@ -2025,6 +2118,15 @@ function LocalMonsterController:_updateMonsterAnimationLod(monsterState, rootPos
     local nearDistance = getLocalAnimationNearDistance()
     local delta = monsterState.Position - rootPosition
     local isNear = ((delta.X * delta.X) + (delta.Z * delta.Z)) <= nearDistance * nearDistance
+    if not isNear then
+        self:_setMonsterAnimationsEnabled(monsterState, false)
+        return false
+    end
+    if not self:_ensureMonsterTracks(monsterState) then
+        self:_setMonsterAnimationsEnabled(monsterState, false)
+        return false
+    end
+
     self:_setMonsterAnimationsEnabled(monsterState, isNear)
     return isNear
 end
@@ -2035,7 +2137,7 @@ function LocalMonsterController:_resetPerfStats()
         SimulationSteps = 0,
         ActiveMonsterSamples = 0,
         SimulatedMonsterSamples = 0,
-        MaterializedMonsterSamples = 0,
+        VisibleMonsterSamples = 0,
         AnimationEnabledSamples = 0,
         VisualCandidates = 0,
         VisualUpdates = 0,
@@ -2151,7 +2253,7 @@ end
 
 local function getCollectGarbageMemoryMb()
     local ok, value = pcall(function()
-        return collectgarbage("count")
+        return gcinfo()
     end)
     return ok and ((tonumber(value) or 0) / 1024) or -1
 end
@@ -2383,8 +2485,8 @@ function LocalMonsterController:_buildDiagnosticSnapshot()
         Alive = aliveCount,
         Dormant = dormantCount,
         CombatActive = combatActiveCount,
-        MaterializedStates = materializedStateCount,
-        MaterializedCounter = self._materializedMonsterCount or 0,
+        Visible = materializedStateCount,
+        VisibleCounter = self._materializedMonsterCount or 0,
         FolderChildren = monsterFolder and #monsterFolder:GetChildren() or 0,
         FolderDescendants = countDescendants(monsterFolder),
         Animators = countDescendantsOfClass(monsterFolder, "Animator"),
@@ -2420,12 +2522,12 @@ function LocalMonsterController:_logPerfStats(now)
     local stats = self._perfStats
     if stats and stats.RenderFrames and stats.RenderFrames > 0 then
         print(string.format(
-            "[Perf][LocalMonsterController] frames=%d simSteps=%d activeSamples=%d simulatedSamples=%d materialized=%d animEnabled=%d visualCandidates=%d visualUpdates=%d skippedFar=%d stepMs=%.3f visualMs=%.3f",
+            "[Perf][LocalMonsterController] frames=%d simSteps=%d activeSamples=%d simulatedSamples=%d visible=%d animEnabled=%d visualCandidates=%d visualUpdates=%d skippedFar=%d stepMs=%.3f visualMs=%.3f",
             stats.RenderFrames,
             stats.SimulationSteps or 0,
             stats.ActiveMonsterSamples or 0,
             stats.SimulatedMonsterSamples or 0,
-            stats.MaterializedMonsterSamples or 0,
+            stats.VisibleMonsterSamples or 0,
             stats.AnimationEnabledSamples or 0,
             stats.VisualCandidates or 0,
             stats.VisualUpdates or 0,
@@ -2436,7 +2538,7 @@ function LocalMonsterController:_logPerfStats(now)
 
         local diag = self:_buildDiagnosticSnapshot()
         print(string.format(
-            "[Diag][LocalMonsterController] memTotalMb=%.2f luaGcMb=%.2f luaHeapMb=%.2f instancesMb=%.2f animationMb=%.2f guiMb=%.2f meshMb=%.2f textureMb=%.2f physicsPartsMb=%.2f inArena=%s playerAlive=%s alive=%d dormant=%d combatActive=%d materializedState=%d materializedCounter=%d folderChildren=%d folderDesc=%d animators=%d animControllers=%d pool=%d spawnQueue=%d spawnPending=%s pendingKills=%d damagePool=%d damageActive=%d damageCreated=%d pendingDamageBuckets=%d spawnReq=%d spawnTokensReq=%d spawnTokensRecv=%d spawnDenied=%d spawnAttempts=%d spawnOk=%d materializeReq=%d materializeOk=%d dematerializeReq=%d poolStores=%d poolTakes=%d damageShown=%d killBatchSent=%d killBatchAccepted=%d killBatchRejected=%d",
+            "[Diag][LocalMonsterController] memTotalMb=%.2f luaGcMb=%.2f luaHeapMb=%.2f instancesMb=%.2f animationMb=%.2f guiMb=%.2f meshMb=%.2f textureMb=%.2f physicsPartsMb=%.2f inArena=%s playerAlive=%s alive=%d visible=%d dormant=%d combatActive=%d animEnabled=%d visibleCounter=%d folderChildren=%d folderDesc=%d animators=%d animControllers=%d pool=%d spawnQueue=%d spawnPending=%s pendingKills=%d damagePool=%d damageActive=%d damageCreated=%d pendingDamageBuckets=%d spawnReq=%d spawnTokensReq=%d spawnTokensRecv=%d spawnDenied=%d spawnAttempts=%d spawnOk=%d materializeReq=%d materializeOk=%d dematerializeReq=%d poolStores=%d poolTakes=%d damageShown=%d killBatchSent=%d killBatchAccepted=%d killBatchRejected=%d",
             diag.TotalMemoryMb,
             diag.LuaGcMb,
             diag.LuaHeapMb,
@@ -2449,10 +2551,11 @@ function LocalMonsterController:_logPerfStats(now)
             tostring(diag.InArena),
             tostring(diag.PlayerAlive),
             diag.Alive,
+            diag.Visible,
             diag.Dormant,
             diag.CombatActive,
-            diag.MaterializedStates,
-            diag.MaterializedCounter,
+            stats.AnimationEnabledSamples or 0,
+            diag.VisibleCounter,
             diag.FolderChildren,
             diag.FolderDescendants,
             diag.Animators,
@@ -2628,7 +2731,7 @@ function LocalMonsterController:_step(deltaTime)
             self:_addPerfStat("SimulationSteps")
             self:_addPerfStat("ActiveMonsterSamples", 0)
             self:_addPerfStat("SimulatedMonsterSamples", 0)
-            self:_addPerfStat("MaterializedMonsterSamples", self._materializedMonsterCount or 0)
+            self:_addPerfStat("VisibleMonsterSamples", self._materializedMonsterCount or 0)
             self:_addPerfStat("StepElapsedSeconds", os.clock() - startedAt)
         end
         return
@@ -2665,7 +2768,7 @@ function LocalMonsterController:_step(deltaTime)
         self:_addPerfStat("SimulationSteps")
         self:_addPerfStat("ActiveMonsterSamples", activeCount)
         self:_addPerfStat("SimulatedMonsterSamples", simulatedCount)
-        self:_addPerfStat("MaterializedMonsterSamples", self._materializedMonsterCount or 0)
+        self:_addPerfStat("VisibleMonsterSamples", self._materializedMonsterCount or 0)
         self:_addPerfStat("StepElapsedSeconds", os.clock() - startedAt)
     end
 end

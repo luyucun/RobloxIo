@@ -55,6 +55,8 @@ SkinController._requestEquipEvent = nil
 SkinController._feedbackEvent = nil
 SkinController._playerStateSyncEvent = nil
 SkinController._latestState = { skins = {}, equippedSkinId = nil }
+SkinController._latestStateTimestamp = 0
+SkinController._pendingEquipRequest = nil
 SkinController._bindRetryQueued = false
 SkinController._panelTweens = {}
 SkinController._panelAnimationSerial = 0
@@ -75,6 +77,7 @@ local OPEN_OVERSHOOT_DURATION = 0.16
 local OPEN_SETTLE_DURATION = 0.1
 local CLOSE_TO_SCALE = 0.78
 local CLOSE_SHRINK_DURATION = 0.14
+local EQUIP_REQUEST_TIMEOUT_SECONDS = 4
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -175,6 +178,14 @@ local function setImage(imageObject, image)
     if imageObject and (imageObject:IsA("ImageLabel") or imageObject:IsA("ImageButton")) then
         imageObject.Image = tostring(image or "")
     end
+end
+
+local function normalizeOptionalSkinId(value)
+    local skinId = math.floor(tonumber(value) or 0)
+    if skinId > 0 then
+        return skinId
+    end
+    return nil
 end
 
 local function playTween(binding, key, target, tweenInfo, goal)
@@ -456,6 +467,71 @@ function SkinController:_setButtonVisible(frame, buttonName, visible)
     end
 end
 
+function SkinController:_isEquipRequestPending()
+    local pending = self._pendingEquipRequest
+    if not pending then
+        return false
+    end
+    if os.clock() - (pending.startedAt or 0) > EQUIP_REQUEST_TIMEOUT_SECONDS then
+        self._pendingEquipRequest = nil
+        return false
+    end
+    return true
+end
+
+function SkinController:_setLocalEquippedSkinId(equippedSkinId)
+    local normalizedEquippedSkinId = normalizeOptionalSkinId(equippedSkinId)
+    self._latestState = self._latestState or { skins = {}, equippedSkinId = nil }
+    self._latestState.equippedSkinId = normalizedEquippedSkinId
+    for _, entry in ipairs(self._latestState.skins or {}) do
+        entry.equipped = normalizedEquippedSkinId ~= nil and normalizeOptionalSkinId(entry.id) == normalizedEquippedSkinId
+    end
+    self:_renderList()
+end
+
+function SkinController:_shouldIgnoreIncomingSkinState(equippedSkinId)
+    if not self:_isEquipRequestPending() then
+        return false
+    end
+
+    local pending = self._pendingEquipRequest
+    local expectedEquippedSkinId = normalizeOptionalSkinId(pending and pending.expectedEquippedSkinId)
+    local incomingEquippedSkinId = normalizeOptionalSkinId(equippedSkinId)
+    if expectedEquippedSkinId == incomingEquippedSkinId then
+        self._pendingEquipRequest = nil
+        return false
+    end
+
+    return true
+end
+
+function SkinController:_requestEquipChange(skinId, action)
+    if not self._requestEquipEvent or self:_isEquipRequestPending() then
+        return
+    end
+
+    local normalizedSkinId = normalizeOptionalSkinId(skinId)
+    if not normalizedSkinId then
+        return
+    end
+
+    local normalizedAction = tostring(action or "")
+    local expectedEquippedSkinId = normalizedAction == "Unequip" and nil or normalizedSkinId
+    self._pendingEquipRequest = {
+        skinId = normalizedSkinId,
+        action = normalizedAction == "Unequip" and "Unequip" or "Equip",
+        expectedEquippedSkinId = expectedEquippedSkinId,
+        startedAt = os.clock(),
+    }
+    self:_setLocalEquippedSkinId(expectedEquippedSkinId)
+
+    if normalizedAction == "Unequip" then
+        self._requestEquipEvent:FireServer(normalizedSkinId, "Unequip")
+    else
+        self._requestEquipEvent:FireServer(normalizedSkinId)
+    end
+end
+
 function SkinController:_populateItem(frame, skin)
     setText(frame:FindFirstChild("Name"), skin.name or ("Skin " .. tostring(skin.id)))
     local itemTemplate = frame:FindFirstChild("ItemTemplate", true)
@@ -467,7 +543,8 @@ function SkinController:_populateItem(frame, skin)
     self:_setButtonVisible(frame, "RobuxBuyButton", not owned and skin.purchaseChannel == SkinConfig.PurchaseChannel.GamePass)
     self:_setButtonVisible(frame, "WheelButton", not owned and skin.purchaseChannel == SkinConfig.PurchaseChannel.Wheel)
     self:_setButtonVisible(frame, "EquipButton", owned and not equipped)
-    self:_setButtonVisible(frame, "Equiped", owned and equipped)
+    self:_setButtonVisible(frame, "Equiped", false)
+    self:_setButtonVisible(frame, "Unequiped", owned and equipped)
 
     local diamondButton, diamondScaleTarget = findButton(frame, "DiamondButton")
     if diamondButton then
@@ -509,10 +586,15 @@ function SkinController:_populateItem(frame, skin)
     local equipButton, equipScaleTarget = findButton(frame, "EquipButton")
     if equipButton then
         self:_bindItemButton(equipButton, function()
-            if self._requestEquipEvent then
-                self._requestEquipEvent:FireServer(skin.id)
-            end
+            self:_requestEquipChange(skin.id)
         end, { ScaleTarget = equipScaleTarget or equipButton })
+    end
+
+    local unequipButton, unequipScaleTarget = findButton(frame, "Unequiped")
+    if unequipButton then
+        self:_bindItemButton(unequipButton, function()
+            self:_requestEquipChange(skin.id, "Unequip")
+        end, { ScaleTarget = unequipScaleTarget or unequipButton })
     end
 end
 
@@ -537,10 +619,28 @@ function SkinController:_applyState(payload)
     if type(payload) ~= "table" then
         return
     end
+    local timestamp = tonumber(payload.timestamp)
+    if timestamp and timestamp < (self._latestStateTimestamp or 0) then
+        return
+    end
+
+    local equippedSkinId = normalizeOptionalSkinId(payload.equippedSkinId)
+    if self:_shouldIgnoreIncomingSkinState(equippedSkinId) then
+        return
+    end
+
+    local skins = type(payload.skins) == "table" and payload.skins or {}
+    for _, entry in ipairs(skins) do
+        entry.equipped = equippedSkinId ~= nil and normalizeOptionalSkinId(entry.id) == equippedSkinId
+    end
+
     self._latestState = {
-        skins = type(payload.skins) == "table" and payload.skins or {},
-        equippedSkinId = tonumber(payload.equippedSkinId),
+        skins = skins,
+        equippedSkinId = equippedSkinId,
     }
+    if timestamp then
+        self._latestStateTimestamp = timestamp
+    end
     self:_renderList()
 end
 
@@ -567,6 +667,7 @@ function SkinController:_applyPlayerState(payload)
     self:_applyState({
         skins = skins,
         equippedSkinId = equippedSkinId,
+        timestamp = payload.timestamp,
     })
 end
 
@@ -574,11 +675,14 @@ function SkinController:_handleFeedback(payload)
     if type(payload) ~= "table" then
         return
     end
+    local eventType = tostring(payload.eventType or "")
+    if eventType == "Equipped" or eventType == "Unequipped" or eventType == "Failed" then
+        self._pendingEquipRequest = nil
+    end
     if payload.state then
         self:_applyState(payload.state)
     end
 
-    local eventType = tostring(payload.eventType or "")
     local reason = tostring(payload.reason or "")
     if eventType == "Purchased" then
         self:_notify("Skin unlocked.")
@@ -586,6 +690,8 @@ function SkinController:_handleFeedback(payload)
         self:_notify("Skin unlocked.")
     elseif eventType == "Equipped" then
         self:_notify("Skin equipped.")
+    elseif eventType == "Unequipped" then
+        self:_notify("Skin unequipped.")
     elseif eventType == "AlreadyOwned" then
         self:_notify("Already owned.")
     elseif eventType == "OpenWheel" then
@@ -754,6 +860,8 @@ end
 function SkinController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._wheelController = dependencies and dependencies.WheelController or nil
+    self._latestStateTimestamp = 0
+    self._pendingEquipRequest = nil
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
     self:_disconnectItemButtonBindings()

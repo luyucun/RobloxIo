@@ -83,7 +83,7 @@ GameConfig.EXPERIENCE = {
     MaxLocalVisualOrbsPerDrop = 3,
     MaxLocalActiveOrbs = 45,
     LocalOrbMaxLifetimeSeconds = 5,
-    LocalOrbTrailEnabled = false,
+    LocalOrbTrailEnabled = true,
 }
 
 GameConfig.LEVEL_UP_EFFECT = {
@@ -130,7 +130,7 @@ GameConfig.WEAPON_UNLOCK = {
 }
 
 GameConfig.PERFORMANCE = {
-    DebugEnabled = true,
+    DebugEnabled = false,
     LogIntervalSeconds = 15,
 }
 
@@ -190,6 +190,7 @@ GameConfig.MONSTER = {
     LocalMonsterModelPoolSize = 20,
     LocalDormantMonstersUseModels = false,
     LocalMaxMaterializedMonsters = 40,
+    LocalMaxCombatActiveMonsters = 40,
     LocalSpawnTokenRequestBatchSize = 25,
     LocalSpawnTokenRequestsPerSecond = 4,
     LocalSpawnTokenTtlSeconds = 90,

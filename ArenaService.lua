@@ -485,10 +485,6 @@ function ArenaService:_onRequestJoinBattle(player, action)
         return
     end
 
-    if not self._pendingPortalPromptByUserId[player.UserId] then
-        self:_fireTransitionFeedback(player, "Blocked", "PortalPromptRequired")
-        return
-    end
     if not self:_isActorInsidePortalBounds(player) then
         self:_hidePortalJoinPrompt(player)
         self:_fireTransitionFeedback(player, "Blocked", "OutsidePortal")
@@ -496,7 +492,7 @@ function ArenaService:_onRequestJoinBattle(player, action)
     end
 
     self:_hidePortalJoinPrompt(player)
-    self:TryEnterArena(player)
+    self:TryEnterArena(player, { IgnoreDebounce = true })
 end
 
 function ArenaService:_isEnterDebounced(actor)

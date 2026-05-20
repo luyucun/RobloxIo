@@ -33,6 +33,7 @@ local function requireSharedModule(moduleName)
 end
 
 local RemoteNames = requireSharedModule("RemoteNames")
+local WeaponTierConfig = requireSharedModule("WeaponTierConfig")
 
 local NewWeaponUnlockController = {}
 
@@ -164,6 +165,23 @@ local function normalizeTierIndex(value)
     return math.floor(tierIndex)
 end
 
+local function resolveWeaponIcon(payload)
+    local tierIndex = payload and normalizeTierIndex(payload.tierIndex) or nil
+    local tierName = payload and payload.tier or nil
+    if (tierName == nil or tostring(tierName) == "") and tierIndex then
+        tierName = WeaponTierConfig.Order[tierIndex]
+    end
+
+    if tierName then
+        local iconImage = WeaponTierConfig.GetIconImageForTier(tierName)
+        if iconImage and tostring(iconImage) ~= "" then
+            return tostring(iconImage)
+        end
+    end
+
+    return tostring(payload and payload.weaponIcon or "")
+end
+
 local function isInputInsideGuiObject(guiObject, inputObject)
     if not (guiObject and guiObject:IsA("GuiObject") and guiObject.Visible == true and inputObject) then
         return false
@@ -260,7 +278,7 @@ function NewWeaponUnlockController:_applyPayload(payload)
     end
 
     if self._weaponImage and (self._weaponImage:IsA("ImageLabel") or self._weaponImage:IsA("ImageButton")) then
-        self._weaponImage.Image = tostring(payload.weaponIcon or "")
+        self._weaponImage.Image = resolveWeaponIcon(payload)
     end
     setText(self._nameLabel, payload.weaponName or "")
     setText(self._attackLabel, math.max(0, math.floor(tonumber(payload.damage) or 0)))
@@ -289,8 +307,6 @@ function NewWeaponUnlockController:_playOpen(payload)
     else
         self._activeTierKey = tostring(payload and payload.tierIndex or "")
     end
-    self:_applyPayload(payload)
-
     if self._mainGui and self._mainGui:IsA("ScreenGui") then
         self._mainGui.Enabled = true
     end
@@ -299,6 +315,12 @@ function NewWeaponUnlockController:_playOpen(payload)
     self._panel:SetAttribute("ActiveWeaponUnlockTierIndex", activeTierIndex)
     ModalUiController:Acquire(MODAL_OWNER_ID, self._panel)
     self._panel.Visible = true
+    self:_applyPayload(payload)
+    task.defer(function()
+        if serial == self._animationSerial and self._isOpen and self._activePayload == payload then
+            self:_applyPayload(payload)
+        end
+    end)
     self._panel.Position = offsetPosition(self._originalPanelPosition or self._panel.Position, PANEL_OFFSET)
     local panelScale = ensureUiScale(self._panel)
     if panelScale then
@@ -464,6 +486,14 @@ function NewWeaponUnlockController:_handlePrompt(payload)
         self._queuedTierIndexes[tierKey] = true
     end
 
+    if tierKey ~= "" then
+        for _, existing in ipairs(self._pendingPayloads) do
+            if tostring(existing and existing.tierIndex or "") == tierKey then
+                return
+            end
+        end
+    end
+
     table.insert(self._pendingPayloads, payload)
     self:_showNextQueued()
 end
@@ -542,7 +572,8 @@ function NewWeaponUnlockController:_bindUi(silent)
     self:_disconnectButtonBindings()
     self:_ensurePanelVisibleWatcher()
     self._claimButton = self._panel:FindFirstChild("Claim", true)
-    self._weaponImage = self._panel:FindFirstChild("Weapon", true)
+    local weaponImage = self._panel:FindFirstChild("Weapon")
+    self._weaponImage = (weaponImage and (weaponImage:IsA("ImageLabel") or weaponImage:IsA("ImageButton"))) and weaponImage or nil
     self._nameLabel = self._panel:FindFirstChild("Name", true)
     local attackRoot = self._panel:FindFirstChild("AtkBg", true)
     self._attackLabel = attackRoot and attackRoot:FindFirstChild("Number", true) or nil

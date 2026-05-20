@@ -10,6 +10,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -48,8 +50,14 @@ AutoBattleController._bottomRoot = nil
 AutoBattleController._autoButton = nil
 AutoBattleController._latestState = nil
 AutoBattleController._isAutoEnabled = false
+AutoBattleController._isAutoJoining = false
+AutoBattleController._resumeAutoAfterJoin = false
 AutoBattleController._isAutoMoving = false
 AutoBattleController._bindRetryQueued = false
+AutoBattleController._portalJoinPromptEvent = nil
+AutoBattleController._requestJoinBattleEvent = nil
+AutoBattleController._playerControls = nil
+AutoBattleController._lastAutoJoinRequestClock = 0
 AutoBattleController._lastMoveToClock = 0
 AutoBattleController._lastMoveToPosition = nil
 AutoBattleController._autoTargetId = nil
@@ -92,12 +100,35 @@ local AUTO_PATH_WAYPOINT_REACHED_DISTANCE = 3
 local AUTO_PATH_WAYPOINT_SPACING = 5
 local AUTO_PATH_AGENT_RADIUS = 3
 local AUTO_PATH_AGENT_HEIGHT = 6
+local AUTO_JOIN_ATTRIBUTE = "AutoJoinPortalActive"
+local AUTO_JOIN_TARGET_ID = "__Portal"
+local AUTO_JOIN_REQUEST_INTERVAL_SECONDS = 0.35
+local MANUAL_MOVE_VECTOR_EPSILON = 0.05
+local AUTO_JOIN_PORTAL_BOUNDS_PADDING = 1.5
 local HOVER_SCALE = 1.04
 local PRESS_SCALE = 0.92
 local HOVER_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local PRESS_TWEEN_INFO = TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local RESET_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local AUTO_BANNER_SCROLL_SPEED = 0.45
+
+local MANUAL_MOVEMENT_KEY_CODES = {
+    [Enum.KeyCode.W] = true,
+    [Enum.KeyCode.A] = true,
+    [Enum.KeyCode.S] = true,
+    [Enum.KeyCode.D] = true,
+    [Enum.KeyCode.Up] = true,
+    [Enum.KeyCode.Down] = true,
+    [Enum.KeyCode.Left] = true,
+    [Enum.KeyCode.Right] = true,
+    [Enum.KeyCode.Space] = true,
+    [Enum.KeyCode.ButtonA] = true,
+    [Enum.KeyCode.DPadUp] = true,
+    [Enum.KeyCode.DPadDown] = true,
+    [Enum.KeyCode.DPadLeft] = true,
+    [Enum.KeyCode.DPadRight] = true,
+    [Enum.KeyCode.Thumbstick1] = true,
+}
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -302,13 +333,110 @@ local function getActiveExcludedIds(excludedUntilById, now)
     return excludedIds
 end
 
+local function isManualMovementInput(inputObject)
+    if not inputObject then
+        return false
+    end
+
+    local inputType = inputObject.UserInputType
+    if inputType == Enum.UserInputType.Keyboard then
+        return MANUAL_MOVEMENT_KEY_CODES[inputObject.KeyCode] == true
+    end
+
+    if inputType == Enum.UserInputType.Gamepad1
+        or inputType == Enum.UserInputType.Gamepad2
+        or inputType == Enum.UserInputType.Gamepad3
+        or inputType == Enum.UserInputType.Gamepad4
+        or inputType == Enum.UserInputType.Gamepad5
+        or inputType == Enum.UserInputType.Gamepad6
+        or inputType == Enum.UserInputType.Gamepad7
+        or inputType == Enum.UserInputType.Gamepad8
+    then
+        return MANUAL_MOVEMENT_KEY_CODES[inputObject.KeyCode] == true
+    end
+
+    return false
+end
+
+local function resolvePortalJoinTarget()
+    local arenaConfig = GameConfig.ARENA or {}
+    local map = Workspace:FindFirstChild(arenaConfig.MapFolderName or "Map2")
+    local portals = map and map:FindFirstChild(arenaConfig.PortalsFolderName or "Portals")
+    local portal = portals and portals:FindFirstChild(arenaConfig.PortalModelName or "Portal")
+    if not portal then
+        return nil, nil
+    end
+
+    local triggerPart = portal:FindFirstChild("PORTAL", true)
+    if triggerPart and triggerPart:IsA("BasePart") then
+        return triggerPart.Position, portal
+    end
+
+    if portal:IsA("Model") then
+        local ok, boundsCFrame = pcall(function()
+            return portal:GetBoundingBox()
+        end)
+        if ok and boundsCFrame then
+            return boundsCFrame.Position, portal
+        end
+    elseif portal:IsA("BasePart") then
+        return portal.Position, portal
+    end
+
+    return nil, portal
+end
+
+local function resolvePortalJoinTargetPosition()
+    local position = resolvePortalJoinTarget()
+    return position
+end
+
+local function isPositionInsidePortalBounds(position, portal)
+    if not (typeof(position) == "Vector3" and portal) then
+        return false
+    end
+
+    local ok, boundsCFrame, boundsSize = pcall(function()
+        if portal:IsA("Model") then
+            return portal:GetBoundingBox()
+        elseif portal:IsA("BasePart") then
+            return portal.CFrame, portal.Size
+        end
+        return nil, nil
+    end)
+    if not (ok and boundsCFrame and boundsSize) then
+        return false
+    end
+
+    local localPosition = boundsCFrame:PointToObjectSpace(position)
+    local halfSize = boundsSize * 0.5
+    local padding = AUTO_JOIN_PORTAL_BOUNDS_PADDING
+
+    return math.abs(localPosition.X) <= halfSize.X + padding
+        and math.abs(localPosition.Y) <= halfSize.Y + padding
+        and math.abs(localPosition.Z) <= halfSize.Z + padding
+end
+
+function AutoBattleController:_isInArena()
+    return self._latestState and self._latestState.isInArena == true
+end
+
 function AutoBattleController:_isActiveInArena()
     return self._latestState and self._latestState.isInArena == true and self._latestState.alive == true
 end
 
 function AutoBattleController:_updateBottomVisibility()
     if self._bottomRoot and self._bottomRoot:IsA("GuiObject") then
-        local shouldShow = self:_isActiveInArena() == true
+        local isActiveInArena = self:_isActiveInArena() == true
+        local shouldShowAuto = isActiveInArena or not self:_isInArena()
+        local shouldShow = shouldShowAuto
+
+        for _, child in ipairs(self._bottomRoot:GetChildren()) do
+            if child:IsA("GuiObject") then
+                child.Visible = child == self._autoButton and shouldShowAuto or isActiveInArena
+            end
+        end
+
         local modalUiController = getModalUiController()
         if modalUiController and modalUiController:IsAnyOpen() then
             modalUiController:SetRestoredVisible(self._bottomRoot, shouldShow)
@@ -324,24 +452,25 @@ function AutoBattleController:_updateAutoButtonUi()
         return
     end
 
-    setText(self._autoButton:FindFirstChild("Name", true), self._isAutoEnabled and "Stop" or "Auto")
+    local isAutoActive = self._isAutoEnabled == true or self._isAutoJoining == true
+    setText(self._autoButton:FindFirstChild("Name", true), isAutoActive and "Stop" or "Auto")
     local label = self._autoButton:FindFirstChild("Label", true)
     if label and label:IsA("GuiObject") then
-        label.Visible = self._isAutoEnabled ~= true
+        label.Visible = isAutoActive ~= true
     end
 
     local bg = self._autoButton:FindFirstChild("Bg", true)
     local bannerOn = bg and bg:FindFirstChild("BannerOn", true)
     local bannerOff = bg and bg:FindFirstChild("BannerOff", true)
-    setEnabled(bannerOn, self._isAutoEnabled == true)
-    setEnabled(bannerOff, self._isAutoEnabled ~= true)
+    setEnabled(bannerOn, isAutoActive == true)
+    setEnabled(bannerOff, isAutoActive ~= true)
 
     if bannerOn and bannerOn:IsA("UIGradient") and self._autoBannerBaseGradient ~= bannerOn then
         self._autoBannerBaseGradient = bannerOn
         self._autoBannerBaseColor = bannerOn.Color
     end
 
-    if bannerOn and bannerOn:IsA("UIGradient") and self._isAutoEnabled ~= true then
+    if bannerOn and bannerOn:IsA("UIGradient") and isAutoActive ~= true then
         self._autoBannerPhase = 0
         if self._autoBannerBaseColor then
             bannerOn.Color = self._autoBannerBaseColor
@@ -351,7 +480,7 @@ function AutoBattleController:_updateAutoButtonUi()
 end
 
 function AutoBattleController:_stepAutoButtonBanner(deltaTime)
-    if self._isAutoEnabled ~= true or not self._autoButton then
+    if not (self._isAutoEnabled == true or self._isAutoJoining == true) or not self._autoButton then
         return
     end
 
@@ -523,12 +652,123 @@ function AutoBattleController:_setAutoEnabled(enabled)
         return
     end
 
+    if shouldEnable and self._isAutoJoining then
+        self:_setAutoJoinEnabled(false)
+    end
+
     self._isAutoEnabled = shouldEnable
+    if shouldEnable then
+        self._resumeAutoAfterJoin = false
+    end
     if not self._isAutoEnabled then
         self:_stopMovement()
         self:_resetAutoTargetState()
     end
     self:_updateAutoButtonUi()
+end
+
+function AutoBattleController:_setAutoJoinAttribute(enabled)
+    if self._localPlayer then
+        self._localPlayer:SetAttribute(AUTO_JOIN_ATTRIBUTE, enabled == true)
+    end
+end
+
+function AutoBattleController:_getPlayerControls()
+    if self._playerControls then
+        return self._playerControls
+    end
+
+    local playerScripts = self._localPlayer and self._localPlayer:FindFirstChild("PlayerScripts")
+    local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
+    if not playerModule then
+        return nil
+    end
+
+    local ok, module = pcall(require, playerModule)
+    if not (ok and module and module.GetControls) then
+        return nil
+    end
+
+    local controlsOk, controls = pcall(function()
+        return module:GetControls()
+    end)
+    if controlsOk then
+        self._playerControls = controls
+    end
+    return self._playerControls
+end
+
+function AutoBattleController:_hasManualMoveVector()
+    local controls = self:_getPlayerControls()
+    if not (controls and controls.GetMoveVector) then
+        return false
+    end
+
+    local ok, moveVector = pcall(function()
+        return controls:GetMoveVector()
+    end)
+    return ok and typeof(moveVector) == "Vector3" and moveVector.Magnitude > MANUAL_MOVE_VECTOR_EPSILON
+end
+
+function AutoBattleController:_setAutoJoinEnabled(enabled)
+    local shouldEnable = enabled == true and self:_isInArena() ~= true
+    if self._isAutoJoining == shouldEnable then
+        self:_updateBottomVisibility()
+        self:_updateAutoButtonUi()
+        return
+    end
+
+    self._isAutoJoining = shouldEnable
+    self:_setAutoJoinAttribute(shouldEnable)
+    self._lastAutoJoinRequestClock = 0
+
+    if shouldEnable then
+        self._isAutoEnabled = false
+        self._resumeAutoAfterJoin = false
+        self._lastMoveToClock = 0
+        self._lastMoveToPosition = nil
+        self:_resetAutoTargetState()
+    else
+        self:_stopMovement()
+    end
+
+    self:_updateBottomVisibility()
+    self:_updateAutoButtonUi()
+end
+
+function AutoBattleController:_requestAutoJoinBattle(force)
+    if not self._requestJoinBattleEvent then
+        return
+    end
+
+    local now = os.clock()
+    if force ~= true and now - (self._lastAutoJoinRequestClock or 0) < AUTO_JOIN_REQUEST_INTERVAL_SECONDS then
+        return
+    end
+
+    self._lastAutoJoinRequestClock = now
+    self._requestJoinBattleEvent:FireServer("Join")
+end
+
+function AutoBattleController:_handleAutoButtonActivated()
+    if self._isAutoEnabled then
+        self._resumeAutoAfterJoin = false
+        self:_setAutoEnabled(false)
+        return
+    end
+
+    if self._isAutoJoining then
+        self._resumeAutoAfterJoin = false
+        self:_setAutoJoinEnabled(false)
+        return
+    end
+
+    if self:_isActiveInArena() then
+        self._resumeAutoAfterJoin = false
+        self:_setAutoEnabled(true)
+    elseif not self:_isInArena() then
+        self:_setAutoJoinEnabled(true)
+    end
 end
 
 function AutoBattleController:_getWeaponReach(weaponState)
@@ -663,6 +903,92 @@ function AutoBattleController:_moveTo(humanoid, targetPosition)
     self._isAutoMoving = true
     self._lastMoveToClock = now
     self._lastMoveToPosition = targetPosition
+end
+
+function AutoBattleController:_computeAutoPathToDestination(rootPosition, destination, targetId, force)
+    if not (typeof(rootPosition) == "Vector3" and typeof(destination) == "Vector3") then
+        return false
+    end
+
+    local now = os.clock()
+    if force ~= true and now < (self._nextAutoPathComputeClock or 0) then
+        return self._autoPathWaypoints ~= nil
+    end
+
+    self:_resetAutoPathState()
+    self._nextAutoPathComputeClock = now + AUTO_PATH_RECOMPUTE_SECONDS
+
+    local path = PathfindingService:CreatePath({
+        AgentRadius = AUTO_PATH_AGENT_RADIUS,
+        AgentHeight = AUTO_PATH_AGENT_HEIGHT,
+        AgentCanJump = true,
+        WaypointSpacing = AUTO_PATH_WAYPOINT_SPACING,
+    })
+
+    local ok = pcall(function()
+        path:ComputeAsync(rootPosition, destination)
+    end)
+    if not ok or path.Status ~= Enum.PathStatus.Success then
+        return false
+    end
+
+    local waypoints = path:GetWaypoints()
+    if #waypoints == 0 then
+        return false
+    end
+
+    self._autoPath = path
+    self._autoPathWaypoints = waypoints
+    self._autoPathWaypointIndex = math.min(2, #waypoints)
+    self._autoPathTargetId = targetId
+    self._autoPathDestination = destination
+    self._autoPathBlocked = false
+    self._autoPathBlockedConnection = path.Blocked:Connect(function(blockedWaypointIndex)
+        if blockedWaypointIndex >= self._autoPathWaypointIndex then
+            self._autoPathBlocked = true
+        end
+    end)
+    return true
+end
+
+function AutoBattleController:_followAutoPathToDestination(humanoid, rootPart, destination, targetId)
+    if not (humanoid and rootPart and typeof(destination) == "Vector3") then
+        return false
+    end
+
+    if self._autoPathTargetId ~= targetId
+        or self._autoPathBlocked
+        or not self._autoPathWaypoints
+        or (self._autoPathDestination and getPlanarDistance(self._autoPathDestination, destination) > AUTO_PATH_TARGET_RECOMPUTE_DISTANCE)
+    then
+        if not self:_computeAutoPathToDestination(rootPart.Position, destination, targetId, true) then
+            return false
+        end
+    end
+
+    local waypoints = self._autoPathWaypoints
+    local waypoint = waypoints and waypoints[self._autoPathWaypointIndex]
+    if not waypoint then
+        self:_resetAutoPathState()
+        return false
+    end
+
+    while waypoint and getPlanarDistance(rootPart.Position, waypoint.Position) <= AUTO_PATH_WAYPOINT_REACHED_DISTANCE do
+        self._autoPathWaypointIndex += 1
+        waypoint = waypoints[self._autoPathWaypointIndex]
+    end
+
+    if not waypoint then
+        self:_resetAutoPathState()
+        return false
+    end
+
+    if waypoint.Action == Enum.PathWaypointAction.Jump then
+        humanoid.Jump = true
+    end
+
+    self:_moveTo(humanoid, Vector3.new(waypoint.Position.X, rootPart.Position.Y, waypoint.Position.Z))
+    return true
 end
 
 function AutoBattleController:_computeAutoPath(rootPosition, target, force)
@@ -862,6 +1188,57 @@ function AutoBattleController:_stepAutoBattle()
     self._autoPathRecomputeAttempts = 0
 end
 
+function AutoBattleController:_stepAutoJoin()
+    if not self._isAutoJoining then
+        return
+    end
+    if self:_isInArena() then
+        self._resumeAutoAfterJoin = true
+        self:_setAutoJoinEnabled(false)
+        self:_setAutoEnabled(true)
+        return
+    end
+    if self:_hasManualMoveVector() then
+        self:_setAutoJoinEnabled(false)
+        return
+    end
+
+    local humanoid, rootPart = getCharacterController(self._localPlayer)
+    if not (humanoid and rootPart) then
+        self:_stopMovement()
+        return
+    end
+    if humanoid.Health <= 0 then
+        self:_setAutoJoinEnabled(false)
+        return
+    end
+
+    local destination, portal = resolvePortalJoinTarget()
+    if not destination then
+        self:_stopMovement()
+        return
+    end
+
+    if isPositionInsidePortalBounds(rootPart.Position, portal) then
+        self:_requestAutoJoinBattle(false)
+    end
+
+    if self._autoPathWaypoints then
+        if self:_followAutoPathToDestination(humanoid, rootPart, destination, AUTO_JOIN_TARGET_ID) then
+            return
+        end
+        self:_clearAutoPathForRetry()
+    end
+
+    if self:_computeAutoPathToDestination(rootPart.Position, destination, AUTO_JOIN_TARGET_ID, false)
+        and self:_followAutoPathToDestination(humanoid, rootPart, destination, AUTO_JOIN_TARGET_ID)
+    then
+        return
+    end
+
+    self:_moveTo(humanoid, Vector3.new(destination.X, rootPart.Position.Y, destination.Z))
+end
+
 function AutoBattleController:_queueBindRetry()
     if self._bindRetryQueued then
         return
@@ -933,7 +1310,7 @@ function AutoBattleController:_bindUi(silent)
     end))
 
     table.insert(self._uiConnections, self._autoButton.Activated:Connect(function()
-        self:_setAutoEnabled(not self._isAutoEnabled)
+        self:_handleAutoButtonActivated()
     end))
 
     self:_updateBottomVisibility()
@@ -947,10 +1324,15 @@ function AutoBattleController:Init(dependencies)
     self._localMonsterController = dependencies and dependencies.LocalMonsterController or nil
     self._latestState = nil
     self._isAutoEnabled = false
+    self._isAutoJoining = false
+    self._resumeAutoAfterJoin = false
     self._isAutoMoving = false
+    self._playerControls = nil
+    self._lastAutoJoinRequestClock = 0
     self._lastMoveToClock = 0
     self._lastMoveToPosition = nil
     self:_resetAutoTargetState()
+    self:_setAutoJoinAttribute(false)
 
     disconnectAll(self._connections)
     disconnectAll(self._uiConnections)
@@ -963,11 +1345,35 @@ function AutoBattleController:Init(dependencies)
     local eventsFolder = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
     local systemEventsFolder = eventsFolder:WaitForChild(RemoteNames.SystemEventsFolder)
     local playerStateSyncEvent = systemEventsFolder:WaitForChild(RemoteNames.System.PlayerStateSync)
+    self._portalJoinPromptEvent = systemEventsFolder:WaitForChild(RemoteNames.System.PortalJoinPrompt)
+    self._requestJoinBattleEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestJoinBattle)
     table.insert(self._connections, playerStateSyncEvent.OnClientEvent:Connect(function(payload)
         self._latestState = payload
         self:_updateBottomVisibility()
-        if not self:_isActiveInArena() then
+        if self:_isInArena() and self._isAutoJoining then
+            self._resumeAutoAfterJoin = true
+            self:_setAutoJoinEnabled(false)
+            self:_setAutoEnabled(true)
+        elseif self._resumeAutoAfterJoin and self:_isActiveInArena() then
+            self:_setAutoEnabled(true)
+        elseif not self:_isActiveInArena() then
+            self._resumeAutoAfterJoin = false
             self:_setAutoEnabled(false)
+        end
+    end))
+
+    table.insert(self._connections, self._portalJoinPromptEvent.OnClientEvent:Connect(function(payload)
+        local eventType = payload and tostring(payload.eventType or "") or ""
+        if self._isAutoJoining and eventType == "Show" then
+            self._lastAutoJoinRequestClock = 0
+        elseif self._isAutoJoining and eventType == "Hide" and not self:_isInArena() then
+            self._lastAutoJoinRequestClock = 0
+        end
+    end))
+
+    table.insert(self._connections, UserInputService.InputBegan:Connect(function(inputObject, gameProcessed)
+        if self._isAutoJoining and not gameProcessed and isManualMovementInput(inputObject) then
+            self:_setAutoJoinEnabled(false)
         end
     end))
 
@@ -993,6 +1399,7 @@ function AutoBattleController:Init(dependencies)
 
     self._renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
         self:_stepAutoButtonBanner(deltaTime)
+        self:_stepAutoJoin()
         self:_stepAutoBattle()
     end)
 end

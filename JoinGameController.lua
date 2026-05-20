@@ -10,7 +10,6 @@ local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
-local Workspace = game:GetService("Workspace")
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -52,8 +51,6 @@ JoinGameController._blurOriginalEnabled = nil
 JoinGameController._isModalApplied = false
 JoinGameController._panelTweens = {}
 JoinGameController._panelAnimationSerial = 0
-JoinGameController._lastPortalTouchClock = 0
-JoinGameController._portalTouchBindRetryQueued = false
 
 local HOVER_SCALE = 1.05
 local PRESS_SCALE = 0.93
@@ -68,7 +65,7 @@ local CLOSE_OVERSHOOT_SCALE = 1.04
 local CLOSE_OVERSHOOT_DURATION = 0.1
 local CLOSE_TO_SCALE = 0.78
 local CLOSE_SHRINK_DURATION = 0.14
-local PORTAL_TOUCH_DEBOUNCE_SECONDS = 0.8
+local AUTO_JOIN_ATTRIBUTE = "AutoJoinPortalActive"
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -110,22 +107,6 @@ local function findBlurEffect()
         return blur
     end
     return nil
-end
-
-local function findPortalTitlePart()
-    local map2 = Workspace:FindFirstChild("Map2")
-    local portals = map2 and map2:FindFirstChild("Portals")
-    local portal = portals and portals:FindFirstChild("Portal")
-    local title = portal and portal:FindFirstChild("Title")
-    if title and title:IsA("BasePart") then
-        return title
-    end
-    return nil
-end
-
-local function isLocalCharacterPart(localPlayer, part)
-    local character = localPlayer and localPlayer.Character
-    return character and part and part:IsDescendantOf(character)
 end
 
 local function playTween(binding, tweenKey, target, tweenInfo, goal)
@@ -377,59 +358,6 @@ function JoinGameController:_queueBindRetry()
     end)
 end
 
-function JoinGameController:_showFromPortalTouch()
-    local now = os.clock()
-    if now - (self._lastPortalTouchClock or 0) < PORTAL_TOUCH_DEBOUNCE_SECONDS then
-        return
-    end
-    self._lastPortalTouchClock = now
-
-    if not self._joinGameRoot and not self:_bindUi(true) then
-        self:_queueBindRetry()
-        return
-    end
-
-    self:_setOpen(true)
-end
-
-function JoinGameController:_queuePortalTouchBindRetry()
-    if self._portalTouchBindRetryQueued then
-        return
-    end
-    self._portalTouchBindRetryQueued = true
-
-    task.spawn(function()
-        local deadline = os.clock() + 20
-        repeat
-            task.wait(0.2)
-            if self:_bindPortalTouch(true) then
-                self._portalTouchBindRetryQueued = false
-                return
-            end
-        until os.clock() >= deadline
-        self._portalTouchBindRetryQueued = false
-        warn("[JoinGameController] 找不到 Workspace/Map2/Portals/Portal/Title，JoinGame 触碰弹窗暂不可用。")
-    end)
-end
-
-function JoinGameController:_bindPortalTouch(silent)
-    local titlePart = findPortalTitlePart()
-    if not titlePart then
-        if not silent then
-            self:_queuePortalTouchBindRetry()
-        end
-        return false
-    end
-
-    titlePart.CanTouch = true
-    table.insert(self._connections, titlePart.Touched:Connect(function(hit)
-        if isLocalCharacterPart(self._localPlayer, hit) then
-            self:_showFromPortalTouch()
-        end
-    end))
-    return true
-end
-
 function JoinGameController:_bindUi(silent)
     local mainGui = findMainGui(self._localPlayer)
     self._mainGui = mainGui
@@ -448,7 +376,6 @@ function JoinGameController:_bindUi(silent)
     local waitButton = self._joinGameRoot:FindFirstChild("Wait", true)
 
     self:_bindButton(joinButton, function()
-        self:_setOpen(false)
         if self._requestJoinBattleEvent then
             self._requestJoinBattleEvent:FireServer("Join")
         end
@@ -479,12 +406,21 @@ function JoinGameController:Init(dependencies)
     end
 
     table.insert(self._connections, self._portalJoinPromptEvent.OnClientEvent:Connect(function(payload)
-        if payload and payload.eventType == "Hide" then
+        local eventType = payload and tostring(payload.eventType or "") or ""
+        if eventType == "Show" then
+            if self._localPlayer and self._localPlayer:GetAttribute(AUTO_JOIN_ATTRIBUTE) == true then
+                self:_setOpen(false, true)
+                return
+            end
+            if not self._joinGameRoot and not self:_bindUi(true) then
+                self:_queueBindRetry()
+                return
+            end
+            self:_setOpen(true)
+        elseif eventType == "Hide" then
             self:_setOpen(false)
         end
     end))
-
-    self:_bindPortalTouch()
 
     local playerGui = self._localPlayer and self._localPlayer:FindFirstChild("PlayerGui")
     if playerGui then

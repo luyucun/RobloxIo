@@ -153,6 +153,19 @@ function WeaponUnlockRewardService:_firePrompt(player, tierIndex, rewardDiamonds
     end
 end
 
+function WeaponUnlockRewardService:_firePrompts(player, tierIndexes, rewardDiamonds)
+    if not (self._weaponUnlockPromptEvent and player and player.Parent) then
+        return
+    end
+
+    for _, tierIndex in ipairs(tierIndexes or {}) do
+        local payload = buildPromptPayload(tierIndex, rewardDiamonds, 1)
+        if payload then
+            self._weaponUnlockPromptEvent:FireClient(player, payload)
+        end
+    end
+end
+
 function WeaponUnlockRewardService:_fireFeedback(player, eventType, message, tierIndex, rewardDiamonds, rewardCount, clearPending)
     if not (self._weaponUnlockRewardFeedbackEvent and player and player.Parent) then
         return
@@ -186,9 +199,8 @@ function WeaponUnlockRewardService:SyncPendingPrompt(player)
         end
     end
     local claimableTierIndexes = getClaimablePendingTiers(rewards.PendingQueue, rewards.ClaimedTiers, maxUnlockedTierIndex)
-    local tierIndex = claimableTierIndexes[1]
-    if tierIndex then
-        self:_firePrompt(player, tierIndex, getRewardDiamonds(), 1)
+    if #claimableTierIndexes > 0 then
+        self:_firePrompts(player, claimableTierIndexes, getRewardDiamonds())
     end
 end
 

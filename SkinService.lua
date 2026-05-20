@@ -332,7 +332,7 @@ function SkinService:_handlePurchaseRequest(player, skinId)
     end
 end
 
-function SkinService:_handleEquipRequest(player, skinId)
+function SkinService:_handleEquipRequest(player, skinId, action)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
         return
     end
@@ -344,6 +344,30 @@ function SkinService:_handleEquipRequest(player, skinId)
     local skin = SkinConfig.GetSkin(skinId)
     if not skin then
         self:_fireFeedback(player, "Failed", "InvalidSkin")
+        return
+    end
+
+    if tostring(action or "") == "Unequip" then
+        if not self._playerStateService:OwnsSkin(player, skin.Id) then
+            self:_fireFeedback(player, "Failed", "NotOwned", skin)
+            return
+        end
+
+        local equippedSkinId = self._playerStateService:GetEquippedSkinId(player)
+        if tonumber(equippedSkinId) ~= tonumber(skin.Id) then
+            self:SyncState(player)
+            self:_fireFeedback(player, "Failed", "NotEquipped", skin)
+            return
+        end
+
+        local success, reason = self._playerStateService:ClearEquippedSkin(player)
+        if success then
+            self:_markDirty(player)
+            self:SyncState(player)
+            self:_fireFeedback(player, "Unequipped", reason or "Unequipped", skin)
+        else
+            self:_fireFeedback(player, "Failed", reason, skin)
+        end
         return
     end
 
@@ -407,8 +431,8 @@ function SkinService:Init(dependencies)
         end))
     end
     if self._requestSkinEquipEvent then
-        table.insert(self._connections, self._requestSkinEquipEvent.OnServerEvent:Connect(function(player, skinId)
-            self:_handleEquipRequest(player, skinId)
+        table.insert(self._connections, self._requestSkinEquipEvent.OnServerEvent:Connect(function(player, skinId, action)
+            self:_handleEquipRequest(player, skinId, action)
         end))
     end
     table.insert(self._connections, MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamePassId, wasPurchased)
