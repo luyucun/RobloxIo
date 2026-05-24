@@ -516,7 +516,10 @@ function SkinController:_requestEquipChange(skinId, action)
     end
 
     local normalizedAction = tostring(action or "")
-    local expectedEquippedSkinId = normalizedAction == "Unequip" and nil or normalizedSkinId
+    local expectedEquippedSkinId = nil
+    if normalizedAction ~= "Unequip" then
+        expectedEquippedSkinId = normalizedSkinId
+    end
     self._pendingEquipRequest = {
         skinId = normalizedSkinId,
         action = normalizedAction == "Unequip" and "Unequip" or "Equip",

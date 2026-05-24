@@ -122,15 +122,16 @@ local function normalizeSoundPath(soundPath)
     end
 
     if type(soundPath) == "string" then
+        local normalizedPath = tostring(soundPath)
         local segments = {}
-        for segment in string.gmatch(soundPath, "[^/]+") do
+        for segment in string.gmatch(normalizedPath, "[^/]+") do
             local trimmed = segment:gsub("^%s+", ""):gsub("%s+$", "")
             if trimmed ~= "" then
                 table.insert(segments, trimmed)
             end
         end
-        if #segments == 0 and soundPath ~= "" then
-            table.insert(segments, soundPath)
+        if #segments == 0 and normalizedPath ~= "" then
+            table.insert(segments, normalizedPath)
         end
         return segments
     end

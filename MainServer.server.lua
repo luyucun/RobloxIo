@@ -312,6 +312,7 @@ ArenaService:Init({
     RemoteEventService = RemoteEventService,
     BotService = BotService,
     RebirthService = RebirthService,
+    HealthService = HealthService,
 })
 WeaponService:Init({
     PlayerStateService = PlayerStateService,

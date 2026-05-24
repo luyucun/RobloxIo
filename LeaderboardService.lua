@@ -57,6 +57,8 @@ LeaderboardService._globalRows = {
     kills = {},
     rebirth = {},
 }
+LeaderboardService._globalRowsReady = false
+LeaderboardService._hasSyncedGlobalWithPlayers = false
 
 local function getGlobalMaxRows()
     return math.max(1, math.floor(tonumber(GameConfig.LEADERBOARD.GlobalMaxRows) or tonumber(GameConfig.LEADERBOARD.MaxRows) or 50))
@@ -156,7 +158,7 @@ function LeaderboardService:_buildServerRows()
 
     table.sort(rows, function(left, right)
         if left.level == right.level then
-            return left.killCount > right.killCount
+            return left.totalPlayerKills > right.totalPlayerKills
         end
         return left.level > right.level
     end)
@@ -380,6 +382,7 @@ function LeaderboardService:_syncGlobal()
         return false
     end
     self._globalSyncInProgress = true
+    local hadPlayers = #Players:GetPlayers() > 0
 
     local ok, err = pcall(function()
     if not GameConfig.LEADERBOARD.EnableDataStores then
@@ -418,6 +421,10 @@ function LeaderboardService:_syncGlobal()
     if not ok then
         warn("[LeaderboardService] 同步全服排行榜失败: " .. tostring(err))
         return false
+    end
+    self._globalRowsReady = true
+    if hadPlayers then
+        self._hasSyncedGlobalWithPlayers = true
     end
     return true
 end
@@ -466,6 +473,7 @@ function LeaderboardService:_buildPayloadForPlayer(player)
             rebirth = {
                 rows = self._globalRows.rebirth,
             },
+            ready = self._globalRowsReady == true,
         },
         self = {
             playtime = self:_buildSelfMetric("playtime", state),
@@ -525,6 +533,9 @@ end
 function LeaderboardService:OnPlayerAdded(player)
     task.spawn(function()
         self:_loadPlayerTotals(player)
+        if not self._hasSyncedGlobalWithPlayers then
+            self._nextGlobalSyncClock = 0
+        end
         self._dirty = true
     end)
 end
@@ -559,6 +570,8 @@ function LeaderboardService:Init(dependencies)
         kills = {},
         rebirth = {},
     }
+    self._globalRowsReady = false
+    self._hasSyncedGlobalWithPlayers = false
     self._globalSyncInProgress = false
 
     local isStudio = RunService:IsStudio()

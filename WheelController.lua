@@ -69,6 +69,8 @@ WheelController._latestState = {
 WheelController._bindRetryQueued = false
 WheelController._isOpen = false
 WheelController._isSpinning = false
+WheelController._isDead = false
+WheelController._suppressSpinResult = false
 WheelController._panelTweens = {}
 WheelController._panelAnimationSerial = 0
 WheelController._warningToken = 0
@@ -413,6 +415,10 @@ function WheelController:_resolveRewardGiftName(reward)
 end
 
 function WheelController:_showWheelClaim(reward)
+    if self._isDead then
+        return
+    end
+
     if not (self._wheelClaim and self._wheelClaim:IsA("GuiObject")) then
         self:_bindUi(true)
     end
@@ -516,6 +522,10 @@ function WheelController:_setOpen(isOpen, immediate)
             self._isOpen = false
             ModalUiController:Release("Wheel")
         end
+        return
+    end
+
+    if isOpen == true and self._isDead then
         return
     end
 
@@ -655,6 +665,24 @@ function WheelController:_resetSpinSegmentSound()
     self._spinSegmentSoundNextThreshold = nil
 end
 
+function WheelController:_cancelSpinTween()
+    if self._spinTween then
+        self._spinTween:Cancel()
+        self._spinTween = nil
+    end
+    self:_resetSpinSegmentSound()
+    self._isSpinning = false
+end
+
+function WheelController:_handlePlayerDefeated()
+    self._isDead = true
+    self._suppressSpinResult = true
+    self._wheelClaimPopupSerial += 1
+    self:_cancelSpinTween()
+    self:_hideWheelClaim()
+    self:_setOpen(false, true)
+end
+
 function WheelController:_beginSpinSegmentSound(startRotation)
     self._spinSegmentSoundActive = true
     self._spinSegmentSoundStartRotation = tonumber(startRotation) or 0
@@ -727,6 +755,10 @@ function WheelController:_promptPurchase(productId)
 end
 
 function WheelController:_requestSpin()
+    if self._isDead then
+        return
+    end
+
     if self._isSpinning then
         return
     end
@@ -743,6 +775,7 @@ function WheelController:_requestSpin()
     end
 
     self._isSpinning = true
+    self._suppressSpinResult = false
     self:_resetSpinSegmentSound()
     self._requestSpinEvent:FireServer()
 end
@@ -808,6 +841,11 @@ function WheelController:_handleSpinResult(payload)
         self:_applyState(payload.state)
     end
 
+    if self._isDead or self._suppressSpinResult then
+        self:_cancelSpinTween()
+        return
+    end
+
     if payload.ok ~= true then
         self:_resetSpinSegmentSound()
         self._isSpinning = false
@@ -828,6 +866,10 @@ function WheelController:_handleSpinResult(payload)
 
     self:_playSpinTo(targetRotation, function()
         self._isSpinning = false
+        if self._isDead or self._suppressSpinResult then
+            return
+        end
+
         if payload.state then
             self:_applyState(payload.state)
         end
@@ -951,6 +993,8 @@ function WheelController:_connectRemotes()
     self._requestSpinEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestWheelSpin, 10)
     self._spinResultEvent = systemEventsFolder:WaitForChild(RemoteNames.System.WheelSpinResult, 10)
     self._requestPurchaseContextEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestShopPurchaseContext, 10)
+    local deathFeedbackEvent = systemEventsFolder:WaitForChild(RemoteNames.System.DeathFeedback, 10)
+    local playerStateSyncEvent = systemEventsFolder:WaitForChild(RemoteNames.System.PlayerStateSync, 10)
 
     if self._stateSyncEvent then
         table.insert(self._connections, self._stateSyncEvent.OnClientEvent:Connect(function(payload)
@@ -964,12 +1008,36 @@ function WheelController:_connectRemotes()
         end))
     end
 
+    if deathFeedbackEvent then
+        table.insert(self._connections, deathFeedbackEvent.OnClientEvent:Connect(function()
+            self:_handlePlayerDefeated()
+        end))
+    end
+
+    if playerStateSyncEvent then
+        table.insert(self._connections, playerStateSyncEvent.OnClientEvent:Connect(function(payload)
+            if type(payload) ~= "table" then
+                return
+            end
+
+            if payload.alive == false then
+                self:_handlePlayerDefeated()
+            elseif payload.alive == true then
+                self._isDead = false
+            end
+        end))
+    end
+
     if self._requestStateEvent then
         self._requestStateEvent:FireServer()
     end
 end
 
 function WheelController:Open()
+    if self._isDead then
+        return
+    end
+
     if not self._panel then
         self:_bindUi(true)
     end
@@ -986,6 +1054,8 @@ end
 function WheelController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
+    self._isDead = false
+    self._suppressSpinResult = false
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
     self:_hideWheelClaim()

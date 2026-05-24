@@ -177,6 +177,14 @@ local function setGradientEnabled(gradient, enabled)
     end
 end
 
+local function findChildGradient(parent, childName)
+    local child = parent and parent:FindFirstChild(childName)
+    if child and child:IsA("UIGradient") then
+        return child
+    end
+    return nil
+end
+
 function OverheadLevelController:_bindGradient(player, gradient)
     local bucket = self._playerConnections[player]
     if not bucket or not gradient or not gradient:IsA("UIGradient") then
@@ -259,8 +267,8 @@ function OverheadLevelController:_bindLevelLabel(player, levelLabel)
         return
     end
 
-    self:_bindGradient(player, levelLabel:FindFirstChild("High"))
-    self:_bindGradient(player, levelLabel:FindFirstChild("Low"))
+    self:_bindGradient(player, findChildGradient(levelLabel, "High"))
+    self:_bindGradient(player, findChildGradient(levelLabel, "Low"))
 
     if bucket.observedLevelLabels[levelLabel] then
         return

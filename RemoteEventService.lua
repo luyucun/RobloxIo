@@ -86,6 +86,7 @@ function RemoteEventService:Init()
         { Key = "RequestPlayerStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestPlayerStateSync },
         { Key = "ArenaTransitionFeedback", Parent = systemEvents, Name = RemoteNames.System.ArenaTransitionFeedback },
         { Key = "DeathFeedback", Parent = systemEvents, Name = RemoteNames.System.DeathFeedback },
+        { Key = "KillInfoFeedback", Parent = systemEvents, Name = RemoteNames.System.KillInfoFeedback },
         { Key = "StudioBotCommand", Parent = systemEvents, Name = RemoteNames.System.StudioBotCommand },
         { Key = "LevelUpFeedback", Parent = systemEvents, Name = RemoteNames.System.LevelUpFeedback },
         { Key = "PortalJoinPrompt", Parent = systemEvents, Name = RemoteNames.System.PortalJoinPrompt },

@@ -616,6 +616,18 @@ function RebirthService:_processRevenge(player)
     return true
 end
 
+function RebirthService:_processDefeatedRevive(player)
+    if not (player and player.Parent and self._respawnService and self._respawnService.GrantDefeatedRevivePurchase) then
+        return false
+    end
+
+    local success = self._respawnService:GrantDefeatedRevivePurchase(player)
+    if success then
+        print(string.format("[RebirthService] Defeated revive granted to %s", player.Name))
+    end
+    return success
+end
+
 function RebirthService:_processWheelPurchase(player, productId)
     if not (player and player.Parent and self._wheelService and self._wheelService.GrantPurchasedSpins) then
         return false
@@ -658,6 +670,16 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self:TryRebirth(player, { paid = true })
+        return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
+    end
+
+    if GameConfig.MONETIZATION and productId == GameConfig.MONETIZATION.DefeatedReviveProductId then
+        local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
+        if not player then
+            return Enum.ProductPurchaseDecision.NotProcessedYet
+        end
+
+        local success = self:_processDefeatedRevive(player)
         return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
     end
 

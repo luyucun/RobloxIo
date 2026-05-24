@@ -110,6 +110,8 @@ ReplicatedStorage
 字段：
 - reason
 - killerUserId
+- killer：`{ userId, name, level, killCount, totalPlayerKills }`
+- victimLevel
 - timestamp
 当前 reason 固定为 `WeaponDamage`。
 
@@ -144,7 +146,7 @@ ReplicatedStorage
 八、RequestJoinBattle（C -> S）
 接收方：`ArenaService:_onRequestJoinBattle`
 触发：玩家点击 `JoinGame.Join` 或 `JoinGame.Wait`。
-用途：`Join` 请求服务端把玩家传送进 `workspace.Battle`；`Cancel` 取消本次 Portal 待确认状态。服务端只接受已经触发过 PortalJoinPrompt 且仍在 Portal 范围内的 Join 请求。
+用途：`Join` 请求服务端把玩家传送进 `workspace.Battle`；`Cancel` 取消本次 Portal 待确认状态。服务端只接受已经触发过 PortalJoinPrompt 且入场确认资格仍在有效期内的 Join 请求。 `Join` 只有在服务端实际进入战场成功后才会关闭弹窗。
 字段：
 - action：`Join` 或 `Cancel`
 
@@ -223,8 +225,9 @@ tokens 子字段：
 
 十三、WeaponStateSync（S -> C）
 发送方：`WeaponService:_fireWeaponStateSync`
-用途：同步玩家当前武器组表现数据，仅发给对应玩家。
+用途：广播真实玩家当前武器组表现数据；客户端按 `ownerUserId` 为所有玩家创建平滑本地视觉副本，服务端武器实例继续用于权威碰撞/伤害判定。
 字段：
+- ownerUserId
 - weaponTier
 - weaponTierIndex
 - weaponCount
@@ -233,6 +236,7 @@ tokens 子字段：
 - timestamp
 weapons 子字段：
 - id
+- ownerUserId
 - tier
 - tierIndex
 - damage

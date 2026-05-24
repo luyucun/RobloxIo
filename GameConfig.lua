@@ -307,6 +307,7 @@ GameConfig.MONETIZATION = {
     NukeProductId = 3587883538,
     NukeDamage = 1000000000,
     RevengeProductId = 3587883769,
+    DefeatedReviveProductId = 3595585235,
 }
 
 GameConfig.NUKE = {

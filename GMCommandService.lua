@@ -257,6 +257,25 @@ function GMCommandService:_handleChatCommand(player, message)
         return true
     end
 
+    if commandName == "testkillinfo" then
+        local killInfoEvent = self._remoteEventService and self._remoteEventService:GetEvent("KillInfoFeedback")
+        if not killInfoEvent then
+            warn("[GMCommandService] KillInfoFeedback event is unavailable")
+            return false, "ServiceUnavailable"
+        end
+
+        killInfoEvent:FireAllClients({
+            eventType = "PlayerKilled",
+            killerUserId = 0,
+            killerName = "player01",
+            victimUserId = 0,
+            victimName = "player02",
+            timestamp = os.clock(),
+        })
+        print(string.format("[GMCommandService] %s broadcast test kill info", player.Name))
+        return true
+    end
+
     local eventId, errorCode = parseEventCommand(message)
     if not eventId then
         if errorCode == "InvalidEventId" then

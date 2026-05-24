@@ -46,6 +46,8 @@ WeaponService._runtimeFolder = nil
 WeaponService._brokenDebrisFolder = nil
 WeaponService._templateFolder = nil
 WeaponService._weaponStateSyncEvent = nil
+WeaponService._requestStateSyncEvent = nil
+WeaponService._requestStateSyncConnection = nil
 WeaponService._weaponsByCombatUserId = {}
 WeaponService._weaponByPart = {}
 WeaponService._brokenDebrisStates = {}
@@ -380,6 +382,7 @@ function WeaponService:_buildWeaponPayload(weaponStates)
     for _, weaponState in ipairs(weaponStates) do
         table.insert(payload, {
             id = weaponState.Id,
+            ownerUserId = weaponState.OwnerUserId,
             tier = weaponState.Tier,
             tierIndex = weaponState.TierIndex,
             damage = weaponState.BaseDamage,
@@ -396,14 +399,15 @@ function WeaponService:_buildWeaponPayload(weaponStates)
     return payload
 end
 
-function WeaponService:_fireWeaponStateSync(actor, tier, count, weaponStates)
-    if not self._weaponStateSyncEvent then
-        return
-    end
+function WeaponService:_buildWeaponStateSyncPayload(actor, tier, count, weaponStates)
     if not ActorUtils.IsPlayer(actor) then
-        return
+        return nil
     end
-    self:_addPerfStat("WeaponSyncEvents")
+
+    local ownerUserId = getCombatUserId(actor)
+    if not (ownerUserId and ownerUserId > 0) then
+        return nil
+    end
 
     local syncTier = tostring(tier or "None")
     local syncTierIndex = WeaponTierConfig.GetTierIndex(syncTier)
@@ -419,7 +423,8 @@ function WeaponService:_fireWeaponStateSync(actor, tier, count, weaponStates)
         syncCount = #weaponStates
     end
 
-    self._weaponStateSyncEvent:FireClient(actor, {
+    return {
+        ownerUserId = ownerUserId,
         weaponTier = syncTier,
         weaponTierIndex = syncTierIndex,
         weaponCount = syncCount,
@@ -429,7 +434,38 @@ function WeaponService:_fireWeaponStateSync(actor, tier, count, weaponStates)
         visualIconImage = weaponStates and weaponStates[1] and weaponStates[1].VisualIconImage or nil,
         weapons = self:_buildWeaponPayload(weaponStates or {}),
         timestamp = os.clock(),
-    })
+    }
+end
+
+function WeaponService:_fireWeaponStateSync(actor, tier, count, weaponStates)
+    if not self._weaponStateSyncEvent then
+        return
+    end
+
+    local payload = self:_buildWeaponStateSyncPayload(actor, tier, count, weaponStates)
+    if not payload then
+        return
+    end
+
+    self:_addPerfStat("WeaponSyncEvents")
+    self._weaponStateSyncEvent:FireAllClients(payload)
+end
+
+function WeaponService:PushAllPlayerWeaponStatesToPlayer(player)
+    if not (self._weaponStateSyncEvent and player and player.Parent) then
+        return
+    end
+    if not self._playerStateService then
+        return
+    end
+
+    for _, actor in ipairs(self._playerStateService:GetArenaPlayers()) do
+        local weaponStates = self:GetWeaponStates(actor)
+        local payload = self:_buildWeaponStateSyncPayload(actor, nil, nil, weaponStates)
+        if payload and payload.weaponCount > 0 then
+            self._weaponStateSyncEvent:FireClient(player, payload)
+        end
+    end
 end
 
 function WeaponService:GetWeaponStates(actor)
@@ -1359,6 +1395,7 @@ function WeaponService:Init(dependencies)
     self._brokenDebrisFolder = self:_createBrokenDebrisFolder()
     self._templateFolder = self:_resolveTemplateFolder()
     self._weaponStateSyncEvent = self._remoteEventService and self._remoteEventService:GetEvent("WeaponStateSync") or nil
+    self._requestStateSyncEvent = self._remoteEventService and self._remoteEventService:GetEvent("RequestPlayerStateSync") or nil
     self._weaponsByCombatUserId = {}
     self._weaponByPart = {}
     self._brokenDebrisStates = {}
@@ -1369,6 +1406,19 @@ function WeaponService:Init(dependencies)
     self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
     self:_clearRuntimeFolder()
     self:_clearBrokenDebrisFolder()
+
+    if self._requestStateSyncConnection then
+        self._requestStateSyncConnection:Disconnect()
+        self._requestStateSyncConnection = nil
+    end
+
+    if self._requestStateSyncEvent then
+        self._requestStateSyncConnection = self._requestStateSyncEvent.OnServerEvent:Connect(function(player)
+            task.defer(function()
+                self:PushAllPlayerWeaponStatesToPlayer(player)
+            end)
+        end)
+    end
 
     if self._heartbeatConnection then
         self._heartbeatConnection:Disconnect()

@@ -47,9 +47,15 @@ PotionController._mainGui = nil
 PotionController._panel = nil
 PotionController._entry = nil
 PotionController._friendEntry = nil
+PotionController._luckEntry = nil
+PotionController._luckTooltip = nil
+PotionController._luckTooltipCloseButton = nil
 PotionController._boundPanel = nil
 PotionController._boundEntry = nil
 PotionController._boundFriendEntry = nil
+PotionController._boundLuckEntry = nil
+PotionController._boundLuckTooltip = nil
+PotionController._boundLuckTooltipCloseButton = nil
 PotionController._requestPotionActionEvent = nil
 PotionController._requestStateSyncEvent = nil
 PotionController._latestState = {
@@ -58,6 +64,9 @@ PotionController._latestState = {
     activePotions = {},
     friendBonusPercent = 0,
     friendExperienceBonus = 0,
+    subscriptionExperienceBonus = 0,
+    potionExperienceBonus = 0,
+    rebirthExperienceBonus = 0,
     totalExperienceMultiplier = 1,
 }
 PotionController._buffBindings = {}
@@ -67,11 +76,21 @@ PotionController._deferredBindQueued = false
 PotionController._panelTweens = {}
 PotionController._panelAnimationSerial = 0
 PotionController._isPanelOpen = false
+PotionController._tooltipTweens = {}
+PotionController._tooltipAnimationSerial = 0
+PotionController._isTooltipOpen = false
 
 local BUFF_SLOTS = {
     { Name = "Buff1Bg", PotionId = 1001 },
     { Name = "Buff2Bg", PotionId = 1002 },
     { Name = "Buff3Bg", PotionId = 1003 },
+}
+
+local TOOLTIP_BONUS_LABELS = {
+    Club = "Club Bouns:",
+    Friend = "Friend Bouns:",
+    Potion = "Potion Bouns:",
+    Rebirth = "Rebirth Bouns:",
 }
 
 local HOVER_SCALE = 1.05
@@ -203,6 +222,11 @@ local function formatMultiplier(value)
     return "x" .. trimNumber(value)
 end
 
+local function formatBonusMultiplier(bonusValue)
+    local bonus = math.max(0, tonumber(bonusValue) or 0)
+    return trimNumber(1 + bonus)
+end
+
 local function formatCountdown(remainingSeconds)
     local totalSeconds = math.max(0, math.ceil(tonumber(remainingSeconds) or 0))
     local hours = math.floor(totalSeconds / 3600)
@@ -291,9 +315,23 @@ function PotionController:_cancelPanelTweens()
     table.clear(self._panelTweens)
 end
 
+function PotionController:_cancelTooltipTweens()
+    for _, tween in ipairs(self._tooltipTweens) do
+        if tween then
+            tween:Cancel()
+        end
+    end
+    table.clear(self._tooltipTweens)
+end
+
 function PotionController:_nextPanelAnimationSerial()
     self._panelAnimationSerial += 1
     return self._panelAnimationSerial
+end
+
+function PotionController:_nextTooltipAnimationSerial()
+    self._tooltipAnimationSerial += 1
+    return self._tooltipAnimationSerial
 end
 
 function PotionController:_setPanelOpen(isOpen, immediate)
@@ -383,6 +421,92 @@ function PotionController:_setPanelOpen(isOpen, immediate)
         self._panel.Visible = false
         table.clear(self._panelTweens)
         ModalUiController:Release("Potion")
+    end)
+end
+
+function PotionController:_setTooltipOpen(isOpen, immediate)
+    if not (self._luckTooltip and self._luckTooltip:IsA("GuiObject")) then
+        if isOpen ~= true then
+            self._isTooltipOpen = false
+        end
+        return
+    end
+
+    local uiScale = ensureUiScale(self._luckTooltip)
+    self:_cancelTooltipTweens()
+    local animationSerial = self:_nextTooltipAnimationSerial()
+    self._isTooltipOpen = isOpen == true
+
+    if self._isTooltipOpen then
+        self._luckTooltip.Visible = true
+        self:_updateTooltipUi()
+        if not uiScale or immediate == true then
+            if uiScale then
+                uiScale.Scale = 1
+            end
+            return
+        end
+
+        uiScale.Scale = OPEN_FROM_SCALE
+        local overshootTween = TweenService:Create(uiScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Scale = OPEN_OVERSHOOT_SCALE,
+        })
+        local settleTween = TweenService:Create(uiScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Scale = 1,
+        })
+        self._tooltipTweens = { overshootTween, settleTween }
+
+        task.spawn(function()
+            overshootTween:Play()
+            overshootTween.Completed:Wait()
+            if self._tooltipAnimationSerial ~= animationSerial or not self._isTooltipOpen then
+                return
+            end
+
+            settleTween:Play()
+            settleTween.Completed:Wait()
+            if self._tooltipAnimationSerial ~= animationSerial or not self._isTooltipOpen then
+                return
+            end
+
+            uiScale.Scale = 1
+            table.clear(self._tooltipTweens)
+        end)
+        return
+    end
+
+    if not uiScale or immediate == true or not self._luckTooltip.Visible then
+        if uiScale then
+            uiScale.Scale = 1
+        end
+        self._luckTooltip.Visible = false
+        return
+    end
+
+    local overshootTween = TweenService:Create(uiScale, TweenInfo.new(CLOSE_OVERSHOOT_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Scale = CLOSE_OVERSHOOT_SCALE,
+    })
+    local shrinkTween = TweenService:Create(uiScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+        Scale = CLOSE_TO_SCALE,
+    })
+    self._tooltipTweens = { overshootTween, shrinkTween }
+
+    task.spawn(function()
+        overshootTween:Play()
+        overshootTween.Completed:Wait()
+        if self._tooltipAnimationSerial ~= animationSerial or self._isTooltipOpen then
+            return
+        end
+
+        shrinkTween:Play()
+        shrinkTween.Completed:Wait()
+        if self._tooltipAnimationSerial ~= animationSerial or self._isTooltipOpen then
+            return
+        end
+
+        uiScale.Scale = 1
+        self._luckTooltip.Visible = false
+        table.clear(self._tooltipTweens)
     end)
 end
 
@@ -493,9 +617,13 @@ function PotionController:_disconnectButtonBindings()
         end
     end
     table.clear(self._buttonBindings)
+    self:_cancelTooltipTweens()
     self._boundPanel = nil
     self._boundEntry = nil
     self._boundFriendEntry = nil
+    self._boundLuckEntry = nil
+    self._boundLuckTooltip = nil
+    self._boundLuckTooltipCloseButton = nil
 end
 
 function PotionController:_resolveEntryScaleTarget()
@@ -580,19 +708,95 @@ function PotionController:_findFriendEntry(mainGui)
     return nil
 end
 
+function PotionController:_findLuckEntry(mainGui)
+    if not mainGui then
+        return nil
+    end
+
+    local left = mainGui:FindFirstChild("Left")
+    local luckEntry = left and (left:FindFirstChild("Luck") or left:FindFirstChild("Lucky"))
+    if luckEntry and luckEntry:IsA("GuiObject") then
+        return luckEntry
+    end
+
+    return nil
+end
+
+function PotionController:_findLuckTooltip()
+    if not self._luckEntry then
+        return nil
+    end
+
+    local tooltip = self._luckEntry:FindFirstChild("Tooltip")
+    if tooltip and tooltip:IsA("GuiObject") then
+        return tooltip
+    end
+
+    return nil
+end
+
+function PotionController:_resolveLuckScaleTarget()
+    if not self._luckEntry then
+        return nil
+    end
+
+    local icon = self._luckEntry:FindFirstChild("Icon", true)
+    if icon and icon:IsA("GuiObject") then
+        return icon
+    end
+
+    local label = self._luckEntry:FindFirstChild("LuckLabel", true)
+    if label and label:IsA("GuiObject") then
+        return label
+    end
+
+    return self._luckEntry
+end
+
+function PotionController:_resolveLuckRotationTarget()
+    if not self._luckEntry then
+        return nil
+    end
+
+    local icon = self._luckEntry:FindFirstChild("Icon", true)
+    if icon and icon:IsA("GuiObject") then
+        return icon
+    end
+
+    return self:_resolveLuckScaleTarget()
+end
+
 function PotionController:_findLuckLabel()
     if not self._mainGui then
         return nil
     end
 
-    local left = self._mainGui:FindFirstChild("Left")
-    local lucky = left and (left:FindFirstChild("Lucky") or left:FindFirstChild("Luck"))
+    local lucky = self:_findLuckEntry(self._mainGui)
     local luckLabel = lucky and lucky:FindFirstChild("LuckLabel", true)
     if luckLabel and (luckLabel:IsA("TextLabel") or luckLabel:IsA("TextButton") or luckLabel:IsA("TextBox")) then
         return luckLabel
     end
 
     local fallback = self._mainGui:FindFirstChild("LuckLabel", true)
+    if fallback and (fallback:IsA("TextLabel") or fallback:IsA("TextButton") or fallback:IsA("TextBox")) then
+        return fallback
+    end
+
+    return nil
+end
+
+function PotionController:_findLuckTooltipLabel(labelName)
+    if not self._luckTooltip then
+        return nil
+    end
+
+    local content = self._luckTooltip:FindFirstChild("Content")
+    local label = content and content:FindFirstChild(labelName)
+    if label and (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox")) then
+        return label
+    end
+
+    local fallback = self._luckTooltip:FindFirstChild(labelName, true)
     if fallback and (fallback:IsA("TextLabel") or fallback:IsA("TextButton") or fallback:IsA("TextBox")) then
         return fallback
     end
@@ -783,6 +987,17 @@ function PotionController:_updateBuffBinding(binding)
     end
 end
 
+function PotionController:_updateTooltipUi()
+    if not self._luckTooltip then
+        return
+    end
+
+    setText(self:_findLuckTooltipLabel("Club"), TOOLTIP_BONUS_LABELS.Club .. formatBonusMultiplier(self._latestState.subscriptionExperienceBonus))
+    setText(self:_findLuckTooltipLabel("Friend"), TOOLTIP_BONUS_LABELS.Friend .. formatBonusMultiplier(self._latestState.friendExperienceBonus))
+    setText(self:_findLuckTooltipLabel("Potion"), TOOLTIP_BONUS_LABELS.Potion .. formatBonusMultiplier(self._latestState.potionExperienceBonus))
+    setText(self:_findLuckTooltipLabel("Rebirth"), TOOLTIP_BONUS_LABELS.Rebirth .. formatBonusMultiplier(self._latestState.rebirthExperienceBonus))
+end
+
 function PotionController:_updateUi()
     for _, binding in ipairs(self._buffBindings) do
         self:_updateBuffBinding(binding)
@@ -827,6 +1042,8 @@ function PotionController:_updateUi()
     if luckLabel then
         setText(luckLabel, formatMultiplier(self._latestState.totalExperienceMultiplier or 1))
     end
+
+    self:_updateTooltipUi()
 end
 
 function PotionController:_applyPayload(payload)
@@ -838,6 +1055,9 @@ function PotionController:_applyPayload(payload)
     self._latestState.potions = type(payload.potions) == "table" and payload.potions or type(payload.Potions) == "table" and payload.Potions or self._latestState.potions or {}
     self._latestState.activePotions = getActivePotionsFromPayload(payload)
     self._latestState.friendExperienceBonus = tonumber(payload.friendExperienceBonus or payload.FriendExperienceBonus) or self._latestState.friendExperienceBonus or 0
+    self._latestState.subscriptionExperienceBonus = tonumber(payload.subscriptionExperienceBonus or payload.SubscriptionExperienceBonus) or self._latestState.subscriptionExperienceBonus or 0
+    self._latestState.potionExperienceBonus = tonumber(payload.potionExperienceBonus or payload.PotionExperienceBonus) or self._latestState.potionExperienceBonus or 0
+    self._latestState.rebirthExperienceBonus = tonumber(payload.rebirthExperienceBonus or payload.RebirthExperienceBonus) or self._latestState.rebirthExperienceBonus or 0
     self._latestState.friendBonusPercent = math.max(0, math.floor(tonumber(payload.friendBonusPercent or payload.FriendBonusPercent) or ((self._latestState.friendExperienceBonus or 0) * 100) or 0))
     self._latestState.totalExperienceMultiplier = tonumber(payload.totalExperienceMultiplier or payload.TotalExperienceMultiplier) or self._latestState.totalExperienceMultiplier or 1
     self:_updateUi()
@@ -893,13 +1113,21 @@ function PotionController:_bindUi(silent)
     local bottomLeft = mainGui and mainGui:FindFirstChild("BottomLeft") or nil
     self._entry = bottomLeft and bottomLeft:FindFirstChild("Potion") or nil
     self._friendEntry = self:_findFriendEntry(mainGui)
+    self._luckEntry = self:_findLuckEntry(mainGui)
+    self._luckTooltip = self:_findLuckTooltip()
+    self._luckTooltipCloseButton = self._luckTooltip and self._luckTooltip:FindFirstChild("CloseButton", true) or nil
 
     local hasPotionPanel = self._panel and self._panel:IsA("GuiObject")
     local hasPotionEntry = self._entry and self._entry:IsA("GuiObject")
     local hasFriendEntry = self._friendEntry and self._friendEntry:IsA("GuiObject")
+    local hasLuckEntry = self._luckEntry and self._luckEntry:IsA("GuiObject")
+    local hasLuckTooltip = self._luckTooltip and self._luckTooltip:IsA("GuiObject")
     local isSameBinding = self._boundPanel == self._panel
         and self._boundEntry == self._entry
         and self._boundFriendEntry == self._friendEntry
+        and self._boundLuckEntry == self._luckEntry
+        and self._boundLuckTooltip == self._luckTooltip
+        and self._boundLuckTooltipCloseButton == self._luckTooltipCloseButton
     if not ((hasPotionPanel and hasPotionEntry) or hasFriendEntry) then
         if not silent then
             self:_queueBindRetry()
@@ -928,6 +1156,23 @@ function PotionController:_bindUi(silent)
     local friendButton = hasFriendEntry and self._friendEntry:FindFirstChild("TextButton", true) or nil
     local friendScaleTarget = self:_resolveFriendScaleTarget()
     local friendRotationTarget = self:_resolveFriendRotationTarget()
+    local luckButton = hasLuckEntry and self._luckEntry:FindFirstChild("TextButton", true) or nil
+    local luckScaleTarget = self:_resolveLuckScaleTarget()
+    local luckRotationTarget = self:_resolveLuckRotationTarget()
+
+    if hasLuckTooltip then
+        if self._isTooltipOpen then
+            self._luckTooltip.Visible = true
+            local uiScale = ensureUiScale(self._luckTooltip)
+            if uiScale then
+                uiScale.Scale = 1
+            end
+        else
+            self:_setTooltipOpen(false, true)
+        end
+    else
+        self._isTooltipOpen = false
+    end
 
     if hasPotionPanel and hasPotionEntry then
         self:_bindButton(openButton, function()
@@ -966,10 +1211,31 @@ function PotionController:_bindUi(silent)
         HoverRotation = HOVER_ROTATION,
     })
 
+    self:_bindButton(luckButton, function()
+        self:_setTooltipOpen(true)
+    end, {
+        ScaleTarget = luckScaleTarget or luckButton,
+        RotationTarget = luckRotationTarget,
+        HoverScale = ENTRY_HOVER_SCALE,
+        PressScale = ENTRY_PRESS_SCALE,
+        HoverRotation = HOVER_ROTATION,
+    })
+
+    self:_bindButton(self._luckTooltipCloseButton, function()
+        self:_setTooltipOpen(false)
+    end, {
+        ScaleTarget = self._luckTooltipCloseButton,
+        HoverScale = HOVER_SCALE,
+        PressScale = PRESS_SCALE,
+    })
+
     self:_updateUi()
     self._boundPanel = self._panel
     self._boundEntry = self._entry
     self._boundFriendEntry = self._friendEntry
+    self._boundLuckEntry = self._luckEntry
+    self._boundLuckTooltip = self._luckTooltip
+    self._boundLuckTooltipCloseButton = self._luckTooltipCloseButton
     return hasPotionPanel and hasPotionEntry and hasFriendEntry
 end
 
@@ -1023,7 +1289,11 @@ function PotionController:Init(dependencies)
 
         table.insert(self._connections, playerGui.DescendantAdded:Connect(function(descendant)
             local name = descendant.Name
-            if name == "Main" or name == "Potion" or name == "BottomLeft" or name == "Friend" then
+            if name == "Main" or name == "Potion" or name == "BottomLeft" or name == "Friend"
+                or name == "Left" or name == "Luck" or name == "Lucky" or name == "Tooltip"
+                or name == "Content" or name == "CloseButton" or name == "Club"
+                or name == "Rebirth"
+            then
                 self:_queueDeferredBind()
             end
         end))

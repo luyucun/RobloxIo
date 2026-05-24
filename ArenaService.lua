@@ -38,11 +38,15 @@ local ArenaService = {}
 
 local PORTAL_RANGE_CHECK_INTERVAL = 0.1
 local PORTAL_RANGE_PADDING = 3
+local PORTAL_JOIN_GRACE_SECONDS = 8
+local BATTLE_ENTRY_VERTICAL_PADDING = 12
+local BATTLE_ENTRY_VERIFY_DELAY_SECONDS = 0.25
 
 ArenaService._playerStateService = nil
 ArenaService._weaponService = nil
 ArenaService._botService = nil
 ArenaService._rebirthService = nil
+ArenaService._healthService = nil
 ArenaService._arenaTransitionFeedbackEvent = nil
 ArenaService._portalJoinPromptEvent = nil
 ArenaService._requestJoinBattleEvent = nil
@@ -125,6 +129,7 @@ function ArenaService:Init(dependencies)
     self._weaponService = dependencies.WeaponService
     self._botService = dependencies.BotService
     self._rebirthService = dependencies.RebirthService
+    self._healthService = dependencies.HealthService
     self._arenaTransitionFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("ArenaTransitionFeedback") or nil
     self._portalJoinPromptEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PortalJoinPrompt") or nil
     self._requestJoinBattleEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestJoinBattle") or nil
@@ -343,6 +348,56 @@ function ArenaService:_clearPortalPromptState(actor)
     self._portalPromptSuppressedUntilExitByUserId[actor.UserId] = nil
 end
 
+function ArenaService:_clearPortalVisibleState(actor)
+    if not (actor and ActorUtils.IsPlayer(actor)) then
+        return
+    end
+
+    self._portalPromptVisibleByUserId[actor.UserId] = nil
+end
+
+function ArenaService:_setPortalJoinPending(actor)
+    if not (actor and ActorUtils.IsPlayer(actor)) then
+        return
+    end
+
+    self._pendingPortalPromptByUserId[actor.UserId] = {
+        shownAt = os.clock(),
+    }
+end
+
+function ArenaService:_hasValidPortalJoinPending(actor)
+    if not (actor and ActorUtils.IsPlayer(actor)) then
+        return false
+    end
+
+    if self._portalPromptVisibleByUserId[actor.UserId] then
+        return true
+    end
+
+    local pending = self._pendingPortalPromptByUserId[actor.UserId]
+    if type(pending) ~= "table" then
+        return false
+    end
+
+    local shownAt = tonumber(pending.shownAt) or 0
+    return os.clock() - shownAt <= PORTAL_JOIN_GRACE_SECONDS
+end
+
+function ArenaService:_clearExpiredPortalJoinPending(actor)
+    if not (actor and ActorUtils.IsPlayer(actor)) then
+        return
+    end
+
+    if self._portalPromptVisibleByUserId[actor.UserId] then
+        return
+    end
+
+    if self._pendingPortalPromptByUserId[actor.UserId] and not self:_hasValidPortalJoinPending(actor) then
+        self._pendingPortalPromptByUserId[actor.UserId] = nil
+    end
+end
+
 function ArenaService:_isPositionInsidePortalBounds(position)
     if not (self._portalModel and typeof(position) == "Vector3") then
         return false
@@ -369,6 +424,59 @@ function ArenaService:_isActorInsidePortalBounds(actor)
     return rootPart ~= nil and self:_isPositionInsidePortalBounds(rootPart.Position)
 end
 
+function ArenaService:_isPositionInsideBattleBounds(position)
+    if not (self._battlePart and typeof(position) == "Vector3") then
+        return false
+    end
+
+    local localPosition = self._battlePart.CFrame:PointToObjectSpace(position)
+    local halfSize = self._battlePart.Size * 0.5
+
+    return math.abs(localPosition.X) <= halfSize.X
+        and math.abs(localPosition.Z) <= halfSize.Z
+        and localPosition.Y >= -halfSize.Y - BATTLE_ENTRY_VERTICAL_PADDING
+        and localPosition.Y <= halfSize.Y + BATTLE_ENTRY_VERTICAL_PADDING
+end
+
+function ArenaService:_isActorInsideBattleBounds(actor)
+    local rootPart = ActorUtils.GetRootPart(actor)
+    return rootPart ~= nil and self:_isPositionInsideBattleBounds(rootPart.Position)
+end
+
+function ArenaService:_rollbackFailedArenaEnter(actor, reason)
+    if self._playerStateService then
+        self._playerStateService:SetInArena(actor, false)
+        self._playerStateService:PushState(actor)
+    end
+    if self._weaponService and self._weaponService.ClearPlayerWeapons then
+        self._weaponService:ClearPlayerWeapons(actor)
+    end
+    self:_fireTransitionFeedback(actor, "Blocked", reason or "TeleportFailed")
+end
+
+function ArenaService:_scheduleArenaEntryVerification(actor)
+    if not (ActorUtils.IsPlayer(actor) and self._playerStateService) then
+        return
+    end
+
+    task.delay(BATTLE_ENTRY_VERIFY_DELAY_SECONDS, function()
+        if not (actor and actor.Parent) then
+            return
+        end
+
+        local state = self._playerStateService:GetState(actor)
+        if not (state and state.IsInArena == true and state.Alive == true) then
+            return
+        end
+
+        if self:_isActorInsideBattleBounds(actor) then
+            return
+        end
+
+        self:_rollbackFailedArenaEnter(actor, "TeleportLost")
+    end)
+end
+
 function ArenaService:_firePortalJoinPrompt(actor, eventType)
     if not (actor and self._portalJoinPromptEvent and ActorUtils.IsPlayer(actor) and actor.Parent) then
         return
@@ -376,10 +484,10 @@ function ArenaService:_firePortalJoinPrompt(actor, eventType)
 
     local normalizedEventType = tostring(eventType or "Show")
     if normalizedEventType == "Show" then
-        self._pendingPortalPromptByUserId[actor.UserId] = true
+        self:_setPortalJoinPending(actor)
         self._portalPromptVisibleByUserId[actor.UserId] = true
     elseif normalizedEventType == "Hide" then
-        self:_clearPortalPromptState(actor)
+        self:_clearPortalVisibleState(actor)
     end
 
     self._portalJoinPromptEvent:FireClient(actor, {
@@ -435,8 +543,14 @@ function ArenaService:_onPortalRangeHeartbeat(deltaTime)
         if hasPromptState then
             local state = self._playerStateService and self._playerStateService:GetState(player) or nil
             local isInsidePortal = self:_isActorInsidePortalBounds(player)
-            if (state and state.IsInArena) or not isInsidePortal then
+            if state and state.IsInArena then
+                self:_clearPortalPromptState(player)
+            elseif not isInsidePortal and self._portalPromptVisibleByUserId[player.UserId] then
                 self:_hidePortalJoinPrompt(player)
+            elseif not isInsidePortal and self._portalPromptSuppressedUntilExitByUserId[player.UserId] then
+                self:_clearPortalPromptState(player)
+            else
+                self:_clearExpiredPortalJoinPending(player)
             end
         end
     end
@@ -479,20 +593,38 @@ function ArenaService:_onRequestJoinBattle(player, action)
     end
 
     if action == "Cancel" then
+        self:_clearPortalPromptState(player)
         self._portalPromptSuppressedUntilExitByUserId[player.UserId] = true
-        self:_hidePortalJoinPrompt(player)
-        self._portalPromptSuppressedUntilExitByUserId[player.UserId] = true
+        if self._portalJoinPromptEvent then
+            self._portalJoinPromptEvent:FireClient(player, {
+                eventType = "Hide",
+                timestamp = os.clock(),
+            })
+        end
         return
     end
 
-    if not self:_isActorInsidePortalBounds(player) then
+    if not self:_hasValidPortalJoinPending(player) then
+        if self._portalPromptSuppressedUntilExitByUserId[player.UserId] or not self:_isActorInsidePortalBounds(player) then
+            self:_hidePortalJoinPrompt(player)
+            self:_fireTransitionFeedback(player, "Blocked", "OutsidePortal")
+            return
+        end
+
+        self:_setPortalJoinPending(player)
+    end
+
+    if not self:_hasValidPortalJoinPending(player) then
         self:_hidePortalJoinPrompt(player)
         self:_fireTransitionFeedback(player, "Blocked", "OutsidePortal")
         return
     end
 
-    self:_hidePortalJoinPrompt(player)
-    self:TryEnterArena(player, { IgnoreDebounce = true })
+    local entered = self:TryEnterArena(player, { IgnoreDebounce = true })
+    if entered then
+        self:_hidePortalJoinPrompt(player)
+        self:_clearPortalPromptState(player)
+    end
 end
 
 function ArenaService:_isEnterDebounced(actor)
@@ -641,15 +773,28 @@ function ArenaService:TryEnterArena(actor, options)
         return false
     end
 
-    self:_teleportActorToPosition(actor, targetPosition)
+    if not self:_teleportActorToPosition(actor, targetPosition) then
+        self:_fireTransitionFeedback(actor, "Blocked", "TeleportFailed")
+        return false
+    end
+    if not self:_isActorInsideBattleBounds(actor) then
+        self:_fireTransitionFeedback(actor, "Blocked", "TeleportFailed")
+        return false
+    end
+
     self._playerStateService:SetInArena(actor, true)
     if ActorUtils.IsPlayer(actor) and self._playerStateService.MarkGuideCompleted then
         self._playerStateService:MarkGuideCompleted(actor)
     end
-    self._playerStateService:PushState(actor)
+    if ActorUtils.IsPlayer(actor) and self._healthService and self._healthService.GrantShield then
+        self._healthService:GrantShield(actor, 10, "ArenaEnter")
+    else
+        self._playerStateService:PushState(actor)
+    end
     if self._weaponService then
         self._weaponService:RebuildWeaponsForPlayer(actor)
     end
+    self:_scheduleArenaEntryVerification(actor)
     self:_fireTransitionFeedback(actor, "EnterBattle", "RandomBattleSpawn")
     return true
 end

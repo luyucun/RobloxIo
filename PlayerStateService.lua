@@ -8,6 +8,7 @@ Studio放置路径: ServerScriptService/Services/PlayerStateService
 local PhysicsService = game:GetService("PhysicsService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local ActorUtils = require(script.Parent:WaitForChild("ActorUtils"))
 
@@ -43,7 +44,8 @@ local OVERHEAD_HEALTH_BAR_NAME = "OverheadHealthBar"
 local UI_FOLDER_NAME = "UI"
 local LEADERSTATS_FOLDER_NAME = "leaderstats"
 local LEADERSTAT_LEVEL_NAME = "Level"
-local LEADERSTAT_REBIRTH_NAME = "Rebirth"
+local LEADERSTAT_KILLS_NAME = "Kills"
+local LEGACY_LEADERSTAT_REBIRTH_NAME = "Rebirth"
 local LEGACY_LEADERSTAT_RESPAWN_COUNT_NAME = "RespawnCount"
 local DEFAULT_CHARACTER_COLLISION_GROUP = "IOCharacters"
 local DEFAULT_MONSTER_COLLISION_GROUP = "IOMonsters"
@@ -101,6 +103,11 @@ end
 
 local function normalizeLevel(value)
     return math.clamp(math.floor(tonumber(value) or GameConfig.PLAYER.BaseLevel), 1, GameConfig.PLAYER.MaxSupportedLevel)
+end
+
+local function getMoveSpeedForLevel(level)
+    local normalizedLevel = normalizeLevel(level)
+    return math.max(16, 20 - math.floor((normalizedLevel - 1) / 80))
 end
 
 local function normalizeTierIndex(value)
@@ -641,8 +648,13 @@ function PlayerStateService:_ensureLeaderstats(player)
         legacyRespawnCount:Destroy()
     end
 
+    local legacyRebirth = leaderstats:FindFirstChild(LEGACY_LEADERSTAT_REBIRTH_NAME)
+    if legacyRebirth then
+        legacyRebirth:Destroy()
+    end
+
     getOrCreateIntValue(leaderstats, LEADERSTAT_LEVEL_NAME)
-    getOrCreateIntValue(leaderstats, LEADERSTAT_REBIRTH_NAME)
+    getOrCreateIntValue(leaderstats, LEADERSTAT_KILLS_NAME)
     return leaderstats
 end
 
@@ -661,9 +673,9 @@ function PlayerStateService:_syncLeaderstats(actor, state)
         levelValue.Value = math.max(0, math.floor(tonumber(state.Level) or 0))
     end
 
-    local rebirthValue = leaderstats:FindFirstChild(LEADERSTAT_REBIRTH_NAME)
-    if rebirthValue and rebirthValue:IsA("IntValue") then
-        rebirthValue.Value = math.max(0, math.floor(tonumber(state.Rebirth) or 0))
+    local killsValue = leaderstats:FindFirstChild(LEADERSTAT_KILLS_NAME)
+    if killsValue and killsValue:IsA("IntValue") then
+        killsValue.Value = math.max(0, math.floor(tonumber(state.TotalPlayerKills) or 0))
     end
 
     return true
@@ -674,6 +686,7 @@ function PlayerStateService:_applyLevelDerivedState(state)
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or state.Level), state.Level)
     state.MaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
     state.NextLevelExperience = GameConfig.GetNextLevelExperience(state.Level)
+    state.MoveSpeed = getMoveSpeedForLevel(state.Level)
     state.Rebirth = math.max(0, math.floor(tonumber(state.Rebirth or state.RespawnCount) or 0))
     state.RespawnCount = nil
     state.RebirthScore = math.max(0, math.floor(tonumber(state.RebirthScore) or 0))
@@ -1373,7 +1386,22 @@ function PlayerStateService:SyncHumanoidMovement(actor)
         return false
     end
 
-    humanoid.WalkSpeed = state.MoveSpeed * self:GetMoveSpeedMultiplier(actor)
+    local previousWalkSpeed = humanoid.WalkSpeed
+    local moveSpeedMultiplier = self:GetMoveSpeedMultiplier(actor)
+    local targetWalkSpeed = state.MoveSpeed * moveSpeedMultiplier
+    humanoid.WalkSpeed = targetWalkSpeed
+
+    if RunService:IsStudio() and math.abs((tonumber(previousWalkSpeed) or 0) - targetWalkSpeed) > 0.001 then
+        print(string.format(
+            "[Diag][PlayerStateService][MoveSpeed] actor=%s level=%d base=%.2f multiplier=%.3f walkSpeed=%.2f->%.2f",
+            tostring(actor and actor.Name or ActorUtils.GetActorId(actor) or ""),
+            math.max(1, math.floor(tonumber(state.Level) or 1)),
+            tonumber(state.MoveSpeed) or 0,
+            moveSpeedMultiplier,
+            tonumber(previousWalkSpeed) or 0,
+            targetWalkSpeed
+        ))
+    end
     return true
 end
 
@@ -1403,6 +1431,7 @@ function PlayerStateService:AddKillCount(actor, amount)
     end
     state.KillCount += delta
     state.TotalPlayerKills += delta
+    self:_syncLeaderstats(actor, state)
     if self._leaderboardService then
         self._leaderboardService:MarkDirty()
     end
@@ -2232,6 +2261,62 @@ function PlayerStateService:ApplyLevelMultiplier(actor, multiplier)
     end
     self:_markArenaProgressDirty()
     return true, state.Level, state.Experience
+end
+
+function PlayerStateService:RestoreCombatProgress(actor, snapshot, options)
+    if not actor or type(snapshot) ~= "table" then
+        return false
+    end
+
+    local state = self:_getOrCreateState(actor)
+    local previousLevel = math.max(1, math.floor(tonumber(state.Level) or GameConfig.PLAYER.BaseLevel))
+    local restoredLevel = math.clamp(
+        math.floor(tonumber(snapshot.preDeathLevel or snapshot.level) or GameConfig.PLAYER.BaseLevel),
+        1,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
+    local restoredExperience = math.min(
+        math.max(0, math.floor(tonumber(snapshot.preDeathExperience or snapshot.experience) or GameConfig.PLAYER.BaseExperience)),
+        GameConfig.GetNextLevelExperience(restoredLevel)
+    )
+
+    state.Alive = true
+    state.IsInArena = true
+    state.Level = restoredLevel
+    state.Experience = restoredExperience
+    state.KillCount = math.max(0, math.floor(tonumber(snapshot.preDeathKillCount or state.KillCount) or 0))
+    state.MoveSpeed = GameConfig.PLAYER.BaseMoveSpeed
+    state.Buffs = {}
+    state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), restoredLevel)
+    self:_applyLevelDerivedState(state)
+    if type(options) == "table" and options.restoreFullHealth == false then
+        state.CurrentHealth = math.clamp(math.floor(tonumber(state.CurrentHealth) or state.MaxHealth), 1, state.MaxHealth)
+    else
+        state.CurrentHealth = state.MaxHealth
+    end
+
+    self:_syncLeaderstats(actor, state)
+    self:SyncCharacterState(actor)
+    self:UpdateOverheadHealthBar(actor)
+    if type(options) ~= "table" or options.rebuildWeapons ~= false then
+        if self._weaponService and self._weaponService.RebuildWeaponsForPlayer then
+            self._weaponService:RebuildWeaponsForPlayer(actor)
+        elseif self._weaponService and self._weaponService.RebuildWeaponsForActor then
+            self._weaponService:RebuildWeaponsForActor(actor)
+        end
+    end
+    self:PushState(actor)
+    if self._leaderboardService then
+        self._leaderboardService:MarkDirty()
+        if self._leaderboardService.BroadcastNow then
+            self._leaderboardService:BroadcastNow()
+        end
+    end
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    self:_markArenaProgressDirty()
+    return true, state
 end
 
 function PlayerStateService:ResetCombatState(actor)

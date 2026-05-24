@@ -84,6 +84,7 @@ AutoBattleController._autoBannerBaseColor = nil
 AutoBattleController._autoBannerBaseGradient = nil
 AutoBattleController._isAutoButtonHovered = false
 AutoBattleController._isAutoButtonPressed = false
+AutoBattleController._wantsAutoBattle = false
 
 local MOVE_TO_REFRESH_SECONDS = 0.18
 local MOVE_TO_POSITION_EPSILON = 1.5
@@ -645,8 +646,15 @@ function AutoBattleController:_stopMovement()
     self:_resetProgressCheckState()
 end
 
-function AutoBattleController:_setAutoEnabled(enabled)
+function AutoBattleController:_setAutoEnabled(enabled, options)
+    local preserveWanted = type(options) == "table" and options.PreserveWanted == true
     local shouldEnable = enabled == true and self:_isActiveInArena() == true
+    if shouldEnable then
+        self._wantsAutoBattle = true
+    elseif not preserveWanted then
+        self._wantsAutoBattle = false
+    end
+
     if self._isAutoEnabled == shouldEnable then
         self:_updateAutoButtonUi()
         return
@@ -710,8 +718,15 @@ function AutoBattleController:_hasManualMoveVector()
     return ok and typeof(moveVector) == "Vector3" and moveVector.Magnitude > MANUAL_MOVE_VECTOR_EPSILON
 end
 
-function AutoBattleController:_setAutoJoinEnabled(enabled)
+function AutoBattleController:_setAutoJoinEnabled(enabled, options)
+    local preserveWanted = type(options) == "table" and options.PreserveWanted == true
     local shouldEnable = enabled == true and self:_isInArena() ~= true
+    if shouldEnable then
+        self._wantsAutoBattle = true
+    elseif not preserveWanted then
+        self._wantsAutoBattle = false
+    end
+
     if self._isAutoJoining == shouldEnable then
         self:_updateBottomVisibility()
         self:_updateAutoButtonUi()
@@ -1129,7 +1144,9 @@ function AutoBattleController:_stepAutoBattle()
         return
     end
     if not self:_isActiveInArena() then
-        self:_setAutoEnabled(false)
+        self:_setAutoEnabled(false, {
+            PreserveWanted = self._wantsAutoBattle == true,
+        })
         return
     end
 
@@ -1139,7 +1156,9 @@ function AutoBattleController:_stepAutoBattle()
         return
     end
     if humanoid.Health <= 0 then
-        self:_setAutoEnabled(false)
+        self:_setAutoEnabled(false, {
+            PreserveWanted = self._wantsAutoBattle == true,
+        })
         return
     end
 
@@ -1221,6 +1240,8 @@ function AutoBattleController:_stepAutoJoin()
 
     if isPositionInsidePortalBounds(rootPart.Position, portal) then
         self:_requestAutoJoinBattle(false)
+        self:_stopMovement()
+        return
     end
 
     if self._autoPathWaypoints then
@@ -1327,6 +1348,7 @@ function AutoBattleController:Init(dependencies)
     self._isAutoJoining = false
     self._resumeAutoAfterJoin = false
     self._isAutoMoving = false
+    self._wantsAutoBattle = false
     self._playerControls = nil
     self._lastAutoJoinRequestClock = 0
     self._lastMoveToClock = 0
@@ -1352,13 +1374,31 @@ function AutoBattleController:Init(dependencies)
         self:_updateBottomVisibility()
         if self:_isInArena() and self._isAutoJoining then
             self._resumeAutoAfterJoin = true
-            self:_setAutoJoinEnabled(false)
+            self:_setAutoJoinEnabled(false, {
+                PreserveWanted = true,
+            })
             self:_setAutoEnabled(true)
         elseif self._resumeAutoAfterJoin and self:_isActiveInArena() then
             self:_setAutoEnabled(true)
+        elseif self:_isActiveInArena() then
+            if self._wantsAutoBattle then
+                self:_setAutoEnabled(true)
+            end
+        elseif not self:_isInArena() then
+            self._resumeAutoAfterJoin = false
+            self:_setAutoEnabled(false, {
+                PreserveWanted = self._wantsAutoBattle == true,
+            })
+            if self._wantsAutoBattle then
+                self:_setAutoJoinEnabled(true, {
+                    PreserveWanted = true,
+                })
+            end
         elseif not self:_isActiveInArena() then
             self._resumeAutoAfterJoin = false
-            self:_setAutoEnabled(false)
+            self:_setAutoEnabled(false, {
+                PreserveWanted = self._wantsAutoBattle == true,
+            })
         end
     end))
 

@@ -8,6 +8,7 @@ Purpose: V3.5 shop UI bindings and shared ClaimSuccessful reward popup.
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
@@ -54,6 +55,9 @@ ShopController._starterPackFrame = nil
 ShopController._skinBuyButtonRoot = nil
 ShopController._claimPopup = nil
 ShopController._claimPopupTemplate = nil
+ShopController._skinSecretGradients = {}
+ShopController._skinSecretGradientState = {}
+ShopController._skinSecretGradientConnection = nil
 ShopController._requestStateEvent = nil
 ShopController._stateSyncEvent = nil
 ShopController._requestStarterPackClaimEvent = nil
@@ -94,6 +98,9 @@ local POPUP_OPEN_DURATION = 0.24
 local POPUP_ITEM_STAGGER = 0.08
 local POPUP_CLOSE_DELAY = 2
 local MARKET_STALL_TOUCH_COOLDOWN = 1
+local SECRET_GRADIENT_OFFSET_RANGE = 1
+local SECRET_GRADIENT_ONE_WAY_DURATION = 2.4
+local SECRET_GRADIENT_UPDATE_INTERVAL = 0.033
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -235,6 +242,161 @@ local function setImage(imageObject, image)
     end
 end
 
+local function cloneColorSequence(colorSequence)
+    if typeof(colorSequence) ~= "ColorSequence" then
+        return ColorSequence.new(Color3.new(1, 1, 1))
+    end
+    local keypoints = {}
+    for _, keypoint in ipairs(colorSequence.Keypoints) do
+        table.insert(keypoints, ColorSequenceKeypoint.new(keypoint.Time, keypoint.Value))
+    end
+    return ColorSequence.new(keypoints)
+end
+
+local function cloneNumberSequence(numberSequence)
+    if typeof(numberSequence) ~= "NumberSequence" then
+        return NumberSequence.new(0)
+    end
+    local keypoints = {}
+    for _, keypoint in ipairs(numberSequence.Keypoints) do
+        table.insert(keypoints, NumberSequenceKeypoint.new(keypoint.Time, keypoint.Value, keypoint.Envelope))
+    end
+    return NumberSequence.new(keypoints)
+end
+
+local function modulo01(value)
+    local parsed = tonumber(value) or 0
+    parsed = parsed % 1
+    if parsed < 0 then
+        parsed = parsed + 1
+    end
+    return parsed
+end
+
+local function collectRotatedInteriorPositions(baseKeypoints, shift)
+    local positions = {}
+    for _, keypoint in ipairs(baseKeypoints) do
+        local rotatedTime = modulo01((tonumber(keypoint.Time) or 0) + shift)
+        if rotatedTime > 0.0001 and rotatedTime < 0.9999 then
+            table.insert(positions, rotatedTime)
+        end
+    end
+
+    table.sort(positions)
+
+    local deduplicated = {}
+    local lastTime = nil
+    for _, timeValue in ipairs(positions) do
+        if not lastTime or math.abs(timeValue - lastTime) > 0.0001 then
+            table.insert(deduplicated, timeValue)
+            lastTime = timeValue
+        end
+    end
+
+    return deduplicated
+end
+
+local function sampleColorSequencePeriodic(baseKeypoints, timeValue)
+    local count = #baseKeypoints
+    if count <= 0 then
+        return Color3.new(1, 1, 1)
+    end
+
+    if count == 1 then
+        return baseKeypoints[1].Value
+    end
+
+    local targetTime = modulo01(timeValue)
+
+    for index = 1, count - 1 do
+        local left = baseKeypoints[index]
+        local right = baseKeypoints[index + 1]
+        if targetTime >= left.Time and targetTime <= right.Time then
+            local span = math.max(0.000001, right.Time - left.Time)
+            local alpha = math.clamp((targetTime - left.Time) / span, 0, 1)
+            return left.Value:Lerp(right.Value, alpha)
+        end
+    end
+
+    local last = baseKeypoints[count]
+    local first = baseKeypoints[1]
+    local wrappedTime = targetTime
+    if wrappedTime < first.Time then
+        wrappedTime = wrappedTime + 1
+    end
+
+    local span = math.max(0.000001, (first.Time + 1) - last.Time)
+    local alpha = math.clamp((wrappedTime - last.Time) / span, 0, 1)
+    return last.Value:Lerp(first.Value, alpha)
+end
+
+local function sampleNumberSequencePeriodic(baseKeypoints, timeValue)
+    local count = #baseKeypoints
+    if count <= 0 then
+        return 0, 0
+    end
+
+    if count == 1 then
+        return baseKeypoints[1].Value, baseKeypoints[1].Envelope
+    end
+
+    local targetTime = modulo01(timeValue)
+
+    for index = 1, count - 1 do
+        local left = baseKeypoints[index]
+        local right = baseKeypoints[index + 1]
+        if targetTime >= left.Time and targetTime <= right.Time then
+            local span = math.max(0.000001, right.Time - left.Time)
+            local alpha = math.clamp((targetTime - left.Time) / span, 0, 1)
+            local value = left.Value + ((right.Value - left.Value) * alpha)
+            local envelope = left.Envelope + ((right.Envelope - left.Envelope) * alpha)
+            return value, envelope
+        end
+    end
+
+    local last = baseKeypoints[count]
+    local first = baseKeypoints[1]
+    local wrappedTime = targetTime
+    if wrappedTime < first.Time then
+        wrappedTime = wrappedTime + 1
+    end
+
+    local span = math.max(0.000001, (first.Time + 1) - last.Time)
+    local alpha = math.clamp((wrappedTime - last.Time) / span, 0, 1)
+    local value = last.Value + ((first.Value - last.Value) * alpha)
+    local envelope = last.Envelope + ((first.Envelope - last.Envelope) * alpha)
+    return value, envelope
+end
+
+local function buildRotatedColorSequence(baseKeypoints, shift)
+    local keypoints = {
+        ColorSequenceKeypoint.new(0, sampleColorSequencePeriodic(baseKeypoints, -shift)),
+    }
+
+    for _, position in ipairs(collectRotatedInteriorPositions(baseKeypoints, shift)) do
+        table.insert(keypoints, ColorSequenceKeypoint.new(position, sampleColorSequencePeriodic(baseKeypoints, position - shift)))
+    end
+
+    table.insert(keypoints, ColorSequenceKeypoint.new(1, sampleColorSequencePeriodic(baseKeypoints, 1 - shift)))
+    return ColorSequence.new(keypoints)
+end
+
+local function buildRotatedNumberSequence(baseKeypoints, shift)
+    local startValue, startEnvelope = sampleNumberSequencePeriodic(baseKeypoints, -shift)
+    local keypoints = {
+        NumberSequenceKeypoint.new(0, startValue, startEnvelope),
+    }
+
+    for _, position in ipairs(collectRotatedInteriorPositions(baseKeypoints, shift)) do
+        local value, envelope = sampleNumberSequencePeriodic(baseKeypoints, position - shift)
+        table.insert(keypoints, NumberSequenceKeypoint.new(position, value, envelope))
+    end
+
+    local endValue, endEnvelope = sampleNumberSequencePeriodic(baseKeypoints, 1 - shift)
+    table.insert(keypoints, NumberSequenceKeypoint.new(1, endValue, endEnvelope))
+    return NumberSequence.new(keypoints)
+end
+
 local function playTween(binding, key, target, tweenInfo, goal)
     if not (binding and target and tweenInfo and goal) then
         return
@@ -369,6 +531,104 @@ function ShopController:_cancelPanelTweens()
     table.clear(self._panelTweens)
 end
 
+function ShopController:_stopSkinSecretGradientLoop()
+    if self._skinSecretGradientConnection then
+        self._skinSecretGradientConnection:Disconnect()
+        self._skinSecretGradientConnection = nil
+    end
+
+    for gradient, state in pairs(self._skinSecretGradientState) do
+        if gradient and gradient.Parent and state then
+            gradient.Color = state.Color
+            gradient.Transparency = state.Transparency
+            gradient.Offset = state.Offset
+            gradient.Rotation = state.Rotation
+        end
+    end
+end
+
+function ShopController:_startSkinSecretGradientLoop()
+    if self._skinSecretGradientConnection then
+        return
+    end
+    if #self._skinSecretGradients <= 0 then
+        return
+    end
+
+    local elapsed = 0
+    local elapsedSinceUpdate = SECRET_GRADIENT_UPDATE_INTERVAL
+    self._skinSecretGradientConnection = RunService.RenderStepped:Connect(function(deltaTime)
+        if not (self._isOpen and self._panel and self._panel.Visible) then
+            return
+        end
+
+        local step = tonumber(deltaTime) or 0
+        elapsed += step
+        elapsedSinceUpdate += step
+        if elapsedSinceUpdate < SECRET_GRADIENT_UPDATE_INTERVAL then
+            return
+        end
+        elapsedSinceUpdate = 0
+
+        local shift = modulo01((elapsed / SECRET_GRADIENT_ONE_WAY_DURATION) * SECRET_GRADIENT_OFFSET_RANGE)
+        for _, gradient in ipairs(self._skinSecretGradients) do
+            local state = self._skinSecretGradientState[gradient]
+            if gradient and gradient.Parent and state then
+                if type(state.ColorKeypoints) == "table" and #state.ColorKeypoints > 0 then
+                    local okColor, rotatedColor = pcall(function()
+                        return buildRotatedColorSequence(state.ColorKeypoints, shift)
+                    end)
+                    if okColor and rotatedColor then
+                        gradient.Color = rotatedColor
+                    end
+                end
+
+                if type(state.TransparencyKeypoints) == "table" and #state.TransparencyKeypoints > 0 then
+                    local okTransparency, rotatedTransparency = pcall(function()
+                        return buildRotatedNumberSequence(state.TransparencyKeypoints, shift)
+                    end)
+                    if okTransparency and rotatedTransparency then
+                        gradient.Transparency = rotatedTransparency
+                    end
+                end
+
+                gradient.Offset = state.Offset
+                gradient.Rotation = state.Rotation
+            end
+        end
+    end)
+end
+
+function ShopController:_bindSkinSecretGradients(skinFrame)
+    self:_stopSkinSecretGradientLoop()
+    table.clear(self._skinSecretGradients)
+    table.clear(self._skinSecretGradientState)
+
+    local nameLabel = skinFrame and skinFrame:FindFirstChild("Name")
+    local secret2 = nameLabel and nameLabel:FindFirstChild("Secret2")
+    local uiStroke = nameLabel and nameLabel:FindFirstChild("UIStroke")
+    local secret1 = uiStroke and uiStroke:FindFirstChild("Secret1")
+    local gradients = { secret1, secret2 }
+
+    for _, gradient in ipairs(gradients) do
+        if gradient and gradient:IsA("UIGradient") then
+            table.insert(self._skinSecretGradients, gradient)
+            self._skinSecretGradientState[gradient] = {
+                Color = cloneColorSequence(gradient.Color),
+                Transparency = cloneNumberSequence(gradient.Transparency),
+                ColorKeypoints = gradient.Color.Keypoints,
+                TransparencyKeypoints = gradient.Transparency.Keypoints,
+                Offset = gradient.Offset,
+                Rotation = gradient.Rotation,
+            }
+        end
+    end
+
+    if self._isOpen then
+        self:_startSkinSecretGradientLoop()
+    end
+end
+
 function ShopController:_requestShopState(autoClaim)
     if self._requestStateEvent then
         self._requestStateEvent:FireServer({
@@ -475,6 +735,7 @@ function ShopController:_setOpen(isOpen, immediate)
         ModalUiController:Acquire("Shop", self._panel)
         self._panel.Visible = true
         self:_requestShopState(true)
+        self:_startSkinSecretGradientLoop()
         if not uiScale or immediate == true then
             if uiScale then
                 uiScale.Scale = 1
@@ -509,6 +770,7 @@ function ShopController:_setOpen(isOpen, immediate)
         if uiScale then
             uiScale.Scale = 1
         end
+        self:_stopSkinSecretGradientLoop()
         self._panel.Visible = false
         ModalUiController:Release("Shop")
         return
@@ -528,6 +790,7 @@ function ShopController:_setOpen(isOpen, immediate)
             uiScale.Scale = 1
         end
         if self._panel and self._panel.Parent then
+            self:_stopSkinSecretGradientLoop()
             self._panel.Visible = false
         end
         ModalUiController:Release("Shop")
@@ -831,6 +1094,7 @@ function ShopController:_bindUi(silent)
     local spinFrame = scrollingFrame and scrollingFrame:FindFirstChild("Spin")
     local skinFrame = scrollingFrame and scrollingFrame:FindFirstChild("Skin")
     self._skinBuyButtonRoot = nil
+    self:_bindSkinSecretGradients(skinFrame)
 
     local itemListFrame = self._claimPopup and self._claimPopup:FindFirstChild("ItemListFrame", true)
     self._claimPopupTemplate = itemListFrame and itemListFrame:FindFirstChild("ItemTemplate")
@@ -1014,6 +1278,7 @@ function ShopController:Init(dependencies)
     self:_disconnectButtonBindings()
     self:_disconnectMarketStallBindings()
     self:_disconnectPopupInput()
+    self:_stopSkinSecretGradientLoop()
     self:_clearPopupItems()
 
     self:_connectRemotes()

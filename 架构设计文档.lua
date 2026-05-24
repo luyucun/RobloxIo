@@ -12,7 +12,7 @@
 1.当前架构以服务端为玩法真值。
 2.核心状态由 `PlayerStateService` 管理：Level、Experience、Health、WeaponTier、WeaponCount、KillCount、TotalPlayerKills、Diamonds、Buffs、IsInArena、Alive。
 3.武器生成、武器碰撞、玩家伤害、小怪伤害、经验结算、Buff 生效、死亡和排行榜均由服务端判定。
-4.客户端当前主要通过 `WeaponFxController` 消费 `WeaponStateSync`，为本地玩家创建更顺滑的武器视觉表现。
+4.客户端当前主要通过 `WeaponFxController` 消费 `WeaponStateSync`，为所有真实玩家创建更顺滑的武器视觉副本；服务端武器实例继续保留为碰撞和伤害真值。
 
 二、目录与放置约定
 1.服务端入口：
@@ -68,7 +68,7 @@
 5.`WeaponService`
 - 按等级解析武器组，创建和维护服务端武器判定实例。
 - 运行时优先使用武器模板下的 `Aura` BasePart 作为命中盒体；缺少时按模型包围盒创建不可见 fallback Aura。
-- 处理武器环绕、武器残骸、武器损毁、武器状态同步。
+- 处理武器环绕、武器残骸、武器损毁、玩家武器表现状态广播；客户端用同步数据渲染玩家可见的平滑视觉副本，Bot 仍使用服务端实例表现。
 6.`RespawnService`
 - 处理玩家/Bot 死亡后的战斗状态重置、武器清理和 Bot 延迟重生。
 7.`BuffService`
@@ -130,7 +130,7 @@
 
 七、关键路径
 1.玩家入场：
-`PlayerAdded -> PlayerStateService:OnPlayerAdded -> CharacterAdded -> ArenaService:TeleportPlayerToSpawnLocation -> 触碰 Map2.Portals.Portal -> PortalJoinPrompt(Show) -> JoinGameController 显示 StarterGui/Main/JoinGame、隐藏其它 Main UI、开启 Lighting.Blur -> 点击 Join -> RequestJoinBattle(Join) -> ArenaService 校验仍在 Portal 范围 -> TryEnterArena -> PlayerStateService:SetInArena(true) -> WeaponService:RebuildWeaponsForPlayer`
+`PlayerAdded -> PlayerStateService:OnPlayerAdded -> CharacterAdded -> ArenaService:TeleportPlayerToSpawnLocation -> 触碰 Map2.Portals.Portal -> PortalJoinPrompt(Show) -> JoinGameController 显示 StarterGui/Main/JoinGame、隐藏其它 Main UI、开启 Lighting.Blur -> 点击 Join -> RequestJoinBattle(Join) -> ArenaService 校验已触发 Portal 弹窗且入场确认资格仍在 8 秒有效期内 -> TryEnterArena -> PlayerStateService:SetInArena(true) -> WeaponService:RebuildWeaponsForPlayer`
 2.Studio Bot：
 `RunService:IsStudio -> ensureStudioBots -> BotService:SpawnBots -> RegisterBot -> TryEnterArena -> WeaponService 创建武器 -> Bot 追敌/找经验`
 3.经验升级：
@@ -184,11 +184,12 @@
 2.正式 HUD / 提示 / 面板 UI 应放在 StarterGui，客户端控制器只绑定既有节点、更新数据和播放动画。
 3.功能型面板打开时统一走模态 UI：隐藏 `PlayerGui.Main` 下除当前面板外的其他同级 `GuiObject`，开启 `Lighting.Blur`，关闭动效结束后恢复原始显示状态和 Blur 状态；打开和关闭都必须播放面板动效。
 4.`PlayerStateService` 负责角色头顶血条的创建和同步，只有 `Alive = true` 且 `IsInArena = true` 时显示；准备区、死亡或退出战斗状态时隐藏。
-5.当前已实现客户端控制器为 `WeaponFxController`，负责隐藏本地玩家服务端武器实例、创建本地视觉武器并按同步数据绕玩家旋转。
-6.`JoinGameController` 负责监听 `PortalJoinPrompt(Show/Hide)`，显示/隐藏 `StarterGui/Main/JoinGame`；显示时隐藏 `PlayerGui.Main` 下除 `JoinGame` 外的同级 UI 并开启 `Lighting.Blur`，关闭时恢复；绑定 `Join` 和 `Wait` 按钮缩放反馈，并在点击 Join/Wait 时分别发送 `RequestJoinBattle(Join/Cancel)`。
+5.当前已实现客户端控制器为 `WeaponFxController`，负责隐藏真实玩家服务端武器视觉、按 `ownerUserId` 为本地和远端玩家创建本地视觉武器并按同步数据绕对应玩家旋转。
+6.`JoinGameController` 负责监听 `PortalJoinPrompt(Show/Hide)`，显示/隐藏 `StarterGui/Main/JoinGame`；显示时隐藏 `PlayerGui.Main` 下除 `JoinGame` 外的同级 UI 并开启 `Lighting.Blur`，关闭时恢复；绑定 `Join` 和 `Wait` 按钮缩放反馈，并在点击 Join/Wait 时分别发送 `RequestJoinBattle(Join/Cancel)`。服务端在 `PortalJoinPrompt(Show)` 后保留 8 秒入场确认资格，避免玩家轻微离开 Portal 范围后点击 Join 被误拦截。 `Join` 只有在服务端真正传送成功后才会关闭弹窗，失败则保留当前弹窗状态。
 7.`SpecialEventController` 负责监听 `SpecialEventSync`，按服务端状态在客户端本地复制/移除特殊事件场景，并同步 `Workspace.Map2.BattleSenceEventBoard` 与 `Workspace.Map2.HomeEventBoard` 的事件倒计时文本。
 8.`ArenaProgressController` 负责监听 `ArenaProgressSync` 和本地 `PlayerStateSync`，只有本地玩家在战场且存活时显示 `PlayerGui.Main.Progress`，并按服务端同步的场内玩家等级区间渲染头像位置。
 9.`TopStatsController` 负责监听 `PlayerStateSync`，以原始整数显示永久击杀数和钻石数，并在钻石增加时播放客户端飞入动画；客户端不决定数值增减。
+10.`ShopController` 负责商店页面打开/关闭、购买入口绑定、领奖弹框表现，以及商店 Skin 商品名称上 `Secret1` / `Secret2` 渐变的首尾衔接循环流动。
 
 =====================================================
 文档结束

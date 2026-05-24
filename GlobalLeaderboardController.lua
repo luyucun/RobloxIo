@@ -200,6 +200,11 @@ local function getRowsForMetric(payload, metricKey)
     return rows
 end
 
+local function isGlobalRowsReady(payload)
+    local global = payload and payload.global
+    return not (type(global) == "table" and global.ready == false)
+end
+
 local function countGlobalRows(payload)
     local total = 0
     for _, metricDefinition in pairs(BOARD_DEFINITIONS) do
@@ -413,7 +418,10 @@ function GlobalLeaderboardController:_renderBoard(boardName, metricDefinition, p
     end
 
     self:_bindCanvasResize(scrollingFrame)
-    self:_renderRows(scrollingFrame, getRowsForMetric(payload, metricDefinition.metricKey), metricDefinition)
+    local rows = getRowsForMetric(payload, metricDefinition.metricKey)
+    if #rows > 0 or isGlobalRowsReady(payload) then
+        self:_renderRows(scrollingFrame, rows, metricDefinition)
+    end
     self:_renderPlayerRow(boardFrame, metricDefinition, getSelfForMetric(payload, metricDefinition.metricKey))
 end
 

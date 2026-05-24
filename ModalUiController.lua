@@ -388,6 +388,33 @@ function ModalUiController:Acquire(ownerId, panel)
     return true
 end
 
+function ModalUiController:AcquireExclusive(ownerId, panel)
+    if not (panel and panel:IsA("GuiObject")) then
+        return false
+    end
+
+    local mainGui = findMainGuiFromPanel(panel)
+    if not mainGui then
+        return false
+    end
+
+    for _, ownerState in pairs(self._owners) do
+        local ownerPanel = ownerState and ownerState.Panel
+        if ownerPanel and ownerPanel ~= panel and ownerPanel.Parent and ownerPanel:IsA("GuiObject") then
+            ownerPanel.Visible = false
+        end
+    end
+
+    table.clear(self._owners)
+    local ownerKey = normalizeOwnerId(ownerId)
+    self._mainGui = mainGui
+    self._owners[ownerKey] = {
+        Panel = panel,
+    }
+    self:_applySuppression()
+    return true
+end
+
 function ModalUiController:Release(ownerId)
     local ownerKey = normalizeOwnerId(ownerId)
     self._owners[ownerKey] = nil

@@ -39,6 +39,7 @@ HealthService._playerStateService = nil
 HealthService._remoteEventService = nil
 HealthService._respawnService = nil
 HealthService._deathFeedbackEvent = nil
+HealthService._killInfoFeedbackEvent = nil
 HealthService._buffService = nil
 HealthService._lastDamageClockByUserId = {}
 HealthService._recoverEffectsByUserId = {}
@@ -60,7 +61,16 @@ local function buildKillerPayload(playerStateService, sourceActor)
         name = sourceActor.DisplayName ~= "" and sourceActor.DisplayName or sourceActor.Name,
         level = state and state.Level or GameConfig.PLAYER.BaseLevel,
         killCount = state and state.KillCount or 0,
+        totalPlayerKills = state and state.TotalPlayerKills or 0,
     }
+end
+
+local function getPlayerDisplayName(player)
+    if not ActorUtils.IsPlayer(player) then
+        return ""
+    end
+
+    return player.DisplayName ~= "" and player.DisplayName or player.Name
 end
 
 function HealthService:_fireDeathFeedback(actor, sourceActor)
@@ -71,11 +81,34 @@ function HealthService:_fireDeathFeedback(actor, sourceActor)
         return
     end
 
+    local victimState = self._playerStateService and self._playerStateService:GetState(actor) or nil
     local killerUserId = sourceActor and ActorUtils.GetCombatUserId(sourceActor) or nil
     self._deathFeedbackEvent:FireClient(actor, {
         reason = "WeaponDamage",
         killerUserId = killerUserId,
         killer = buildKillerPayload(self._playerStateService, sourceActor),
+        victimLevel = victimState and victimState.Level or GameConfig.PLAYER.BaseLevel,
+        timestamp = os.clock(),
+    })
+end
+
+function HealthService:_fireKillInfoFeedback(targetActor, sourceActor)
+    if not self._killInfoFeedbackEvent then
+        return
+    end
+    if not (ActorUtils.IsPlayer(sourceActor) and ActorUtils.IsPlayer(targetActor)) then
+        return
+    end
+    if ActorUtils.IsSameActor(sourceActor, targetActor) then
+        return
+    end
+
+    self._killInfoFeedbackEvent:FireAllClients({
+        eventType = "PlayerKilled",
+        killerUserId = sourceActor.UserId,
+        killerName = getPlayerDisplayName(sourceActor),
+        victimUserId = targetActor.UserId,
+        victimName = getPlayerDisplayName(targetActor),
         timestamp = os.clock(),
     })
 end
@@ -85,6 +118,7 @@ function HealthService:_handleActorKill(targetActor, sourceActor)
         if ActorUtils.IsPlayer(sourceActor) and ActorUtils.IsPlayer(targetActor) then
             self._playerStateService:AwardPlayerKillReward(sourceActor, targetActor)
             self._playerStateService:AddRebirthScore(sourceActor, GameConfig.REBIRTH.PlayerKillScoreReward)
+            self:_fireKillInfoFeedback(targetActor, sourceActor)
         end
         self._playerStateService:PushState(sourceActor)
     end
@@ -735,6 +769,7 @@ function HealthService:Init(dependencies)
     self._respawnService = dependencies.RespawnService
     self._buffService = dependencies.BuffService
     self._deathFeedbackEvent = self._remoteEventService and self._remoteEventService:GetEvent("DeathFeedback") or nil
+    self._killInfoFeedbackEvent = self._remoteEventService and self._remoteEventService:GetEvent("KillInfoFeedback") or nil
     self._lastDamageClockByUserId = {}
     self._recoverEffectsByUserId = {}
     self._shieldEffectsByUserId = {}

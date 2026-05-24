@@ -5,12 +5,13 @@ Studio path: StarterPlayer/StarterPlayerScripts/Controllers/DefeatedController
 Purpose: Handles V1.6 defeated revive/revenge UI.
 ]]
 
-local Lighting = game:GetService("Lighting")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+
+local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -44,12 +45,9 @@ DefeatedController._mainGui = nil
 DefeatedController._defeatedRoot = nil
 DefeatedController._requestDefeatedActionEvent = nil
 DefeatedController._countdownConnection = nil
-DefeatedController._hiddenUiOriginalVisibleByNode = {}
-DefeatedController._blurEffect = nil
-DefeatedController._blurOriginalEnabled = nil
-DefeatedController._isModalApplied = false
 DefeatedController._isOpen = false
 DefeatedController._isRevengePurchasePending = false
+DefeatedController._isRevivePurchasePending = false
 DefeatedController._countdownEndsAt = 0
 DefeatedController._bindRetryQueued = false
 DefeatedController._panelTweens = {}
@@ -68,6 +66,7 @@ local CLOSE_OVERSHOOT_SCALE = 1.04
 local CLOSE_OVERSHOOT_DURATION = 0.1
 local CLOSE_TO_SCALE = 0.78
 local CLOSE_SHRINK_DURATION = 0.14
+local DEFEATED_MODAL_OWNER = "Defeated"
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -101,14 +100,6 @@ local function ensureUiScale(guiObject)
     uiScale.Scale = 1
     uiScale.Parent = guiObject
     return uiScale
-end
-
-local function findBlurEffect()
-    local blur = Lighting:FindFirstChild("Blur")
-    if blur and blur:IsA("BlurEffect") then
-        return blur
-    end
-    return nil
 end
 
 local function setText(textObject, value)
@@ -147,56 +138,6 @@ end
 function DefeatedController:_nextPanelAnimationSerial()
     self._panelAnimationSerial += 1
     return self._panelAnimationSerial
-end
-
-function DefeatedController:_applyModalUi()
-    if self._isModalApplied then
-        return
-    end
-
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-    if self._mainGui and self._defeatedRoot then
-        for _, child in ipairs(self._mainGui:GetChildren()) do
-            if child:IsA("GuiObject")
-                and child ~= self._defeatedRoot
-                and not child:IsAncestorOf(self._defeatedRoot)
-                and not self._defeatedRoot:IsAncestorOf(child)
-            then
-                self._hiddenUiOriginalVisibleByNode[child] = child.Visible
-                child.Visible = false
-            end
-        end
-    end
-
-    self._blurEffect = findBlurEffect()
-    if self._blurEffect then
-        self._blurOriginalEnabled = self._blurEffect.Enabled
-        self._blurEffect.Enabled = true
-    else
-        self._blurOriginalEnabled = nil
-    end
-
-    self._isModalApplied = true
-end
-
-function DefeatedController:_restoreModalUi()
-    if not self._isModalApplied then
-        return
-    end
-
-    for guiObject, originalVisible in pairs(self._hiddenUiOriginalVisibleByNode) do
-        if guiObject and guiObject.Parent and guiObject:IsA("GuiObject") then
-            guiObject.Visible = originalVisible == true
-        end
-    end
-    table.clear(self._hiddenUiOriginalVisibleByNode)
-
-    if self._blurEffect and self._blurEffect.Parent and self._blurOriginalEnabled ~= nil then
-        self._blurEffect.Enabled = self._blurOriginalEnabled == true
-    end
-    self._blurEffect = nil
-    self._blurOriginalEnabled = nil
-    self._isModalApplied = false
 end
 
 function DefeatedController:_setProgress(ratio, secondsLeft)
@@ -252,11 +193,24 @@ function DefeatedController:_resumeCountdownAfterRevengeCancel()
     self:_startCountdown(self._countdownEndsAt)
 end
 
+function DefeatedController:_resumeCountdownAfterRevivePurchaseCancel()
+    if not self._isOpen then
+        return
+    end
+
+    if self._countdownEndsAt <= os.clock() then
+        self:_closeAndRequest("Revive")
+        return
+    end
+
+    self:_startCountdown(self._countdownEndsAt)
+end
+
 function DefeatedController:_setOpen(isOpen, immediate)
     if not self._defeatedRoot then
         self._isOpen = false
         self:_cancelPanelTweens()
-        self:_restoreModalUi()
+        ModalUiController:Release(DEFEATED_MODAL_OWNER)
         self:_stopCountdown()
         return
     end
@@ -266,7 +220,7 @@ function DefeatedController:_setOpen(isOpen, immediate)
     self._isOpen = isOpen == true
     local rootScale = ensureUiScale(self._defeatedRoot)
     if self._isOpen then
-        self:_applyModalUi()
+        ModalUiController:AcquireExclusive(DEFEATED_MODAL_OWNER, self._defeatedRoot)
         self._defeatedRoot.Visible = true
         if rootScale then
             rootScale.Scale = OPEN_FROM_SCALE
@@ -304,7 +258,7 @@ function DefeatedController:_setOpen(isOpen, immediate)
             rootScale.Scale = 1
         end
         self._defeatedRoot.Visible = false
-        self:_restoreModalUi()
+        ModalUiController:Release(DEFEATED_MODAL_OWNER)
         return
     end
 
@@ -332,7 +286,7 @@ function DefeatedController:_setOpen(isOpen, immediate)
         rootScale.Scale = 1
         self._defeatedRoot.Visible = false
         table.clear(self._panelTweens)
-        self:_restoreModalUi()
+        ModalUiController:Release(DEFEATED_MODAL_OWNER)
     end)
 end
 
@@ -373,6 +327,35 @@ function DefeatedController:_promptRevenge()
     end
 end
 
+function DefeatedController:_promptDefeatedRevive()
+    if self._isRevivePurchasePending then
+        return
+    end
+
+    local productId = GameConfig.MONETIZATION and GameConfig.MONETIZATION.DefeatedReviveProductId or 0
+    if not (productId and productId > 0) then
+        warn("[DefeatedController] Defeated revive product id is not configured.")
+        return
+    end
+
+    self._isRevivePurchasePending = true
+    if self._requestDefeatedActionEvent then
+        self._requestDefeatedActionEvent:FireServer("RevivePurchase")
+    end
+
+    local ok, err = pcall(function()
+        MarketplaceService:PromptProductPurchase(self._localPlayer, productId)
+    end)
+    if not ok then
+        warn("[DefeatedController] Failed to prompt defeated revive product purchase:", err)
+        self._isRevivePurchasePending = false
+        if self._requestDefeatedActionEvent then
+            self._requestDefeatedActionEvent:FireServer("RevivePurchaseCancel")
+        end
+        self:_resumeCountdownAfterRevivePurchaseCancel()
+    end
+end
+
 function DefeatedController:_updateKillerInfo(payload)
     if not self._defeatedRoot then
         return
@@ -381,10 +364,12 @@ function DefeatedController:_updateKillerInfo(payload)
     local killer = payload and payload.killer or nil
     local killerName = killer and killer.name or "Unknown"
     local killerLevel = killer and killer.level or GameConfig.PLAYER.BaseLevel
-    local killerKillCount = 0
+    local victimLevel = math.max(1, math.floor(tonumber(payload and payload.victimLevel) or GameConfig.PLAYER.BaseLevel))
+    local killerKillCount = math.max(0, math.floor(tonumber(killer and (killer.totalPlayerKills or killer.killCount)) or 0))
     setText(findNested(self._defeatedRoot, "Killer/Name"), killerName)
     setText(findNested(self._defeatedRoot, "Killer/KillNum/Num"), tostring(killerKillCount))
     setText(findNested(self._defeatedRoot, "Killer/LvInfo/Num"), string.format("LV.%d", math.max(1, math.floor(tonumber(killerLevel) or 1))))
+    setText(findNested(self._defeatedRoot, "Revive/Level"), string.format("With Lv.%d", victimLevel))
 
     local icon = findNested(self._defeatedRoot, "Killer/Icon")
     local userId = killer and tonumber(killer.userId) or nil
@@ -543,7 +528,7 @@ function DefeatedController:_bindUi(silent)
     self:_disconnectButtonBindings()
     self:_setOpen(false, true)
     self:_bindClickTarget(self._defeatedRoot:FindFirstChild("Revive", true), function()
-        self:_closeAndRequest("Revive")
+        self:_promptDefeatedRevive()
     end)
     self:_bindClickTarget(self._defeatedRoot:FindFirstChild("Revenge", true), function()
         self:_promptRevenge()
@@ -565,6 +550,7 @@ function DefeatedController:_onDeathFeedback(payload)
 
     self:_updateKillerInfo(payload)
     self._isRevengePurchasePending = false
+    self._isRevivePurchasePending = false
     self:_setOpen(true)
     self:_startCountdown()
 end
@@ -598,7 +584,30 @@ function DefeatedController:Init(dependencies)
     table.insert(self._connections, MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
         local localUserId = self._localPlayer and self._localPlayer.UserId
         local revengeProductId = GameConfig.MONETIZATION and GameConfig.MONETIZATION.RevengeProductId or 0
-        if tonumber(userId) ~= tonumber(localUserId) or tonumber(productId) ~= tonumber(revengeProductId) then
+        local defeatedReviveProductId = GameConfig.MONETIZATION and GameConfig.MONETIZATION.DefeatedReviveProductId or 0
+        if tonumber(userId) ~= tonumber(localUserId) then
+            return
+        end
+
+        if tonumber(productId) == tonumber(defeatedReviveProductId) then
+            if not self._isRevivePurchasePending then
+                return
+            end
+
+            self._isRevivePurchasePending = false
+            if wasPurchased == true then
+                self:_setOpen(false)
+                return
+            end
+
+            if self._requestDefeatedActionEvent then
+                self._requestDefeatedActionEvent:FireServer("RevivePurchaseCancel")
+            end
+            self:_resumeCountdownAfterRevivePurchaseCancel()
+            return
+        end
+
+        if tonumber(productId) ~= tonumber(revengeProductId) then
             return
         end
         if not self._isRevengePurchasePending then

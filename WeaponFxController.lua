@@ -42,6 +42,8 @@ WeaponFxController._syncConnection = nil
 WeaponFxController._renderConnection = nil
 WeaponFxController._localWeaponFolder = nil
 WeaponFxController._localWeaponStates = {}
+WeaponFxController._weaponStatesByOwnerUserId = {}
+WeaponFxController._ownerWeaponFolders = {}
 WeaponFxController._hiddenServerParts = {}
 WeaponFxController._hiddenServerEffects = {}
 WeaponFxController._lastWeaponSignature = nil
@@ -50,6 +52,9 @@ WeaponFxController._runtimeWeaponFolderConnections = {}
 WeaponFxController._runtimeWeaponInstanceConnections = {}
 WeaponFxController._serverWeaponVisibilityDirty = true
 WeaponFxController._nextServerWeaponVisibilityRefreshClock = 0
+WeaponFxController._playerRemovingConnection = nil
+WeaponFxController._localCharacterAddedConnection = nil
+WeaponFxController._requestStateSyncEvent = nil
 WeaponFxController._perfStats = nil
 WeaponFxController._nextPerfLogClock = 0
 
@@ -295,6 +300,34 @@ function WeaponFxController:_getLocalWeaponFolder()
     return folder
 end
 
+function WeaponFxController:_getOwnerWeaponFolder(ownerUserId)
+    local normalizedOwnerUserId = math.floor(tonumber(ownerUserId) or 0)
+    if normalizedOwnerUserId <= 0 then
+        return nil
+    end
+
+    local existingFolder = self._ownerWeaponFolders[normalizedOwnerUserId]
+    if existingFolder and existingFolder.Parent then
+        return existingFolder
+    end
+
+    local rootFolder = self:_getLocalWeaponFolder()
+    if not rootFolder then
+        return nil
+    end
+
+    local folderName = string.format("Owner_%d", normalizedOwnerUserId)
+    local ownerFolder = findChildOfClass(rootFolder, folderName, "Folder")
+    if not ownerFolder then
+        ownerFolder = Instance.new("Folder")
+        ownerFolder.Name = folderName
+        ownerFolder.Parent = rootFolder
+    end
+
+    self._ownerWeaponFolders[normalizedOwnerUserId] = ownerFolder
+    return ownerFolder
+end
+
 function WeaponFxController:_markServerWeaponVisibilityDirty()
     self._serverWeaponVisibilityDirty = true
     self._nextServerWeaponVisibilityRefreshClock = 0
@@ -410,6 +443,14 @@ function WeaponFxController:_configureLocalWeapon(instance)
     end
 end
 
+function WeaponFxController:_tagLocalWeaponOwner(instance, ownerUserId)
+    local normalizedOwnerUserId = math.floor(tonumber(ownerUserId) or 0)
+    instance:SetAttribute("OwnerUserId", normalizedOwnerUserId)
+    for _, basePart in ipairs(getBaseParts(instance)) do
+        basePart:SetAttribute("OwnerUserId", normalizedOwnerUserId)
+    end
+end
+
 function WeaponFxController:_createFallbackWeapon(tierName)
     local model = Instance.new("Model")
     model.Name = "LocalFallbackWeapon_" .. tostring(tierName)
@@ -441,9 +482,31 @@ function WeaponFxController:_createFallbackWeapon(tierName)
     return model
 end
 
-function WeaponFxController:_clearLocalWeapons()
-    for _, weaponState in ipairs(self._localWeaponStates) do
+function WeaponFxController:_clearOwnerWeapons(ownerUserId)
+    local normalizedOwnerUserId = math.floor(tonumber(ownerUserId) or 0)
+    local weaponStates = self._weaponStatesByOwnerUserId[normalizedOwnerUserId] or {}
+    for _, weaponState in ipairs(weaponStates) do
         self:_destroyLocalWeaponState(weaponState)
+    end
+    self._weaponStatesByOwnerUserId[normalizedOwnerUserId] = nil
+    if self._localPlayer and normalizedOwnerUserId == self._localPlayer.UserId then
+        self._localWeaponStates = {}
+    end
+
+    local ownerFolder = self._ownerWeaponFolders[normalizedOwnerUserId]
+    if ownerFolder and ownerFolder.Parent then
+        ownerFolder:Destroy()
+    end
+    self._ownerWeaponFolders[normalizedOwnerUserId] = nil
+end
+
+function WeaponFxController:_clearLocalWeapons()
+    local ownerUserIds = {}
+    for ownerUserId in pairs(self._weaponStatesByOwnerUserId) do
+        table.insert(ownerUserIds, ownerUserId)
+    end
+    for _, ownerUserId in ipairs(ownerUserIds) do
+        self:_clearOwnerWeapons(ownerUserId)
     end
     self._localWeaponStates = {}
 
@@ -452,11 +515,23 @@ function WeaponFxController:_clearLocalWeapons()
             child:Destroy()
         end
     end
+    table.clear(self._ownerWeaponFolders)
 end
 
 function WeaponFxController:_destroyLocalWeaponState(weaponState)
     if weaponState and weaponState.Instance and weaponState.Instance.Parent then
         weaponState.Instance:Destroy()
+    end
+end
+
+function WeaponFxController:_setLocalWeaponStateVisible(weaponState, visible)
+    local instance = weaponState and weaponState.Instance
+    if not instance then
+        return
+    end
+
+    for _, basePart in ipairs(getBaseParts(instance)) do
+        basePart.LocalTransparencyModifier = visible == true and 0 or 1
     end
 end
 
@@ -492,7 +567,7 @@ function WeaponFxController:_updateLocalWeaponState(weaponState, weaponIndex, we
     weaponState.AuraRadius = tonumber(weaponData and weaponData.auraRadius) or weaponState.AuraRadius or 0
 end
 
-function WeaponFxController:_createLocalWeaponState(weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle, previousDirection)
+function WeaponFxController:_createLocalWeaponState(ownerUserId, weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle, previousDirection)
     local template
     template, tierConfig = self:_resolveTemplate(weaponTier, templateName)
     if not tierConfig then
@@ -500,12 +575,14 @@ function WeaponFxController:_createLocalWeaponState(weaponIndex, weaponTier, tem
     end
 
     local localWeapon = template and template:Clone() or self:_createFallbackWeapon(weaponTier)
-    localWeapon.Name = string.format("Local_%s_%02d", tostring(templateName or tierConfig.TemplateName or weaponTier), weaponIndex)
-    localWeapon.Parent = self:_getLocalWeaponFolder()
+    localWeapon.Name = string.format("Local_%d_%s_%02d", math.floor(tonumber(ownerUserId) or 0), tostring(templateName or tierConfig.TemplateName or weaponTier), weaponIndex)
+    localWeapon.Parent = self:_getOwnerWeaponFolder(ownerUserId)
     stripRuntimeOnlyDescendants(localWeapon)
     self:_configureLocalWeapon(localWeapon)
+    self:_tagLocalWeaponOwner(localWeapon, ownerUserId)
 
     local weaponState = {
+        OwnerUserId = math.floor(tonumber(ownerUserId) or 0),
         Instance = localWeapon,
         HitPart = resolveHitPart(localWeapon),
         OrbitDirection = previousDirection,
@@ -516,27 +593,33 @@ function WeaponFxController:_createLocalWeaponState(weaponIndex, weaponTier, tem
 end
 
 function WeaponFxController:_rebuildLocalWeapons(payload)
+    local ownerUserId = math.floor(tonumber(payload and payload.ownerUserId) or (self._localPlayer and self._localPlayer.UserId) or 0)
+    if ownerUserId <= 0 then
+        return
+    end
+
     local tierName = tostring(payload and payload.weaponTier or "None")
     local weaponCount = math.max(0, math.floor(tonumber(payload and payload.weaponCount) or 0))
     local weaponPayload = payload and payload.weapons or {}
+    local previousWeaponStates = self._weaponStatesByOwnerUserId[ownerUserId] or {}
 
     local previousAngles = {}
     local previousDirections = {}
-    for index, weaponState in ipairs(self._localWeaponStates) do
+    for index, weaponState in ipairs(previousWeaponStates) do
         previousAngles[index] = weaponState.CurrentAngle
         previousDirections[index] = weaponState.OrbitDirection
     end
-    local previousLeadAngle = self._localWeaponStates[1] and self._localWeaponStates[1].CurrentAngle or 0
-    local shouldRedistributeAngles = #self._localWeaponStates ~= weaponCount
+    local previousLeadAngle = previousWeaponStates[1] and previousWeaponStates[1].CurrentAngle or 0
+    local shouldRedistributeAngles = #previousWeaponStates ~= weaponCount
     local redistributedAngles = shouldRedistributeAngles and self:_buildDistributedAngles(weaponCount, previousLeadAngle) or nil
 
     if weaponCount <= 0 then
         self._lastWeaponSignature = nil
-        self:_clearLocalWeapons()
+        self:_clearOwnerWeapons(ownerUserId)
         return
     end
 
-    local folder = self:_getLocalWeaponFolder()
+    local folder = self:_getOwnerWeaponFolder(ownerUserId)
     if not folder then
         return
     end
@@ -549,7 +632,7 @@ function WeaponFxController:_rebuildLocalWeapons(payload)
         local tierConfig = WeaponTierConfig.Tiers[weaponTier]
         local templateName = resolveVisualTemplateName(weaponData, tierConfig)
         local visualIdentity = self:_buildVisualIdentity(weaponTier, templateName)
-        local previousState = self._localWeaponStates[weaponIndex]
+        local previousState = previousWeaponStates[weaponIndex]
         local currentAngle = redistributedAngles and redistributedAngles[weaponIndex] or previousAngles[weaponIndex] or ((weaponIndex - 1) * angleStep)
 
         if not tierConfig then
@@ -566,6 +649,7 @@ function WeaponFxController:_rebuildLocalWeapons(payload)
         else
             self:_destroyLocalWeaponState(previousState)
             nextWeaponStates[weaponIndex] = self:_createLocalWeaponState(
+                ownerUserId,
                 weaponIndex,
                 weaponTier,
                 templateName,
@@ -578,15 +662,28 @@ function WeaponFxController:_rebuildLocalWeapons(payload)
         end
     end
 
-    for index = weaponCount + 1, #self._localWeaponStates do
-        self:_destroyLocalWeaponState(self._localWeaponStates[index])
+    for index = weaponCount + 1, #previousWeaponStates do
+        self:_destroyLocalWeaponState(previousWeaponStates[index])
     end
 
-    self._localWeaponStates = nextWeaponStates
+    self._weaponStatesByOwnerUserId[ownerUserId] = nextWeaponStates
+    if self._localPlayer and ownerUserId == self._localPlayer.UserId then
+        self._localWeaponStates = nextWeaponStates
+    end
 end
 
 function WeaponFxController:_calculateOrbitCenter(rootPart)
     return rootPart.Position
+end
+
+function WeaponFxController:_getOwnerRootPart(ownerUserId)
+    local player = Players:GetPlayerByUserId(math.floor(tonumber(ownerUserId) or 0))
+    local character = player and player.Character
+    return character and character:FindFirstChild("HumanoidRootPart") or nil
+end
+
+function WeaponFxController:_hasOwnerPlayer(ownerUserId)
+    return Players:GetPlayerByUserId(math.floor(tonumber(ownerUserId) or 0)) ~= nil
 end
 
 function WeaponFxController:_buildWeaponCFrame(centerPosition, weaponState)
@@ -609,7 +706,15 @@ end
 
 function WeaponFxController:_updateLocalWeaponTransforms(deltaTime)
     local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
-    if #self._localWeaponStates <= 0 then
+    local hasWeaponStates = false
+    for _, weaponStates in pairs(self._weaponStatesByOwnerUserId) do
+        if #weaponStates > 0 then
+            hasWeaponStates = true
+            break
+        end
+    end
+
+    if not hasWeaponStates then
         if startedAt then
             self:_addPerfStat("RenderFrames")
             self:_logPerfStats(os.clock())
@@ -617,30 +722,41 @@ function WeaponFxController:_updateLocalWeaponTransforms(deltaTime)
         return
     end
 
-    local character = self._localPlayer and self._localPlayer.Character
-    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then
-        if startedAt then
-            self:_addPerfStat("RenderFrames")
-            self:_logPerfStats(os.clock())
-        end
-        return
-    end
-
-    local centerPosition = self:_calculateOrbitCenter(rootPart)
     local updatedCount = 0
-    for _, weaponState in ipairs(self._localWeaponStates) do
-        if weaponState.Instance and weaponState.Instance.Parent then
-            weaponState.OrbitSpeed = getWeaponOrbitSpeed()
-            weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
-            setWorldCFrame(weaponState.Instance, self:_buildWeaponCFrame(centerPosition, weaponState))
-            updatedCount += 1
+    local sampleCount = 0
+    local ownersToClear = {}
+    for ownerUserId, weaponStates in pairs(self._weaponStatesByOwnerUserId) do
+        local rootPart = self:_getOwnerRootPart(ownerUserId)
+        if not rootPart then
+            if self:_hasOwnerPlayer(ownerUserId) then
+                for _, weaponState in ipairs(weaponStates) do
+                    self:_setLocalWeaponStateVisible(weaponState, false)
+                end
+            else
+                table.insert(ownersToClear, ownerUserId)
+            end
+            continue
         end
+
+        local centerPosition = self:_calculateOrbitCenter(rootPart)
+        sampleCount += #weaponStates
+        for _, weaponState in ipairs(weaponStates) do
+            if weaponState.Instance and weaponState.Instance.Parent then
+                self:_setLocalWeaponStateVisible(weaponState, true)
+                weaponState.OrbitSpeed = getWeaponOrbitSpeed()
+                weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
+                setWorldCFrame(weaponState.Instance, self:_buildWeaponCFrame(centerPosition, weaponState))
+                updatedCount += 1
+            end
+        end
+    end
+    for _, ownerUserId in ipairs(ownersToClear) do
+        self:_clearOwnerWeapons(ownerUserId)
     end
 
     if startedAt then
         self:_addPerfStat("RenderFrames")
-        self:_addPerfStat("LocalWeaponSamples", #self._localWeaponStates)
+        self:_addPerfStat("LocalWeaponSamples", sampleCount)
         self:_addPerfStat("LocalWeaponUpdates", updatedCount)
         self:_addPerfStat("TransformElapsedSeconds", os.clock() - startedAt)
         self:_logPerfStats(os.clock())
@@ -649,10 +765,6 @@ end
 
 function WeaponFxController:_hideOwnedServerWeapons()
     local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
-    local localUserId = self._localPlayer and self._localPlayer.UserId
-    if not localUserId then
-        return
-    end
 
     local now = os.clock()
     if not self._serverWeaponVisibilityDirty and now < self._nextServerWeaponVisibilityRefreshClock then
@@ -666,7 +778,7 @@ function WeaponFxController:_hideOwnedServerWeapons()
     for basePart in pairs(self._hiddenServerParts) do
         if not basePart.Parent then
             self._hiddenServerParts[basePart] = nil
-        elseif resolveOwnerUserId(basePart) ~= localUserId then
+        elseif math.max(0, tonumber(resolveOwnerUserId(basePart)) or 0) <= 0 then
             basePart.LocalTransparencyModifier = 0
             self._hiddenServerParts[basePart] = nil
         end
@@ -675,7 +787,7 @@ function WeaponFxController:_hideOwnedServerWeapons()
     for effect, previousEnabled in pairs(self._hiddenServerEffects) do
         if not effect.Parent then
             self._hiddenServerEffects[effect] = nil
-        elseif resolveOwnerUserId(effect) ~= localUserId then
+        elseif math.max(0, tonumber(resolveOwnerUserId(effect)) or 0) <= 0 then
             effect.Enabled = previousEnabled
             self._hiddenServerEffects[effect] = nil
         end
@@ -686,7 +798,7 @@ function WeaponFxController:_hideOwnedServerWeapons()
     end
 
     for _, basePart in ipairs(getRuntimeWeaponParts(weaponsFolder)) do
-        if not self._hiddenServerParts[basePart] and resolveOwnerUserId(basePart) == localUserId then
+        if not self._hiddenServerParts[basePart] and math.max(0, tonumber(resolveOwnerUserId(basePart)) or 0) > 0 then
             self._hiddenServerParts[basePart] = true
             basePart.LocalTransparencyModifier = 1
             self:_addPerfStat("ServerPartsHidden")
@@ -694,7 +806,7 @@ function WeaponFxController:_hideOwnedServerWeapons()
     end
 
     for _, effect in ipairs(getRuntimeWeaponVisualEffects(weaponsFolder)) do
-        if not self._hiddenServerEffects[effect] and resolveOwnerUserId(effect) == localUserId then
+        if not self._hiddenServerEffects[effect] and math.max(0, tonumber(resolveOwnerUserId(effect)) or 0) > 0 then
             self._hiddenServerEffects[effect] = effect.Enabled
             effect.Enabled = false
             self:_addPerfStat("ServerEffectsHidden")
@@ -710,7 +822,12 @@ end
 function WeaponFxController:_onWeaponStateSync(payload)
     self:_addPerfStat("WeaponStateSyncEvents")
     self:_markServerWeaponVisibilityDirty()
+    local ownerUserId = math.floor(tonumber(payload and payload.ownerUserId) or (self._localPlayer and self._localPlayer.UserId) or 0)
+    if ownerUserId <= 0 then
+        return
+    end
     self:_rebuildLocalWeapons({
+        ownerUserId = ownerUserId,
         weaponTier = tostring(payload and payload.weaponTier or "None"),
         weaponCount = math.max(0, math.floor(tonumber(payload and payload.weaponCount) or 0)),
         weaponIcon = payload and payload.weaponIcon or nil,
@@ -762,9 +879,10 @@ function WeaponFxController:_logPerfStats(now)
         local localFolder = self._localWeaponFolder
         local runtimeFolder = self._runtimeWeaponsFolder
         print(string.format(
-            "[Diag][WeaponFxController] frames=%d localWeapons=%d localFolderChildren=%d localFolderDesc=%d runtimeChildren=%d runtimeDesc=%d runtimeBinds=%d hiddenParts=%d hiddenEffects=%d weaponSync=%d created=%d updates=%d visibilityRefreshes=%d partsHidden=%d effectsHidden=%d transformMs=%.3f visibilityMs=%.3f",
+            "[Diag][WeaponFxController] frames=%d localWeapons=%d visualOwners=%d localFolderChildren=%d localFolderDesc=%d runtimeChildren=%d runtimeDesc=%d runtimeBinds=%d hiddenParts=%d hiddenEffects=%d weaponSync=%d created=%d updates=%d visibilityRefreshes=%d partsHidden=%d effectsHidden=%d transformMs=%.3f visibilityMs=%.3f",
             stats.RenderFrames,
             #self._localWeaponStates,
+            countMapEntries(self._weaponStatesByOwnerUserId),
             localFolder and #localFolder:GetChildren() or 0,
             countDescendants(localFolder),
             runtimeFolder and #runtimeFolder:GetChildren() or 0,
@@ -787,10 +905,30 @@ function WeaponFxController:_logPerfStats(now)
     self._nextPerfLogClock = now + getPerformanceLogInterval()
 end
 
+function WeaponFxController:_requestStateSync()
+    if self._requestStateSyncEvent and self._requestStateSyncEvent.Parent then
+        self._requestStateSyncEvent:FireServer()
+    end
+end
+
+function WeaponFxController:_waitForLocalRootAndRequestStateSync(character)
+    if not character then
+        return
+    end
+
+    task.spawn(function()
+        local rootPart = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 5)
+        if rootPart and rootPart.Parent and character.Parent then
+            self:_requestStateSync()
+        end
+    end)
+end
+
 function WeaponFxController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._runtimeWeaponFolderConnections)
     self:_clearRuntimeWeaponInstanceConnections()
+    self:_clearLocalWeapons()
     self._runtimeWeaponsFolder = nil
     self._serverWeaponVisibilityDirty = true
     self._nextServerWeaponVisibilityRefreshClock = 0
@@ -799,6 +937,7 @@ function WeaponFxController:Init(dependencies)
 
     local eventsFolder = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
     local battleEventsFolder = eventsFolder:WaitForChild(RemoteNames.BattleEventsFolder)
+    local systemEventsFolder = eventsFolder:WaitForChild(RemoteNames.SystemEventsFolder)
     local weaponStateSyncEvent = battleEventsFolder:WaitForChild(RemoteNames.Battle.WeaponStateSync)
 
     if self._syncConnection then
@@ -808,6 +947,35 @@ function WeaponFxController:Init(dependencies)
     self._syncConnection = weaponStateSyncEvent.OnClientEvent:Connect(function(payload)
         self:_onWeaponStateSync(payload)
     end)
+    self._requestStateSyncEvent = systemEventsFolder:FindFirstChild(RemoteNames.System.RequestPlayerStateSync)
+    if self._requestStateSyncEvent and self._requestStateSyncEvent:IsA("RemoteEvent") then
+        task.defer(function()
+            self:_requestStateSync()
+        end)
+    else
+        self._requestStateSyncEvent = nil
+    end
+
+    if self._playerRemovingConnection then
+        self._playerRemovingConnection:Disconnect()
+        self._playerRemovingConnection = nil
+    end
+    self._playerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
+        self:_clearOwnerWeapons(player.UserId)
+    end)
+
+    if self._localCharacterAddedConnection then
+        self._localCharacterAddedConnection:Disconnect()
+        self._localCharacterAddedConnection = nil
+    end
+    if self._localPlayer then
+        self._localCharacterAddedConnection = self._localPlayer.CharacterAdded:Connect(function(character)
+            self:_waitForLocalRootAndRequestStateSync(character)
+        end)
+        if self._localPlayer.Character then
+            self:_waitForLocalRootAndRequestStateSync(self._localPlayer.Character)
+        end
+    end
 
     if self._renderConnection then
         self._renderConnection:Disconnect()

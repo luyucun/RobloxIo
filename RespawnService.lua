@@ -43,6 +43,7 @@ RespawnService._arenaTransitionFeedbackEvent = nil
 RespawnService._deathSerialByActorId = {}
 RespawnService._defeatRecordsByUserId = {}
 RespawnService._arenaRevivePendingByUserId = {}
+RespawnService._arenaReviveOptionsByUserId = {}
 
 local function getActorId(actor)
     return ActorUtils.GetActorId(actor)
@@ -88,14 +89,24 @@ function RespawnService:IsCurrentDefeatRecord(player, defeatRecord)
     local state = self._playerStateService and self._playerStateService:GetState(player) or nil
     return state
         and state.Alive == false
-        and defeatRecord
+        and self:IsDefeatRecordForCurrentDeath(player, defeatRecord)
+end
+
+function RespawnService:IsDefeatRecordForCurrentDeath(player, defeatRecord)
+    if not ActorUtils.IsPlayer(player) then
+        return false
+    end
+
+    return defeatRecord
         and tonumber(defeatRecord.deathSerial) == self:_getDeathSerial(player)
 end
 
-function RespawnService:_setArenaRevivePending(player)
+function RespawnService:_setArenaRevivePending(player, options)
     local userId = getUserId(player)
     if userId > 0 then
-        self._arenaRevivePendingByUserId[userId] = true
+        self._arenaRevivePendingByUserId[userId] = {
+            preserveDefeatRecord = type(options) == "table" and options.preserveDefeatRecord == true or false,
+        }
     end
 end
 
@@ -103,15 +114,17 @@ function RespawnService:_clearArenaRevivePending(player)
     local userId = getUserId(player)
     if userId > 0 then
         self._arenaRevivePendingByUserId[userId] = nil
+        self._arenaReviveOptionsByUserId[userId] = nil
     end
 end
 
 function RespawnService:ConsumeArenaReviveRequest(player)
     local userId = getUserId(player)
-    if userId <= 0 or self._arenaRevivePendingByUserId[userId] ~= true then
+    if userId <= 0 or self._arenaRevivePendingByUserId[userId] == nil then
         return false
     end
 
+    self._arenaReviveOptionsByUserId[userId] = self._arenaRevivePendingByUserId[userId]
     self._arenaRevivePendingByUserId[userId] = nil
     return true
 end
@@ -141,7 +154,7 @@ function RespawnService:_waitForUsableCharacter(player, timeoutSeconds)
     return false
 end
 
-function RespawnService:CompleteArenaRevive(player)
+function RespawnService:CompleteArenaRevive(player, options)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._arenaService and self._playerStateService) then
         return false
     end
@@ -154,7 +167,12 @@ function RespawnService:CompleteArenaRevive(player)
         end
     end
 
-    self:_clearDefeatRecord(player)
+    local userId = getUserId(player)
+    local reviveOptions = type(options) == "table" and options or self._arenaReviveOptionsByUserId[userId]
+    self._arenaReviveOptionsByUserId[userId] = nil
+    if not (type(reviveOptions) == "table" and reviveOptions.preserveDefeatRecord == true) then
+        self:_clearDefeatRecord(player)
+    end
     local state = self._playerStateService:GetState(player)
     state.Alive = true
     state.IsInArena = false
@@ -167,16 +185,21 @@ function RespawnService:CompleteArenaRevive(player)
     return self._arenaService:TryEnterArena(player, { IgnoreDebounce = true }) == true
 end
 
-function RespawnService:_revivePlayerNow(player)
+function RespawnService:_revivePlayerNow(player, options)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._arenaService and self._playerStateService) then
         return false
     end
 
-    self:_clearDefeatRecord(player)
+    local preserveDefeatRecord = type(options) == "table" and options.preserveDefeatRecord == true
+    if not preserveDefeatRecord then
+        self:_clearDefeatRecord(player)
+    end
     local humanoid = ActorUtils.GetHumanoid(player)
     local rootPart = ActorUtils.GetRootPart(player)
     if not (humanoid and rootPart and humanoid.Health > 0) then
-        self:_setArenaRevivePending(player)
+        self:_setArenaRevivePending(player, {
+            preserveDefeatRecord = preserveDefeatRecord,
+        })
         self:_fireSkipSpawnCameraLook(player)
         local didLoad = pcall(function()
             player:LoadCharacter()
@@ -188,7 +211,9 @@ function RespawnService:_revivePlayerNow(player)
         return true
     end
 
-    return self:CompleteArenaRevive(player)
+    return self:CompleteArenaRevive(player, {
+        preserveDefeatRecord = preserveDefeatRecord,
+    })
 end
 
 function RespawnService:RevivePlayer(player)
@@ -213,11 +238,33 @@ function RespawnService:_schedulePlayerRevive(player, delaySeconds, deathSerial)
         if state and state.Alive == true and state.IsInArena == true then
             return
         end
-        self:_revivePlayerNow(player)
+        self:_revivePlayerNow(player, {
+            preserveDefeatRecord = defeatRecord and defeatRecord.revivePurchasePending == true or false,
+        })
     end)
 end
 
-function RespawnService:_recordPlayerDefeat(player, sourceActor, deathSerial)
+function RespawnService:_captureCombatSnapshot(actor, deathSerial)
+    local state = self._playerStateService and self._playerStateService:GetState(actor) or nil
+    if not state then
+        return nil
+    end
+
+    local preDeathLevel = math.clamp(
+        math.floor(tonumber(state.Level) or GameConfig.PLAYER.BaseLevel),
+        1,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
+    return {
+        deathSerial = deathSerial,
+        preDeathLevel = preDeathLevel,
+        preDeathExperience = math.max(0, math.floor(tonumber(state.Experience) or GameConfig.PLAYER.BaseExperience)),
+        preDeathKillCount = math.max(0, math.floor(tonumber(state.KillCount) or 0)),
+        capturedAt = os.clock(),
+    }
+end
+
+function RespawnService:_recordPlayerDefeat(player, sourceActor, deathSerial, combatSnapshot)
     if not ActorUtils.IsPlayer(player) then
         return
     end
@@ -229,6 +276,8 @@ function RespawnService:_recordPlayerDefeat(player, sourceActor, deathSerial)
         killerName = sourceActor and ActorUtils.GetActorName(sourceActor) or "",
         createdAt = os.clock(),
         expiresAt = os.clock() + math.max(1, tonumber(GameConfig.RESPAWN.PlayerKillReviveCountdownSeconds) or 15),
+        revivePurchasePending = false,
+        combatSnapshot = combatSnapshot,
     }
 end
 
@@ -238,6 +287,7 @@ function RespawnService:HandleActorDeath(actor, sourceActor)
     end
 
     local deathSerial = self:_nextDeathSerial(actor)
+    local combatSnapshot = self:_captureCombatSnapshot(actor, deathSerial)
     self._playerStateService:ResetCombatState(actor)
     if self._weaponService then
         self._weaponService:ClearPlayerWeapons(actor)
@@ -248,7 +298,7 @@ function RespawnService:HandleActorDeath(actor, sourceActor)
         self._botService:ScheduleRespawn(actor)
     elseif ActorUtils.IsPlayer(actor) then
         if ActorUtils.IsPlayer(sourceActor) and not ActorUtils.IsSameActor(actor, sourceActor) then
-            self:_recordPlayerDefeat(actor, sourceActor, deathSerial)
+            self:_recordPlayerDefeat(actor, sourceActor, deathSerial, combatSnapshot)
             self:_schedulePlayerRevive(actor, GameConfig.RESPAWN.PlayerKillReviveCountdownSeconds, deathSerial)
         else
             self:_clearDefeatRecord(actor)
@@ -270,12 +320,41 @@ function RespawnService:_onRequestDefeatedAction(player, action)
     local state = self._playerStateService and self._playerStateService:GetState(player) or nil
     local defeatRecord = self:GetDefeatRecord(player)
     local currentDeathSerial = self:_getDeathSerial(player)
-    if not (state and state.Alive == false and currentDeathSerial > 0) then
+    if not (state and currentDeathSerial > 0) then
         return
     end
 
-    if normalizedAction == "Revive" or normalizedAction == "Close" then
+    if normalizedAction == "Revive" then
+        if state.Alive ~= false then
+            return
+        end
+        self:_revivePlayerNow(player, {
+            preserveDefeatRecord = defeatRecord and defeatRecord.revivePurchasePending == true or false,
+        })
+    elseif normalizedAction == "Close" then
+        if state.Alive ~= false then
+            return
+        end
         self:RevivePlayer(player)
+    elseif normalizedAction == "RevivePurchase" then
+        if not self:IsCurrentDefeatRecord(player, defeatRecord) then
+            return
+        end
+        defeatRecord.revivePurchasePending = true
+    elseif normalizedAction == "RevivePurchaseCancel" then
+        if not self:IsDefeatRecordForCurrentDeath(player, defeatRecord) then
+            return
+        end
+        defeatRecord.revivePurchasePending = false
+        if state.Alive == false then
+            self:_schedulePlayerRevive(
+                player,
+                math.max(0, (tonumber(defeatRecord.expiresAt) or os.clock()) - os.clock()),
+                defeatRecord.deathSerial
+            )
+        else
+            self:_clearDefeatRecord(player)
+        end
     elseif normalizedAction == "Revenge" then
         if not self:IsCurrentDefeatRecord(player, defeatRecord) then
             return
@@ -294,6 +373,61 @@ function RespawnService:_onRequestDefeatedAction(player, action)
     end
 end
 
+function RespawnService:GrantDefeatedRevivePurchase(player)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false
+    end
+
+    local defeatRecord = self:GetDefeatRecord(player)
+    if not defeatRecord then
+        return true
+    end
+
+    if not self:IsDefeatRecordForCurrentDeath(player, defeatRecord) then
+        self:_clearDefeatRecord(player)
+        return true
+    end
+
+    if defeatRecord.revivePurchasePending ~= true then
+        if self:IsCurrentDefeatRecord(player, defeatRecord) then
+            return false
+        end
+        self:_clearDefeatRecord(player)
+        return true
+    end
+
+    local snapshot = defeatRecord.combatSnapshot
+    if type(snapshot) ~= "table" then
+        self:_clearDefeatRecord(player)
+        return true
+    end
+
+    local state = self._playerStateService:GetState(player)
+    if state and state.Alive == false then
+        local revived = self:_revivePlayerNow(player, {
+            preserveDefeatRecord = true,
+        })
+        if not revived then
+            return false
+        end
+    end
+
+    if not self._playerStateService.RestoreCombatProgress then
+        return false
+    end
+
+    local restored = self._playerStateService:RestoreCombatProgress(player, snapshot, {
+        restoreFullHealth = true,
+        rebuildWeapons = true,
+    })
+    if not restored then
+        return false
+    end
+
+    self:_clearDefeatRecord(player)
+    return true
+end
+
 function RespawnService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._weaponService = dependencies.WeaponService
@@ -304,6 +438,7 @@ function RespawnService:Init(dependencies)
     self._deathSerialByActorId = {}
     self._defeatRecordsByUserId = {}
     self._arenaRevivePendingByUserId = {}
+    self._arenaReviveOptionsByUserId = {}
 
     if self._requestDefeatedActionConnection then
         self._requestDefeatedActionConnection:Disconnect()

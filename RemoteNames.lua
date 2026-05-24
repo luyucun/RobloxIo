@@ -14,6 +14,7 @@ local RemoteNames = {
         RequestPlayerStateSync = "RequestPlayerStateSync",
         ArenaTransitionFeedback = "ArenaTransitionFeedback",
         DeathFeedback = "DeathFeedback",
+        KillInfoFeedback = "KillInfoFeedback",
         StudioBotCommand = "StudioBotCommand",
         LevelUpFeedback = "LevelUpFeedback",
         PortalJoinPrompt = "PortalJoinPrompt",
