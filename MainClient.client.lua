@@ -75,6 +75,7 @@ local WeaponFxController = requireLocalModule("WeaponFxController")
 local ClientEventController = requireLocalModule("ClientEventController")
 local GlobalLeaderboardController = requireLocalModule("GlobalLeaderboardController")
 local LocalLeaderboardController = requireLocalModule("LocalLeaderboardController")
+local FriendsRankingController = requireLocalModule("FriendsRankingController")
 local MonsterAnimationController = requireLocalModule("MonsterAnimationController")
 local LocalMonsterController = requireLocalModule("LocalMonsterController")
 local AutoBattleController = requireLocalModule("AutoBattleController")
@@ -88,6 +89,7 @@ local DefeatedController = requireLocalModule("DefeatedController")
 local CameraController = requireLocalModule("CameraController")
 local CoreGuiController = requireLocalModule("CoreGuiController")
 local NukeCinematicController = requireLocalModule("NukeCinematicController")
+local RevengeCinematicController = requireLocalModule("RevengeCinematicController")
 local SpecialEventController = requireLocalModule("SpecialEventController")
 local GroupRewardController = requireLocalModule("GroupRewardController")
 local ArenaProgressController = requireLocalModule("ArenaProgressController")
@@ -99,6 +101,9 @@ local WheelController = requireLocalModule("WheelController")
 local SkinController = requireLocalModule("SkinController")
 local SubscriptionController = requireLocalModule("SubscriptionController")
 local ShopController = requireLocalModule("ShopController")
+local CodeController = requireLocalModule("CodeController")
+local OnlineRewardController = requireLocalModule("OnlineRewardController")
+local SevenDayLoginRewardController = requireLocalModule("SevenDayLoginRewardController")
 local OptionController = requireLocalModule("OptionController")
 local BossHitFeedbackController = requireLocalModule("BossHitFeedbackController")
 local NoobMachineController = requireLocalModule("NoobMachineController")
@@ -157,6 +162,11 @@ initController("GlobalLeaderboardController", GlobalLeaderboardController, {
 })
 
 initController("LocalLeaderboardController", LocalLeaderboardController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
+initController("FriendsRankingController", FriendsRankingController, {
     LocalPlayer = localPlayer,
     RootScript = script,
 })
@@ -231,15 +241,26 @@ initController("WheelController", WheelController, {
     AudioSettingsController = AudioSettingsController,
 })
 
+initController("SubscriptionController", SubscriptionController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
+initController("OnlineRewardController", OnlineRewardController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
+initController("SevenDayLoginRewardController", SevenDayLoginRewardController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
 initController("SkinController", SkinController, {
     LocalPlayer = localPlayer,
     RootScript = script,
     WheelController = WheelController,
-})
-
-initController("SubscriptionController", SubscriptionController, {
-    LocalPlayer = localPlayer,
-    RootScript = script,
+    SevenDayLoginRewardController = SevenDayLoginRewardController,
 })
 
 initController("ShopController", ShopController, {
@@ -247,6 +268,12 @@ initController("ShopController", ShopController, {
     RootScript = script,
     WheelController = WheelController,
     SubscriptionController = SubscriptionController,
+    SevenDayLoginRewardController = SevenDayLoginRewardController,
+})
+
+initController("CodeController", CodeController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
 })
 
 initController("OptionController", OptionController, {
@@ -286,4 +313,9 @@ initController("NukeCinematicController", NukeCinematicController, {
     RootScript = script,
     LocalMonsterController = LocalMonsterController,
     AudioSettingsController = AudioSettingsController,
+})
+
+initController("RevengeCinematicController", RevengeCinematicController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
 })

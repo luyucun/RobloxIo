@@ -10,7 +10,7 @@
 
 一、架构定位
 1.当前架构以服务端为玩法真值。
-2.核心状态由 `PlayerStateService` 管理：Level、Experience、Health、WeaponTier、WeaponCount、KillCount、TotalPlayerKills、Diamonds、Buffs、IsInArena、Alive。
+2.核心状态由 `PlayerStateService` 管理：Level、Experience、Health、WeaponTier、WeaponCount、KillCount、TotalPlayerKills、Diamonds、Buffs、IsInArena、Alive，以及订阅/商店/每日免费复活等持久领取状态。
 3.武器生成、武器碰撞、玩家伤害、小怪伤害、经验结算、Buff 生效、死亡和排行榜均由服务端判定。
 4.客户端当前主要通过 `WeaponFxController` 消费 `WeaponStateSync`，为所有真实玩家创建更顺滑的武器视觉副本；服务端武器实例继续保留为碰撞和伤害真值。
 
@@ -41,13 +41,15 @@
 - `ResolveLoadoutForLevel(level)` 负责等级到武器档位和数量的映射。
 3.`RemoteNames`
 - 集中声明 RemoteEvent 文件夹和事件名。
-4.`MonsterCatalog`
+4.`OnlineRewardConfig`
+- 由 `IO_BaseBalanceDraft.xlsx / 在线奖励` 同步在线奖励定义，包含奖励类型、数量、图标和本轮所需在线秒数；当前通过 `tools/SyncCodeConfigFromWorkbook.py` 与兑换码配置一起刷新。
+5.`MonsterCatalog`
 - 由 `IO_BaseBalanceDraft.xlsx / 怪物基础信息草稿` 同步怪物定义，包含模板、权重、击杀积分、基础战斗数值、经验和动画配置。
 - 普通小怪随机池由 `TypeName = 普通小怪` 且 `SpawnWeight > 0` 的定义组成；当前为 `Monster001`-`Monster007`。
-5.`SpecialEventConfig`
+6.`SpecialEventConfig`
 - 由 `IO_BaseBalanceDraft.xlsx / 特殊事件` 同步特殊事件定义，包含事件 ID、名字、权重、客户端场景路径、事件板文本名和持续时间。
 - 特殊事件按服务器运行时每 10 分钟触发一次，排除最近 2 次事件后按权重抽取。
-6.兼容/归档配置：
+7.兼容/归档配置：
 - `AttackProgressionConfig`：保留 Deprecated 标记和警告，当前主线不使用。
 - `PickupConfig`：保留空配置，当前主线不使用。
 
@@ -65,16 +67,21 @@
 4.`ArenaService`
 - 管理 SpawnLocation、Map2.Portals.Portal、Battle。
 - 处理 Portal 触碰弹出 JoinGame、离开 Portal 范围关闭 JoinGame、接收 Join/Cancel 请求、随机落点、返回出生点。
+- 负责玩家本次服务器会话的首次进战场判定：首次成功进入战场发放 60 秒新手护盾，复活后再次进入战场继续发放现有 10 秒入场护盾。
 5.`WeaponService`
 - 按等级解析武器组，创建和维护服务端武器判定实例。
 - 运行时优先使用武器模板下的 `Aura` BasePart 作为命中盒体；缺少时按模型包围盒创建不可见 fallback Aura。
 - 处理武器环绕、武器残骸、武器损毁、玩家武器表现状态广播；客户端用同步数据渲染玩家可见的平滑视觉副本，Bot 仍使用服务端实例表现。
 6.`RespawnService`
 - 处理玩家/Bot 死亡后的战斗状态重置、武器清理和 Bot 延迟重生。
+- 处理 Defeated 免费复活、付费保级复活与普通关闭复活的服务端权威判定；每日免费保级复活只在本次会话首死、死亡前等级小于 30、且当天未使用时生效。
+- 玩家复活后再次进战场时，会显式标记为 `IsRevive = true`，避免误走首次入场的 60 秒新手护盾分支。
 7.`BuffService`
 - 管理 DamageMultiplier Buff 的生成、触碰拾取、状态写入和伤害倍率查询。
 8.`HealthService`
 - 处理受伤、Buff 伤害倍率、死亡、击杀计数、死亡反馈和重生入口。
+- 死亡反馈会附带 Defeated 免费复活是否可用、对应死亡前等级等客户端展示字段，但最终资格仍以 `RespawnService` 服务端判定为准。
+- `GrantShield` 只负责护盾时长叠加与表现同步，护盾时长由入场入口决定，不改动原有叠加规则。
 9.`CombatService`
 - 每帧扫描战斗区 Actor。
 - 先判定武器对武器，再判定武器对玩家本体。
@@ -98,7 +105,10 @@
 16.`SpecialEventService`
 - 作为特殊事件服务端真值，维护当前事件、未来两场事件、最近两次事件排除列表，并通过 `SpecialEventSync` 下发给客户端。
 - V2.2 只做事件场景与事件板表现，不生成 Boss。
-17.归档服务：
+17.`OnlineRewardService`
+- 管理 V4.3 本次在线会话奖励计时、状态同步、领取发奖、ClaimSuccessful 奖励弹框回传，以及 UnlockAll 开发者商品 `3599440996` 的收据处理；玩家离开后在线计时重置，不写入持久化会话进度。
+- 发经验奖励时走 `PlayerStateService:AddExperienceWithMultiplier`，其它奖励复用对应现有服务链路。
+18.归档服务：
 - `PickupService`：空实现，当前主线不初始化。
 
 五、数据与调试安全规则
@@ -130,7 +140,7 @@
 
 七、关键路径
 1.玩家入场：
-`PlayerAdded -> PlayerStateService:OnPlayerAdded -> CharacterAdded -> ArenaService:TeleportPlayerToSpawnLocation -> 触碰 Map2.Portals.Portal -> PortalJoinPrompt(Show) -> JoinGameController 显示 StarterGui/Main/JoinGame、隐藏其它 Main UI、开启 Lighting.Blur -> 点击 Join -> RequestJoinBattle(Join) -> ArenaService 校验已触发 Portal 弹窗且入场确认资格仍在 8 秒有效期内 -> TryEnterArena -> PlayerStateService:SetInArena(true) -> WeaponService:RebuildWeaponsForPlayer`
+`PlayerAdded -> PlayerStateService:OnPlayerAdded -> CharacterAdded -> ArenaService:TeleportPlayerToSpawnLocation -> 触碰 Map2.Portals.Portal -> PortalJoinPrompt(Show) -> JoinGameController 显示 StarterGui/Main/JoinGame、隐藏其它 Main UI、开启 Lighting.Blur -> 点击 Join -> RequestJoinBattle(Join) -> ArenaService 校验已触发 Portal 弹窗且入场确认资格仍在 8 秒有效期内 -> TryEnterArena -> PlayerStateService:SetInArena(true) -> 首次成功进战场发 60 秒护盾、复活进战场发 10 秒护盾 -> WeaponService:RebuildWeaponsForPlayer`
 2.Studio Bot：
 `RunService:IsStudio -> ensureStudioBots -> BotService:SpawnBots -> RegisterBot -> TryEnterArena -> WeaponService 创建武器 -> Bot 追敌/找经验`
 3.经验升级：
@@ -138,7 +148,7 @@
 4.武器对战：
 `CombatService:_stepCombat -> Aura 盒体命中检测 -> TierIndex 比较 -> WeaponService:HandleBrokenWeapon -> WeaponStateSync -> CombatFeedback`
 5.武器打玩家：
-`CombatService:_stepCombat -> Aura 盒体命中玩家半径 -> CombatService:_applyWeaponVsActor -> HealthService:ApplyWeaponDamage -> SyncHumanoidHealth -> PlayerStateSync -> 玩家击杀时 AwardPlayerKillReward 增加 TotalPlayerKills 和 Diamonds / DeathFeedback / RespawnService`
+`CombatService:_stepCombat -> Aura 盒体命中玩家半径 -> CombatService:_applyWeaponVsActor -> HealthService:ApplyWeaponDamage -> SyncHumanoidHealth -> PlayerStateSync -> 玩家击杀时 AwardPlayerKillReward 增加 TotalPlayerKills 和 Diamonds / DeathFeedback(附带免费复活展示字段) / RespawnService`
 6.小怪：
 `MonsterService:_maintainPopulation -> SpawnMonster -> 怪物碰撞组/怪物间分离 -> 攻击范围内锁定最近 Arena Actor -> 超出脱战距离则清空目标并待机 -> 接触伤害 -> 受武器 Aura 伤害 -> 掉经验`
 7.Boss/Buff：
@@ -153,6 +163,8 @@
 `AutoBattleController -> 只寻找客户端本地普通小怪 -> Humanoid:MoveTo 直线靠近 -> 卡住检测 -> PathfindingService 路径绕路 -> 路径失败时短暂排除当前小怪并重新寻敌`
 12.特殊事件：
 `SpecialEventService:_step -> 按权重生成当前事件和未来两场 -> SpecialEventSync -> SpecialEventController 本地克隆 ReplicatedStorage/EventScene/<事件> 到 Workspace -> 更新 BattleSenceEventBoard / HomeEventBoard 倒计时 -> 事件结束后客户端清理本地克隆`
+13.在线奖励：
+`PlayerAdded -> OnlineRewardService:OnPlayerAdded 记录 StartedAt -> OnlineRewardStateSync -> OnlineRewardController 更新 Main.Right.Online 倒计时/红点和 Main.OnlineReward 奖励列表 -> RequestOnlineRewardClaim -> OnlineRewardService 校验在线秒数和已领取状态 -> 发放奖励 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful；UnlockAll 购买成功由 RebirthService.ProcessReceipt 委托 OnlineRewardService 解锁本轮全部奖励。`
 
 八、RemoteEvent
 1.SystemEvents：
@@ -166,6 +178,9 @@
 - RequestJoinBattle
 - SpecialEventSync
 - RequestSpecialEventSync
+- OnlineRewardStateSync
+- RequestOnlineRewardStateSync
+- RequestOnlineRewardClaim
 2.BattleEvents：
 - PickupFeedback
 - ExperienceFeedback

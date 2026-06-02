@@ -44,6 +44,8 @@ LeaderboardService._playtimeStore = nil
 LeaderboardService._killStore = nil
 LeaderboardService._rebirthStore = nil
 LeaderboardService._playtimeBaseByUserId = {}
+LeaderboardService._playtimeReadCacheByUserId = {}
+LeaderboardService._killReadCacheByUserId = {}
 LeaderboardService._lastGlobalWriteByMetricByUserId = {}
 LeaderboardService._nameCacheByUserId = {}
 LeaderboardService._readFailureByUserId = {
@@ -141,6 +143,10 @@ function LeaderboardService:_getNameForUserId(userId)
     return resolvedName
 end
 
+function LeaderboardService:GetNameForUserId(userId)
+    return self:_getNameForUserId(userId)
+end
+
 function LeaderboardService:_buildServerRows()
     local rows = {}
 
@@ -177,6 +183,82 @@ function LeaderboardService:_getPlaytimeValue(state)
     local userId = tonumber(state.UserId)
     local baseSeconds = userId and self._playtimeBaseByUserId[userId] or 0
     return normalizeValue(baseSeconds) + getSessionPlaytimeSeconds(state)
+end
+
+function LeaderboardService:GetPlaytimeValueForUserId(userId)
+    userId = tonumber(userId)
+    if not userId then
+        return 0
+    end
+
+    local onlinePlayer = Players:GetPlayerByUserId(userId)
+    local state = onlinePlayer and self._playerStateService and self._playerStateService:GetState(onlinePlayer) or nil
+    if state then
+        local value = self:_getPlaytimeValue(state)
+        self._playtimeReadCacheByUserId[userId] = {
+            value = normalizeValue(value),
+            clock = os.clock(),
+        }
+        return value
+    end
+
+    local cached = self._playtimeReadCacheByUserId[userId]
+    if cached and os.clock() - (tonumber(cached.clock) or 0) < 60 then
+        return normalizeValue(cached.value)
+    end
+
+    if not (GameConfig.LEADERBOARD.EnableDataStores and GameConfig.ShouldUsePersistentDataStores(RunService:IsStudio())) then
+        return normalizeValue(self._playtimeBaseByUserId[userId] or 0)
+    end
+
+    local value, readSuccess = self:_readStoredValue(self._playtimeStore, userId)
+    if readSuccess then
+        self._playtimeReadCacheByUserId[userId] = {
+            value = normalizeValue(value),
+            clock = os.clock(),
+        }
+        return normalizeValue(value)
+    end
+
+    return normalizeValue(self._playtimeBaseByUserId[userId] or 0)
+end
+
+function LeaderboardService:GetTotalPlayerKillsValueForUserId(userId)
+    userId = tonumber(userId)
+    if not userId then
+        return 0
+    end
+
+    local onlinePlayer = Players:GetPlayerByUserId(userId)
+    local state = onlinePlayer and self._playerStateService and self._playerStateService:GetState(onlinePlayer) or nil
+    if state then
+        local value = normalizeValue(state.TotalPlayerKills)
+        self._killReadCacheByUserId[userId] = {
+            value = value,
+            clock = os.clock(),
+        }
+        return value
+    end
+
+    local cached = self._killReadCacheByUserId[userId]
+    if cached and os.clock() - (tonumber(cached.clock) or 0) < 60 then
+        return normalizeValue(cached.value)
+    end
+
+    if not (GameConfig.LEADERBOARD.EnableDataStores and GameConfig.ShouldUsePersistentDataStores(RunService:IsStudio())) then
+        return 0
+    end
+
+    local value, readSuccess = self:_readStoredValue(self._killStore, userId)
+    if readSuccess then
+        self._killReadCacheByUserId[userId] = {
+            value = normalizeValue(value),
+            clock = os.clock(),
+        }
+        return normalizeValue(value)
+    end
+
+    return 0
 end
 
 function LeaderboardService:_readStoredValue(store, playerOrUserId)
@@ -251,6 +333,17 @@ function LeaderboardService:_writeStoredValueThrottled(metricKey, store, playerO
     if success then
         writeState.value = normalizedValue
         writeState.clock = now
+        if metricKey == "playtime" and userId > 0 then
+            self._playtimeReadCacheByUserId[userId] = {
+                value = normalizedValue,
+                clock = os.clock(),
+            }
+        elseif metricKey == "kills" and userId > 0 then
+            self._killReadCacheByUserId[userId] = {
+                value = normalizedValue,
+                clock = os.clock(),
+            }
+        end
     end
     return success
 end
@@ -288,6 +381,18 @@ function LeaderboardService:_loadPlayerTotals(player)
     local playtimeSeconds, playtimeReadSuccess = self:_readStoredValue(self._playtimeStore, player)
     local totalKills, killReadSuccess = self:_readStoredValue(self._killStore, player)
     self._playtimeBaseByUserId[userId] = playtimeReadSuccess and playtimeSeconds or (self._playtimeBaseByUserId[userId] or 0)
+    if playtimeReadSuccess then
+        self._playtimeReadCacheByUserId[userId] = {
+            value = normalizeValue(playtimeSeconds),
+            clock = os.clock(),
+        }
+    end
+    if killReadSuccess then
+        self._killReadCacheByUserId[userId] = {
+            value = normalizeValue(totalKills),
+            clock = os.clock(),
+        }
+    end
     self:_markReadFailure("playtime", userId, not playtimeReadSuccess)
     self:_markReadFailure("kills", userId, not killReadSuccess)
 
@@ -543,6 +648,8 @@ end
 function LeaderboardService:OnPlayerRemoving(player)
     self:SavePlayer(player)
     self._playtimeBaseByUserId[player.UserId] = nil
+    self._playtimeReadCacheByUserId[player.UserId] = nil
+    self._killReadCacheByUserId[player.UserId] = nil
     self:_markReadFailure("playtime", player.UserId, false)
     self:_markReadFailure("kills", player.UserId, false)
     for _, metricWrites in pairs(self._lastGlobalWriteByMetricByUserId) do
@@ -558,6 +665,8 @@ function LeaderboardService:Init(dependencies)
     self._nextSyncClock = 0
     self._nextGlobalSyncClock = os.clock() + getGlobalInitialSyncDelay()
     self._playtimeBaseByUserId = {}
+    self._playtimeReadCacheByUserId = {}
+    self._killReadCacheByUserId = {}
     self._lastGlobalWriteByMetricByUserId = {}
     self._nameCacheByUserId = {}
     self._readFailureByUserId = {

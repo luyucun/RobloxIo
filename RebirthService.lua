@@ -38,6 +38,8 @@ local GameConfig = requireSharedModule("GameConfig")
 local PotionConfig = requireSharedModule("PotionConfig")
 local WheelConfig = requireSharedModule("WheelConfig")
 local SkinConfig = requireSharedModule("SkinConfig")
+local TrailConfig = requireSharedModule("TrailConfig")
+local SevenDayLoginRewardConfig = requireSharedModule("SevenDayLoginRewardConfig")
 
 local RebirthService = {}
 
@@ -47,14 +49,20 @@ RebirthService._rebirthFeedbackEvent = nil
 RebirthService._healthService = nil
 RebirthService._respawnService = nil
 RebirthService._nukeService = nil
+RebirthService._revengeService = nil
 RebirthService._potionService = nil
 RebirthService._wheelService = nil
+RebirthService._skinService = nil
+RebirthService._onlineRewardService = nil
+RebirthService._sevenDayLoginRewardService = nil
 RebirthService._badgeAwardService = nil
+RebirthService._gameAnalyticsService = nil
 RebirthService._dataStore = nil
 RebirthService._dirtyByUserId = {}
 RebirthService._loadedByUserId = {}
 RebirthService._loadStateByUserId = {}
 RebirthService._loadRetryClockByUserId = {}
+RebirthService._savedProgressCacheByUserId = {}
 RebirthService._heartbeatConnection = nil
 RebirthService._nextSaveClock = 0
 RebirthService._shutdownInProgress = false
@@ -70,6 +78,28 @@ end
 
 local function asNonNegativeInteger(value)
     return math.max(0, math.floor(tonumber(value) or 0))
+end
+
+local function buildProgressSnapshot(rebirth, rebirthScore, highestLevelReached, savedProgress)
+    return {
+        rebirth = math.max(0, math.floor(tonumber(rebirth) or 0)),
+        rebirthScore = math.max(0, math.floor(tonumber(rebirthScore) or 0)),
+        highestLevelReached = math.clamp(
+            math.floor(tonumber(highestLevelReached) or GameConfig.PLAYER.BaseLevel),
+            1,
+            GameConfig.PLAYER.MaxSupportedLevel
+        ),
+        savedProgress = type(savedProgress) == "table" and savedProgress or {},
+        updatedAt = os.time(),
+    }
+end
+
+local function buildPurchaseAnalyticsFields(productGroup, productId, source)
+    return {
+        source = tostring(source or "shop"),
+        productGroup = tostring(productGroup or "Unknown"),
+        itemSku = tostring(productId or "Unknown"),
+    }
 end
 
 local function getUtcDayKey(timestamp)
@@ -99,11 +129,57 @@ local function normalizeFavoritePromptState(favoritePromptState)
     }
 end
 
+local function normalizeSevenDayLoginRewardState(rewardState)
+    local source = type(rewardState) == "table" and rewardState or {}
+    local rewardCount = SevenDayLoginRewardConfig.GetRewardCount()
+
+    local function normalizeDayFlags(values)
+        local normalized = {}
+        if type(values) ~= "table" then
+            return normalized
+        end
+        for key, value in pairs(values) do
+            local dayIndex = math.max(0, math.floor(tonumber(key) or tonumber(value) or 0))
+            if dayIndex >= 1 and dayIndex <= rewardCount and value == true then
+                normalized[tostring(dayIndex)] = true
+            end
+        end
+        return normalized
+    end
+
+    local function normalizeProcessedPurchases(values)
+        local normalized = {}
+        if type(values) ~= "table" then
+            return normalized
+        end
+        for key, value in pairs(values) do
+            local purchaseId = tostring(key or "")
+            if purchaseId ~= "" then
+                normalized[purchaseId] = math.max(0, math.floor(tonumber(value) or os.time()))
+            end
+        end
+        return normalized
+    end
+
+    return {
+        CycleId = math.max(0, math.floor(tonumber(source.CycleId or source.cycleId) or 0)),
+        UnlockedDays = normalizeDayFlags(source.UnlockedDays or source.unlockedDays),
+        ClaimedDays = normalizeDayFlags(source.ClaimedDays or source.claimedDays),
+        LastClaimAt = math.max(0, math.floor(tonumber(source.LastClaimAt or source.lastClaimAt) or 0)),
+        LastSequentialUnlockDay = math.clamp(math.floor(tonumber(source.LastSequentialUnlockDay or source.lastSequentialUnlockDay) or 0), 0, rewardCount),
+        CycleStartUtcDay = math.max(0, math.floor(tonumber(source.CycleStartUtcDay or source.cycleStartUtcDay) or 0)),
+        CycleStartsLockedUntilNextUtc = source.CycleStartsLockedUntilNextUtc == true or source.cycleStartsLockedUntilNextUtc == true,
+        PendingCycleReset = source.PendingCycleReset == true or source.pendingCycleReset == true,
+        ProcessedPurchaseIds = normalizeProcessedPurchases(source.ProcessedPurchaseIds or source.processedPurchaseIds),
+    }
+end
+
 local function normalizeSavedData(data)
     if type(data) ~= "table" then
         return 0, 0, GameConfig.PLAYER.BaseLevel, {
             guideCompleted = false,
             favoritePromptState = normalizeFavoritePromptState(nil),
+            sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(nil),
         }
     end
 
@@ -161,6 +237,18 @@ local function normalizeSavedData(data)
         end
     end
 
+    local dailyFreeReviveClaims = {}
+    local savedDailyFreeReviveClaims = type(data.dailyFreeReviveClaims) == "table" and data.dailyFreeReviveClaims or data.DailyFreeReviveClaims
+    if type(savedDailyFreeReviveClaims) == "table" then
+        for claimKey, utcDay in pairs(savedDailyFreeReviveClaims) do
+            local key = tostring(claimKey or "")
+            local day = tostring(utcDay or "")
+            if key ~= "" and day ~= "" then
+                dailyFreeReviveClaims[key] = day
+            end
+        end
+    end
+
     local options = {
         Music = true,
         Sfx = true,
@@ -187,6 +275,7 @@ local function normalizeSavedData(data)
     end
 
     local favoritePromptState = normalizeFavoritePromptState(data.favoritePromptState or data.FavoritePromptState)
+    local sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(data.sevenDayLoginRewardState or data.SevenDayLoginRewardState)
 
     local ownedSkins = {}
     local savedOwnedSkins = type(data.ownedSkins) == "table" and data.ownedSkins or data.OwnedSkins
@@ -202,6 +291,27 @@ local function normalizeSavedData(data)
     local equippedSkinId = math.floor(tonumber(data.equippedSkinId) or tonumber(data.EquippedSkinId) or 0)
     if equippedSkinId <= 0 or not (SkinConfig.GetSkin(equippedSkinId) and ownedSkins[tostring(equippedSkinId)] == true) then
         equippedSkinId = nil
+    end
+
+    local ownedTrails = {}
+    local savedOwnedTrails = type(data.ownedTrails) == "table" and data.ownedTrails or data.OwnedTrails
+    if type(savedOwnedTrails) == "table" then
+        for trailKey, owned in pairs(savedOwnedTrails) do
+            local trailId = owned == true and math.floor(tonumber(trailKey) or 0) or math.floor(tonumber(owned) or 0)
+            if trailId > 0 and TrailConfig.GetTrail(trailId) and (owned == true or tonumber(owned) ~= nil) then
+                ownedTrails[tostring(trailId)] = true
+            end
+        end
+    end
+    for _, trail in ipairs(TrailConfig.GetAllTrails()) do
+        if trail.IsDefaultUnlocked == true then
+            ownedTrails[tostring(trail.Id)] = true
+        end
+    end
+
+    local equippedTrailId = math.floor(tonumber(data.equippedTrailId) or tonumber(data.EquippedTrailId) or 0)
+    if equippedTrailId <= 0 or not (TrailConfig.GetTrail(equippedTrailId) and ownedTrails[tostring(equippedTrailId)] == true) then
+        equippedTrailId = nil
     end
 
     local function normalizeWeaponUnlockRewards(rewards)
@@ -308,11 +418,15 @@ local function normalizeSavedData(data)
         groupRewards = groupRewards,
         subscriptionClaims = subscriptionClaims,
         shopClaims = shopClaims,
+        dailyFreeReviveClaims = dailyFreeReviveClaims,
         options = options,
         guideCompleted = guideCompleted,
         favoritePromptState = favoritePromptState,
+        sevenDayLoginRewardState = sevenDayLoginRewardState,
         ownedSkins = ownedSkins,
         equippedSkinId = equippedSkinId,
+        ownedTrails = ownedTrails,
+        equippedTrailId = equippedTrailId,
         weaponUnlockRewards = normalizeWeaponUnlockRewards(data.weaponUnlockRewards or data.WeaponUnlockRewards),
         combatSnapshot = combatSnapshot,
         activePotions = activePotions,
@@ -334,6 +448,20 @@ function RebirthService:_fireFeedback(player, eventType, message)
         nextRebirthScore = state and GameConfig.GetRequiredRebirthScore(state.Rebirth) or GameConfig.GetRequiredRebirthScore(0),
         timestamp = os.clock(),
     })
+end
+
+function RebirthService:_trackShopPurchaseFunnel(player, stepNumber, stepName, productGroup, productId, source)
+    if not (self._gameAnalyticsService and self._gameAnalyticsService.TrackFunnel) then
+        return
+    end
+
+    self._gameAnalyticsService:TrackFunnel(
+        player,
+        "ShopPurchase",
+        stepNumber,
+        stepName,
+        buildPurchaseAnalyticsFields(productGroup, productId, source)
+    )
 end
 
 function RebirthService:MarkDirty(actor)
@@ -387,6 +515,15 @@ function RebirthService:_loadPlayer(player)
         self:_awardNewPlayerBadge(player)
         self._loadStateByUserId[userId] = "Loaded"
         self._loadRetryClockByUserId[userId] = nil
+        self._savedProgressCacheByUserId[userId] = {
+            snapshot = buildProgressSnapshot(rebirth, rebirthScore, highestLevelReached, savedProgress),
+            clock = os.clock(),
+        }
+        if self._gameAnalyticsService and self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(player, "Onboarding.PlayerDataReady") then
+            self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 2, "PlayerDataReady", {
+                source = "data",
+            })
+        end
         return
     end
 
@@ -403,11 +540,23 @@ function RebirthService:_loadPlayer(player)
 
     local rebirth, rebirthScore, highestLevelReached, savedProgress = normalizeSavedData(data)
     self._playerStateService:SetRebirthData(player, rebirth, rebirthScore, highestLevelReached, savedProgress)
+    self._savedProgressCacheByUserId[userId] = {
+        snapshot = buildProgressSnapshot(rebirth, rebirthScore, highestLevelReached, savedProgress),
+        clock = os.clock(),
+    }
+    if self._sevenDayLoginRewardService and self._sevenDayLoginRewardService.OnPlayerAdded then
+        self._sevenDayLoginRewardService:OnPlayerAdded(player)
+    end
     if data == nil then
         self:_awardNewPlayerBadge(player)
     end
     self._loadStateByUserId[userId] = "Loaded"
     self._loadRetryClockByUserId[userId] = nil
+    if self._gameAnalyticsService and self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(player, "Onboarding.PlayerDataReady") then
+        self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 2, "PlayerDataReady", {
+            source = "data",
+        })
+    end
     if savedProgress and savedProgress.combatSnapshot then
         self._dirtyByUserId[userId] = true
     else
@@ -447,11 +596,16 @@ function RebirthService:_buildSavePayload(player, options)
         groupRewards = state.GroupRewards or {},
         subscriptionClaims = state.SubscriptionClaims or {},
         shopClaims = state.ShopClaims or {},
+        codeClaims = state.CodeClaims or {},
+        dailyFreeReviveClaims = state.DailyFreeReviveClaims or {},
+        sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(state.SevenDayLoginRewardState),
         options = state.Options or { Music = true, Sfx = true },
         guideCompleted = state.GuideCompleted == true,
         favoritePromptState = self._playerStateService.GetFavoritePromptState and self._playerStateService:GetFavoritePromptState(player) or state.FavoritePromptState or {},
         ownedSkins = state.OwnedSkins or {},
         equippedSkinId = state.EquippedSkinId,
+        ownedTrails = state.OwnedTrails or {},
+        equippedTrailId = state.EquippedTrailId,
         weaponUnlockRewards = state.WeaponUnlockRewards or {},
         combatSnapshot = combatSnapshot,
         activePotions = self._playerStateService:GetActivePotions(player),
@@ -473,10 +627,84 @@ function RebirthService:_savePlayer(player, options)
     end)
     if success then
         self._dirtyByUserId[getUserId(player)] = nil
+        self._savedProgressCacheByUserId[getUserId(player)] = {
+            snapshot = buildProgressSnapshot(payload.rebirth, payload.rebirthScore, payload.highestLevelReached, {
+                diamonds = payload.diamonds,
+                wheelSpins = payload.wheelSpins,
+                potions = payload.potions,
+                groupRewards = payload.groupRewards,
+                subscriptionClaims = payload.subscriptionClaims,
+                shopClaims = payload.shopClaims,
+                dailyFreeReviveClaims = payload.dailyFreeReviveClaims,
+                options = payload.options,
+                guideCompleted = payload.guideCompleted,
+                favoritePromptState = payload.favoritePromptState,
+                sevenDayLoginRewardState = payload.sevenDayLoginRewardState,
+                ownedSkins = payload.ownedSkins,
+                equippedSkinId = payload.equippedSkinId,
+                ownedTrails = payload.ownedTrails,
+                equippedTrailId = payload.equippedTrailId,
+                weaponUnlockRewards = payload.weaponUnlockRewards,
+                combatSnapshot = payload.combatSnapshot,
+                activePotions = payload.activePotions,
+                activePotion = payload.activePotion,
+            }),
+            clock = os.clock(),
+        }
     else
         warn("[RebirthService] 保存 Rebirth 数据失败: " .. tostring(player.Name))
     end
     return success
+end
+
+function RebirthService:GetSavedProgressSnapshot(playerOrUserId)
+    local userId = typeof(playerOrUserId) == "Instance" and getUserId(playerOrUserId) or math.floor(tonumber(playerOrUserId) or 0)
+    if userId <= 0 then
+        return buildProgressSnapshot(0, 0, GameConfig.PLAYER.BaseLevel)
+    end
+
+    local onlinePlayer = Players:GetPlayerByUserId(userId)
+    local state = onlinePlayer and self._playerStateService and self._playerStateService:GetState(onlinePlayer) or nil
+    if state then
+        return buildProgressSnapshot(state.Rebirth, state.RebirthScore, state.HighestLevelReached or state.Level)
+    end
+
+    local cached = self._savedProgressCacheByUserId[userId]
+    if cached and os.clock() - (tonumber(cached.clock) or 0) < 60 and type(cached.snapshot) == "table" then
+        return cached.snapshot
+    end
+
+    if not self._dataStore then
+        local rebirth, rebirthScore, highestLevelReached, savedProgress = normalizeSavedData(nil)
+        return buildProgressSnapshot(rebirth, rebirthScore, highestLevelReached, savedProgress)
+    end
+
+    local success, data = pcall(function()
+        return self._dataStore:GetAsync(getDataKey(userId))
+    end)
+    if not success then
+        warn("[RebirthService] 读取好友榜进度快照失败: " .. tostring(userId))
+        return nil
+    end
+
+    local rebirth, rebirthScore, highestLevelReached, savedProgress = normalizeSavedData(data)
+    local snapshot = buildProgressSnapshot(rebirth, rebirthScore, highestLevelReached, savedProgress)
+    self._savedProgressCacheByUserId[userId] = {
+        snapshot = snapshot,
+        clock = os.clock(),
+    }
+    return snapshot
+end
+
+function RebirthService:SavePlayerNow(player, options)
+    if not (player and player.Parent) then
+        return false
+    end
+    return self:_savePlayer(player, options)
+end
+
+function RebirthService:FlushPlayer(player, options)
+    return self:SavePlayerNow(player, options)
 end
 
 function RebirthService:SaveAllPlayersForShutdown()
@@ -576,44 +804,15 @@ function RebirthService:_processNuke(player)
 end
 
 function RebirthService:_processRevenge(player)
-    if not (player and player.Parent and self._respawnService) then
+    if not (player and player.Parent and self._revengeService and self._revengeService.RequestRevenge) then
         return false
     end
 
-    local defeatRecord = self._respawnService:GetDefeatRecord(player)
-    if self._respawnService.IsCurrentDefeatRecord
-        and not self._respawnService:IsCurrentDefeatRecord(player, defeatRecord)
-    then
-        return false
-    end
-    local state = self._playerStateService and self._playerStateService:GetState(player) or nil
-    if not (state and state.Alive == false and defeatRecord and defeatRecord.deathSerial) then
-        return false
+    if self._revengeService.MarkRevengePurchasePending then
+        return self._revengeService:MarkRevengePurchasePending(player)
     end
 
-    local killerUserId = defeatRecord and tonumber(defeatRecord.killerUserId) or nil
-    if not (killerUserId and killerUserId > 0 and self._healthService) then
-        return false
-    end
-
-    local killerPlayer = Players:GetPlayerByUserId(killerUserId)
-    if not killerPlayer then
-        return false
-    end
-
-    local didKill = false
-    if self._healthService.KillActor then
-        didKill = select(2, self._healthService:KillActor(killerPlayer, player))
-    else
-        didKill = select(2, self._healthService:ApplyWeaponDamage(killerPlayer, GameConfig.MONETIZATION.NukeDamage, player))
-    end
-    if not didKill then
-        return false
-    end
-
-    self._respawnService:RevivePlayer(player)
-    print(string.format("[RebirthService] Revenge granted to %s against %s", player.Name, killerPlayer.Name))
-    return true
+    return self._revengeService:RequestRevenge(player)
 end
 
 function RebirthService:_processDefeatedRevive(player)
@@ -636,11 +835,33 @@ function RebirthService:_processWheelPurchase(player, productId)
         return false
     end
 
+    self:_trackShopPurchaseFunnel(player, 5, "ProductReceiptGranted", "WheelSpins", productId, "shop")
     return self._wheelService:GrantPurchasedSpins(player, productId)
 end
 
 function RebirthService:_processReceipt(receiptInfo)
     local productId = receiptInfo.ProductId
+    if self._skinService and self._skinService.ProcessReceipt then
+        local handled, decision = self._skinService:ProcessReceipt(receiptInfo)
+        if handled == true then
+            return decision or Enum.ProductPurchaseDecision.NotProcessedYet
+        end
+    end
+
+    if self._onlineRewardService and self._onlineRewardService.ProcessReceipt then
+        local handled, decision = self._onlineRewardService:ProcessReceipt(receiptInfo)
+        if handled == true then
+            return decision or Enum.ProductPurchaseDecision.NotProcessedYet
+        end
+    end
+
+    if self._sevenDayLoginRewardService and self._sevenDayLoginRewardService.ProcessReceipt then
+        local handled, decision = self._sevenDayLoginRewardService:ProcessReceipt(receiptInfo)
+        if handled == true then
+            return decision or Enum.ProductPurchaseDecision.NotProcessedYet
+        end
+    end
+
     local wheelPurchase = WheelConfig.GetPurchaseByProductId(productId)
     if wheelPurchase then
         local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
@@ -649,6 +870,9 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self:_processWheelPurchase(player, productId)
+        if success then
+            self:_trackShopPurchaseFunnel(player, 6, "RewardDelivered", "WheelSpins", productId, "shop")
+        end
         return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
     end
 
@@ -660,6 +884,10 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self._potionService and self._potionService:GrantRobuxPotion(player, productId)
+        if success then
+            self:_trackShopPurchaseFunnel(player, 5, "ProductReceiptGranted", "Potion", productId, "shop")
+            self:_trackShopPurchaseFunnel(player, 6, "RewardDelivered", "Potion", productId, "shop")
+        end
         return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
     end
 
@@ -670,6 +898,10 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self:TryRebirth(player, { paid = true })
+        if success then
+            self:_trackShopPurchaseFunnel(player, 5, "ProductReceiptGranted", "PaidRebirth", productId, "shop")
+            self:_trackShopPurchaseFunnel(player, 6, "RewardDelivered", "PaidRebirth", productId, "shop")
+        end
         return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
     end
 
@@ -680,6 +912,15 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self:_processDefeatedRevive(player)
+        if self._gameAnalyticsService and success then
+            self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 4, "ProductReceiptGranted", {
+                source = "defeated",
+            })
+        end
+        if success then
+            self:_trackShopPurchaseFunnel(player, 5, "ProductReceiptGranted", "DefeatedRevive", productId, "defeated")
+            self:_trackShopPurchaseFunnel(player, 6, "RewardDelivered", "DefeatedRevive", productId, "defeated")
+        end
         return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
     end
 
@@ -690,6 +931,10 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self:_processDoubleLevel(player)
+        if success then
+            self:_trackShopPurchaseFunnel(player, 5, "ProductReceiptGranted", "DoubleLevel", productId, "shop")
+            self:_trackShopPurchaseFunnel(player, 6, "RewardDelivered", "DoubleLevel", productId, "shop")
+        end
         return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
     end
 
@@ -700,6 +945,10 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self:_processNuke(player)
+        if success then
+            self:_trackShopPurchaseFunnel(player, 5, "ProductReceiptGranted", "Nuke", productId, "shop")
+            self:_trackShopPurchaseFunnel(player, 6, "RewardDelivered", "Nuke", productId, "shop")
+        end
         return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
     end
 
@@ -710,6 +959,10 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self:_processRevenge(player)
+        if success then
+            self:_trackShopPurchaseFunnel(player, 5, "ProductReceiptGranted", "Revenge", productId, "shop")
+            self:_trackShopPurchaseFunnel(player, 6, "RewardDelivered", "Revenge", productId, "shop")
+        end
         return success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
     end
 
@@ -720,8 +973,13 @@ function RebirthService:BindSystems(dependencies)
     self._healthService = dependencies and dependencies.HealthService or self._healthService
     self._respawnService = dependencies and dependencies.RespawnService or self._respawnService
     self._nukeService = dependencies and dependencies.NukeService or self._nukeService
+    self._revengeService = dependencies and dependencies.RevengeService or self._revengeService
     self._potionService = dependencies and dependencies.PotionService or self._potionService
     self._wheelService = dependencies and dependencies.WheelService or self._wheelService
+    self._skinService = dependencies and dependencies.SkinService or self._skinService
+    self._onlineRewardService = dependencies and dependencies.OnlineRewardService or self._onlineRewardService
+    self._sevenDayLoginRewardService = dependencies and dependencies.SevenDayLoginRewardService or self._sevenDayLoginRewardService
+    self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
 end
 
 function RebirthService:Init(dependencies)
@@ -731,13 +989,19 @@ function RebirthService:Init(dependencies)
     self._healthService = dependencies.HealthService or self._healthService
     self._respawnService = dependencies.RespawnService or self._respawnService
     self._nukeService = dependencies.NukeService or self._nukeService
+    self._revengeService = dependencies.RevengeService or self._revengeService
     self._potionService = dependencies.PotionService or self._potionService
     self._wheelService = dependencies.WheelService or self._wheelService
+    self._skinService = dependencies.SkinService or self._skinService
+    self._onlineRewardService = dependencies.OnlineRewardService or self._onlineRewardService
+    self._sevenDayLoginRewardService = dependencies.SevenDayLoginRewardService or self._sevenDayLoginRewardService
     self._badgeAwardService = dependencies.BadgeAwardService or self._badgeAwardService
+    self._gameAnalyticsService = dependencies.GameAnalyticsService or self._gameAnalyticsService
     self._dirtyByUserId = {}
     self._loadedByUserId = {}
     self._loadStateByUserId = {}
     self._loadRetryClockByUserId = {}
+    self._savedProgressCacheByUserId = {}
     self._nextSaveClock = os.clock() + math.max(5, tonumber(GameConfig.REBIRTH.AutoSaveIntervalSeconds) or 30)
     self._shutdownInProgress = false
 
@@ -785,11 +1049,15 @@ end
 
 function RebirthService:OnPlayerRemoving(player)
     self:_savePlayer(player, { includeCombatSnapshot = self._shutdownInProgress == true })
+    if self._sevenDayLoginRewardService and self._sevenDayLoginRewardService.OnPlayerRemoving then
+        self._sevenDayLoginRewardService:OnPlayerRemoving(player)
+    end
     local userId = getUserId(player)
     self._dirtyByUserId[userId] = nil
     self._loadedByUserId[userId] = nil
     self._loadStateByUserId[userId] = nil
     self._loadRetryClockByUserId[userId] = nil
+    self._savedProgressCacheByUserId[userId] = nil
 end
 
 return RebirthService

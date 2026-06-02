@@ -66,6 +66,7 @@ ShopController._rewardFeedbackEvent = nil
 ShopController._requestSkinPurchaseEvent = nil
 ShopController._wheelController = nil
 ShopController._subscriptionController = nil
+ShopController._sevenDayLoginRewardController = nil
 ShopController._bindRetryQueued = false
 ShopController._isOpen = false
 ShopController._panelTweens = {}
@@ -629,11 +630,12 @@ function ShopController:_bindSkinSecretGradients(skinFrame)
     end
 end
 
-function ShopController:_requestShopState(autoClaim)
+function ShopController:_requestShopState(autoClaim, intent)
     if self._requestStateEvent then
         self._requestStateEvent:FireServer({
             autoClaimStarterPack = autoClaim == true,
             source = "Shop",
+            intent = intent,
         })
     end
 end
@@ -734,7 +736,41 @@ function ShopController:_setOpen(isOpen, immediate)
     if self._isOpen then
         ModalUiController:Acquire("Shop", self._panel)
         self._panel.Visible = true
-        self:_requestShopState(true)
+        self:_requestShopState(true, "ShopOpened")
+        if not self._starterPackClaimed then
+            self:_recordPurchaseContext({
+                intent = "ProductViewed",
+                source = "Shop",
+                purchaseType = "StarterPack",
+                productGroup = "StarterPack",
+                itemSku = tostring(ShopConfig.StarterPack.GamePassId),
+                gamePassId = ShopConfig.StarterPack.GamePassId,
+            })
+        end
+        for _, purchase in ipairs(WheelConfig.Purchases) do
+            self:_recordPurchaseContext({
+                intent = "ProductViewed",
+                source = "Shop",
+                purchaseType = "WheelSpins",
+                productGroup = "WheelSpins",
+                itemSku = tostring(purchase.ProductId),
+                productId = purchase.ProductId,
+            })
+        end
+        if not self._featuredSkinOwned then
+            local featuredSkin = SkinConfig.GetSkin(ShopConfig.FeaturedSkinId)
+            if featuredSkin then
+                self:_recordPurchaseContext({
+                    intent = "ProductViewed",
+                    source = "Shop",
+                    purchaseType = "Skin",
+                    productGroup = "GamePassSkin",
+                    itemSku = tostring(featuredSkin.GamePassId),
+                    skinId = featuredSkin.Id,
+                    gamePassId = featuredSkin.GamePassId,
+                })
+            end
+        end
         self:_startSkinSecretGradientLoop()
         if not uiScale or immediate == true then
             if uiScale then
@@ -810,8 +846,19 @@ function ShopController:_promptProduct(productId, source)
     end
 
     self:_recordPurchaseContext({
+        intent = "BuyClicked",
         source = source or "Shop",
         purchaseType = "WheelSpins",
+        productGroup = "WheelSpins",
+        itemSku = tostring(resolvedProductId),
+        productId = resolvedProductId,
+    })
+    self:_recordPurchaseContext({
+        intent = "PurchasePromptRequested",
+        source = source or "Shop",
+        purchaseType = "WheelSpins",
+        productGroup = "WheelSpins",
+        itemSku = tostring(resolvedProductId),
         productId = resolvedProductId,
     })
     MarketplaceService:PromptProductPurchase(self._localPlayer, resolvedProductId)
@@ -825,6 +872,9 @@ function ShopController:_promptGamePass(gamePassId, context)
 
     if type(context) == "table" then
         context.gamePassId = resolvedGamePassId
+        if not context.intent then
+            context.intent = "PurchasePromptRequested"
+        end
         self:_recordPurchaseContext(context)
     end
     MarketplaceService:PromptGamePassPurchase(self._localPlayer, resolvedGamePassId)
@@ -841,9 +891,20 @@ function ShopController:_requestStarterPack()
     if self._requestStarterPackClaimEvent then
         self._requestStarterPackClaimEvent:FireServer()
     end
-    self:_promptGamePass(ShopConfig.StarterPack.GamePassId, {
+    self:_recordPurchaseContext({
+        intent = "BuyClicked",
         source = "Shop",
         purchaseType = "StarterPack",
+        productGroup = "StarterPack",
+        itemSku = tostring(ShopConfig.StarterPack.GamePassId),
+        gamePassId = ShopConfig.StarterPack.GamePassId,
+    })
+    self:_promptGamePass(ShopConfig.StarterPack.GamePassId, {
+        intent = "PurchasePromptRequested",
+        source = "Shop",
+        purchaseType = "StarterPack",
+        productGroup = "StarterPack",
+        itemSku = tostring(ShopConfig.StarterPack.GamePassId),
     })
 end
 
@@ -854,15 +915,25 @@ function ShopController:_requestSkinPurchase()
     end
 
     self:_recordPurchaseContext({
+        intent = "BuyClicked",
         source = "Shop",
         purchaseType = "Skin",
+        productGroup = "GamePassSkin",
+        itemSku = tostring(skin.GamePassId),
         skinId = skin.Id,
         gamePassId = skin.GamePassId,
     })
     if self._requestSkinPurchaseEvent then
         self._requestSkinPurchaseEvent:FireServer(skin.Id)
     end
-    self:_promptGamePass(skin.GamePassId)
+    self:_promptGamePass(skin.GamePassId, {
+        intent = "PurchasePromptRequested",
+        source = "Shop",
+        purchaseType = "Skin",
+        productGroup = "GamePassSkin",
+        itemSku = tostring(skin.GamePassId),
+        skinId = skin.Id,
+    })
 end
 
 function ShopController:_openSugarClubFromShop()
@@ -942,6 +1013,8 @@ function ShopController:_returnToRewardSource()
         self:_setOpen(true)
     elseif source == "Wheel" and self._wheelController and self._wheelController.Open then
         self._wheelController:Open()
+    elseif source == "SevenDayLoginReward" and self._sevenDayLoginRewardController and self._sevenDayLoginRewardController.OpenSevenDayLoginReward then
+        self._sevenDayLoginRewardController:OpenSevenDayLoginReward()
     end
 end
 
@@ -973,6 +1046,7 @@ function ShopController:_preparePopupItem(reward, order)
     frame.Parent = self._claimPopupTemplate.Parent
     table.insert(self._popupItems, frame)
 
+    setText(frame:FindFirstChild("Name", true), tostring(reward.label or reward.name or ""))
     setText(frame:FindFirstChild("Number", true), "*" .. tostring(math.max(1, math.floor(tonumber(reward.amount) or 1))))
     local icon = frame:FindFirstChild("Icon", true)
     setImage(icon, reward.icon)
@@ -1274,6 +1348,7 @@ function ShopController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._wheelController = dependencies and dependencies.WheelController or nil
     self._subscriptionController = dependencies and dependencies.SubscriptionController or nil
+    self._sevenDayLoginRewardController = dependencies and dependencies.SevenDayLoginRewardController or nil
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
     self:_disconnectMarketStallBindings()

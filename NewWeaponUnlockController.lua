@@ -233,24 +233,6 @@ end
 
 function NewWeaponUnlockController:_ensurePanelVisibleWatcher()
     self:_disconnectPanelVisibleWatcher()
-    if not (self._panel and self._panel:IsA("GuiObject")) then
-        return
-    end
-
-    local watchedPanel = self._panel
-    self._panelVisibleConnection = watchedPanel:GetPropertyChangedSignal("Visible"):Connect(function()
-        if watchedPanel ~= self._panel then
-            return
-        end
-
-        if self._isOpen and watchedPanel.Visible ~= true then
-            task.defer(function()
-                if watchedPanel == self._panel and watchedPanel.Parent and self._isOpen and watchedPanel.Visible ~= true then
-                    watchedPanel.Visible = true
-                end
-            end)
-        end
-    end)
 end
 
 function NewWeaponUnlockController:_rememberPositions()

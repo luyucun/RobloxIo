@@ -98,13 +98,6 @@ function FavoritePlacePromptController:_reportPromptResult(result)
     self._isPrompting = false
 end
 
-function FavoritePlacePromptController:_isPlaceAlreadyFavorite(placeId)
-    local ok, isFavorite = pcall(function()
-        return AvatarEditorService:GetFavoriteAsync(placeId, Enum.AvatarItemType.Asset)
-    end)
-    return ok and isFavorite == true
-end
-
 function FavoritePlacePromptController:_promptFavoritePlace(requestId, placeId)
     if self._didPromptThisSession or self._isPrompting then
         return
@@ -116,15 +109,8 @@ function FavoritePlacePromptController:_promptFavoritePlace(requestId, placeId)
         return
     end
 
-    if self:_isPlaceAlreadyFavorite(resolvedPlaceId) then
-        self._didPromptThisSession = true
-        self._activeRequestId = resolvedRequestId
-        self._activePlaceId = resolvedPlaceId
-        self:_reportPromptResult("AlreadyFavorite")
-        return
-    end
-
     self._isPrompting = true
+    self._didPromptThisSession = true
     self._activeRequestId = resolvedRequestId
     self._activePlaceId = resolvedPlaceId
     local okPrompt, promptError = pcall(function()
@@ -140,7 +126,6 @@ function FavoritePlacePromptController:_promptFavoritePlace(requestId, placeId)
         return
     end
 
-    self._didPromptThisSession = true
     if self._favoritePlacePromptStartedEvent then
         self._favoritePlacePromptStartedEvent:FireServer({
             requestId = resolvedRequestId,

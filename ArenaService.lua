@@ -55,6 +55,8 @@ ArenaService._portalPromptDebounceByActorId = {}
 ArenaService._pendingPortalPromptByUserId = {}
 ArenaService._portalPromptVisibleByUserId = {}
 ArenaService._portalPromptSuppressedUntilExitByUserId = {}
+ArenaService._hasEnteredArenaThisSessionByUserId = {}
+ArenaService._firstArenaEnterPendingByUserId = {}
 ArenaService._spawnLocation = nil
 ArenaService._portalModel = nil
 ArenaService._battlePart = nil
@@ -130,6 +132,7 @@ function ArenaService:Init(dependencies)
     self._botService = dependencies.BotService
     self._rebirthService = dependencies.RebirthService
     self._healthService = dependencies.HealthService
+    self._gameAnalyticsService = dependencies.GameAnalyticsService
     self._arenaTransitionFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("ArenaTransitionFeedback") or nil
     self._portalJoinPromptEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PortalJoinPrompt") or nil
     self._requestJoinBattleEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestJoinBattle") or nil
@@ -138,6 +141,8 @@ function ArenaService:Init(dependencies)
     self._pendingPortalPromptByUserId = {}
     self._portalPromptVisibleByUserId = {}
     self._portalPromptSuppressedUntilExitByUserId = {}
+    self._hasEnteredArenaThisSessionByUserId = {}
+    self._firstArenaEnterPendingByUserId = {}
     self._portalRangeMonitorAccumulator = 0
     self._spawnLocation = resolveSpawnLocation()
     self._portalModel = resolvePortalModel()
@@ -173,6 +178,7 @@ function ArenaService:Init(dependencies)
 
     self._playerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
         self:_clearPortalPromptState(player)
+        self:_clearArenaSessionState(player)
     end)
 
     self:_connectPortalTouched()
@@ -454,25 +460,73 @@ function ArenaService:_rollbackFailedArenaEnter(actor, reason)
     self:_fireTransitionFeedback(actor, "Blocked", reason or "TeleportFailed")
 end
 
-function ArenaService:_scheduleArenaEntryVerification(actor)
-    if not (ActorUtils.IsPlayer(actor) and self._playerStateService) then
+function ArenaService:_clearArenaSessionState(player)
+    if ActorUtils.IsPlayer(player) then
+        self._hasEnteredArenaThisSessionByUserId[player.UserId] = nil
+        self._firstArenaEnterPendingByUserId[player.UserId] = nil
+    end
+end
+
+function ArenaService:_getArenaEnterShieldDuration(actor, options)
+    local arenaConfig = GameConfig.ARENA or {}
+    local defaultDuration = math.max(0, tonumber(arenaConfig.ArenaEnterShieldDurationSeconds) or 10)
+    if not ActorUtils.IsPlayer(actor) then
+        return defaultDuration, false
+    end
+
+    local userId = actor.UserId
+    local isRevive = type(options) == "table" and options.IsRevive == true
+    local isFirstEnterThisSession = not isRevive
+        and self._hasEnteredArenaThisSessionByUserId[userId] ~= true
+        and self._firstArenaEnterPendingByUserId[userId] ~= true
+    if isFirstEnterThisSession then
+        return math.max(0, tonumber(arenaConfig.FirstArenaEnterShieldDurationSeconds) or 60), true
+    end
+
+    return defaultDuration, false
+end
+
+function ArenaService:_markArenaEntryVerified(actor, isFirstEnterThisSession)
+    if not ActorUtils.IsPlayer(actor) then
         return
     end
 
+    if isFirstEnterThisSession == true then
+        self._hasEnteredArenaThisSessionByUserId[actor.UserId] = true
+        self._firstArenaEnterPendingByUserId[actor.UserId] = nil
+    end
+end
+
+function ArenaService:_clearArenaEntryPending(actor, isFirstEnterThisSession)
+    if ActorUtils.IsPlayer(actor) and isFirstEnterThisSession == true then
+        self._firstArenaEnterPendingByUserId[actor.UserId] = nil
+    end
+end
+
+function ArenaService:_scheduleArenaEntryVerification(actor, options)
+    if not (ActorUtils.IsPlayer(actor) and self._playerStateService) then
+        return
+    end
+    local isFirstEnterThisSession = type(options) == "table" and options.IsFirstEnterThisSession == true
+
     task.delay(BATTLE_ENTRY_VERIFY_DELAY_SECONDS, function()
         if not (actor and actor.Parent) then
+            self:_clearArenaEntryPending(actor, isFirstEnterThisSession)
             return
         end
 
         local state = self._playerStateService:GetState(actor)
         if not (state and state.IsInArena == true and state.Alive == true) then
+            self:_clearArenaEntryPending(actor, isFirstEnterThisSession)
             return
         end
 
         if self:_isActorInsideBattleBounds(actor) then
+            self:_markArenaEntryVerified(actor, isFirstEnterThisSession)
             return
         end
 
+        self:_clearArenaEntryPending(actor, isFirstEnterThisSession)
         self:_rollbackFailedArenaEnter(actor, "TeleportLost")
     end)
 end
@@ -494,6 +548,16 @@ function ArenaService:_firePortalJoinPrompt(actor, eventType)
         eventType = normalizedEventType,
         timestamp = os.clock(),
     })
+
+    if normalizedEventType == "Show"
+        and self._gameAnalyticsService
+        and self._gameAnalyticsService.MarkOnce
+        and self._gameAnalyticsService:MarkOnce(actor, "Onboarding.PortalPromptShown")
+    then
+        self._gameAnalyticsService:TrackFunnel(actor, "Onboarding", 4, "PortalPromptShown", {
+            source = "portal",
+        })
+    end
 end
 
 function ArenaService:_showPortalJoinPrompt(actor)
@@ -602,6 +666,15 @@ function ArenaService:_onRequestJoinBattle(player, action)
             })
         end
         return
+    end
+
+    if self._gameAnalyticsService
+        and self._gameAnalyticsService.MarkOnce
+        and self._gameAnalyticsService:MarkOnce(player, "Onboarding.JoinBattleRequested")
+    then
+        self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 5, "JoinBattleRequested", {
+            source = "portal",
+        })
     end
 
     if not self:_hasValidPortalJoinPending(player) then
@@ -786,16 +859,38 @@ function ArenaService:TryEnterArena(actor, options)
     if ActorUtils.IsPlayer(actor) and self._playerStateService.MarkGuideCompleted then
         self._playerStateService:MarkGuideCompleted(actor)
     end
+    local isFirstEnterThisSession = false
     if ActorUtils.IsPlayer(actor) and self._healthService and self._healthService.GrantShield then
-        self._healthService:GrantShield(actor, 10, "ArenaEnter")
+        local shieldDuration
+        shieldDuration, isFirstEnterThisSession = self:_getArenaEnterShieldDuration(actor, options)
+        if isFirstEnterThisSession then
+            self._firstArenaEnterPendingByUserId[actor.UserId] = true
+        end
+        if shieldDuration > 0 then
+            self._healthService:GrantShield(actor, shieldDuration, isFirstEnterThisSession and "FirstArenaEnter" or "ArenaEnter")
+        else
+            self._playerStateService:PushState(actor)
+        end
     else
         self._playerStateService:PushState(actor)
     end
     if self._weaponService then
         self._weaponService:RebuildWeaponsForPlayer(actor)
     end
-    self:_scheduleArenaEntryVerification(actor)
+    self:_scheduleArenaEntryVerification(actor, {
+        IsFirstEnterThisSession = isFirstEnterThisSession,
+    })
     self:_fireTransitionFeedback(actor, "EnterBattle", "RandomBattleSpawn")
+    if ActorUtils.IsPlayer(actor) and self._gameAnalyticsService then
+        if self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(actor, "Onboarding.EnteredBattle") then
+            self._gameAnalyticsService:TrackFunnel(actor, "Onboarding", 6, "EnteredBattle", {
+                source = "portal",
+            })
+        end
+        self._gameAnalyticsService:TrackCustom(actor, "BattleEntered", 1, {
+            source = "portal",
+        })
+    end
     return true
 end
 

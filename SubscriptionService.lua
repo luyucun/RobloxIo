@@ -409,8 +409,16 @@ function SubscriptionService:_handleClaimRequest(player)
         return
     end
 
-    self._playerStateService:AddDiamonds(player, SubscriptionConfig.DailyDiamondReward)
-    self._playerStateService:AddWheelSpins(player, SubscriptionConfig.DailyWheelSpinReward)
+    self._playerStateService:AddDiamonds(player, SubscriptionConfig.DailyDiamondReward, {
+        source = "subscription",
+        productGroup = "Subscription",
+        itemSku = "SubscriptionDailyClaimDiamonds",
+    })
+    self._playerStateService:AddWheelSpins(player, SubscriptionConfig.DailyWheelSpinReward, {
+        source = "subscription",
+        productGroup = "Subscription",
+        itemSku = "SubscriptionDailyClaimWheelSpins",
+    })
     self._playerStateService:MarkSubscriptionClaim(player, subscriptionId, today)
     self:_markDirty(player)
     self._claimInProgressByUserId[userId] = nil

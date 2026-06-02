@@ -43,6 +43,7 @@ WeaponIndexController._buttonBindings = {}
 WeaponIndexController._mainGui = nil
 WeaponIndexController._panel = nil
 WeaponIndexController._leftEntry = nil
+WeaponIndexController._progressLabel = nil
 WeaponIndexController._scrollingFrame = nil
 WeaponIndexController._template = nil
 WeaponIndexController._latestState = nil
@@ -188,6 +189,19 @@ local function getUnlockLevelForTierIndex(tierIndex)
     return level
 end
 
+local function getMaxUnlockedTierIndexForLevel(level)
+    local highestLevelReached = math.max(1, math.floor(tonumber(level) or 1))
+    local maxUnlockedTierIndex = 0
+    for index in ipairs(WeaponTierConfig.Order) do
+        if highestLevelReached >= getUnlockLevelForTierIndex(index) then
+            maxUnlockedTierIndex = index
+        else
+            break
+        end
+    end
+    return maxUnlockedTierIndex
+end
+
 function WeaponIndexController:_cancelPanelTweens()
     for _, tween in ipairs(self._panelTweens) do
         if tween then
@@ -206,6 +220,22 @@ function WeaponIndexController:_getHighestLevelReached()
     local state = self._latestState or {}
     local level = tonumber(state.highestLevelReached) or tonumber(state.level) or 1
     return math.max(1, math.floor(level))
+end
+
+function WeaponIndexController:_updateProgressLabel()
+    if not (self._progressLabel and self._progressLabel.Parent) then
+        return
+    end
+
+    local totalTierCount = math.max(0, math.floor(tonumber(WeaponTierConfig.TotalTierCount) or #WeaponTierConfig.Order))
+    if totalTierCount <= 0 then
+        self._progressLabel.Text = "0%"
+        return
+    end
+
+    local unlockedTierCount = math.clamp(getMaxUnlockedTierIndexForLevel(self:_getHighestLevelReached()), 0, totalTierCount)
+    local progressPercent = math.floor((unlockedTierCount / totalTierCount) * 100)
+    self._progressLabel.Text = tostring(progressPercent) .. "%"
 end
 
 function WeaponIndexController:_clearGeneratedRows()
@@ -228,6 +258,7 @@ end
 
 function WeaponIndexController:_updateWeaponRows()
     local highestLevelReached = self:_getHighestLevelReached()
+    self:_updateProgressLabel()
 
     for index, tierName in ipairs(WeaponTierConfig.Order) do
         local tierConfig = WeaponTierConfig.Tiers[tierName]
@@ -553,6 +584,7 @@ function WeaponIndexController:_bindUi(silent)
     self._panel = mainGui and mainGui:FindFirstChild("Index") or nil
     local leftRoot = mainGui and mainGui:FindFirstChild("Left") or nil
     self._leftEntry = leftRoot and leftRoot:FindFirstChild("Index") or nil
+    self._progressLabel = self._leftEntry and self._leftEntry:FindFirstChild("Progress", true) or nil
     local indexInfo = self._panel and self._panel:FindFirstChild("Indexinfo") or nil
     self._scrollingFrame = indexInfo and indexInfo:FindFirstChild("ScrollingFrame") or nil
     self._template = self._scrollingFrame and self._scrollingFrame:FindFirstChild("Template") or nil

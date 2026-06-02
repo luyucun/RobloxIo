@@ -52,6 +52,7 @@ WheelService._nextFreeAtByUserId = {}
 WheelService._spinInProgressByUserId = {}
 WheelService._lastSyncClockByUserId = {}
 WheelService._random = Random.new()
+WheelService._gameAnalyticsService = nil
 
 local function getUserId(player)
     return player and player.UserId or 0
@@ -93,6 +94,17 @@ function WheelService:_markDirty(player)
     if self._rebirthService and self._rebirthService.MarkDirty then
         self._rebirthService:MarkDirty(player)
     end
+end
+
+function WheelService:_trackWheelFunnel(player, stepNumber, stepName, fields, onceKey)
+    if not (self._gameAnalyticsService and self._gameAnalyticsService.TrackFunnel) then
+        return
+    end
+    if onceKey and self._gameAnalyticsService.MarkOnce and not self._gameAnalyticsService:MarkOnce(player, onceKey) then
+        return
+    end
+
+    self._gameAnalyticsService:TrackFunnel(player, "WheelFlow", stepNumber, stepName, fields)
 end
 
 function WheelService:_getWheelSpins(player)
@@ -139,6 +151,16 @@ function WheelService:SyncState(player)
     self._wheelStateSyncEvent:FireClient(player, self:BuildStatePayload(player))
 end
 
+function WheelService:_handleStateRequest(player, payload)
+    if type(payload) == "table" and tostring(payload.intent or "") == "WheelOpened" then
+        self:_trackWheelFunnel(player, 1, "WheelOpened", {
+            source = tostring(payload.source or "wheel"),
+        }, "WheelFlow.WheelOpened")
+    end
+
+    self:SyncState(player)
+end
+
 function WheelService:_fireSpinResult(player, payload)
     if not (self._wheelSpinResultEvent and ActorUtils.IsPlayer(player) and player.Parent) then
         return
@@ -160,10 +182,18 @@ function WheelService:_grantReward(player, reward)
         local success, reason = self._potionService:AddPotion(player, reward.PotionId, reward.Amount or 1, "Wheel")
         return success == true, reason
     elseif rewardType == "Diamonds" then
-        self._playerStateService:AddDiamonds(player, reward.Amount or 0)
+        self._playerStateService:AddDiamonds(player, reward.Amount or 0, {
+            source = "wheel",
+            productGroup = "wheel",
+            itemSku = tostring(reward.Id or reward.Label or "WheelReward"),
+        })
         return true
     elseif rewardType == "WheelSpins" then
-        self._playerStateService:AddWheelSpins(player, reward.Amount or 0)
+        self._playerStateService:AddWheelSpins(player, reward.Amount or 0, {
+            source = "wheel",
+            productGroup = "wheel",
+            itemSku = tostring(reward.Id or reward.Label or "WheelReward"),
+        })
         return true
     elseif rewardType == "Shield" then
         if not (self._healthService and self._healthService.GrantShield) then
@@ -199,6 +229,10 @@ function WheelService:_handleSpinRequest(player)
         return
     end
 
+    self:_trackWheelFunnel(player, 2, "SpinClicked", {
+        source = "wheel",
+    })
+
     if self._spinInProgressByUserId[userId] then
         self:_fireSpinResult(player, {
             ok = false,
@@ -212,7 +246,11 @@ function WheelService:_handleSpinRequest(player)
     local consumed = false
     local remainingSpins = self:_getWheelSpins(player)
     if self._playerStateService.TryConsumeWheelSpin then
-        consumed, remainingSpins = self._playerStateService:TryConsumeWheelSpin(player)
+        consumed, remainingSpins = self._playerStateService:TryConsumeWheelSpin(player, {
+            source = "wheel",
+            productGroup = "WheelSpins",
+            itemSku = "WheelSpin",
+        })
     end
 
     if not consumed then
@@ -225,18 +263,34 @@ function WheelService:_handleSpinRequest(player)
         return
     end
 
+    if self._gameAnalyticsService then
+        self._gameAnalyticsService:TrackFunnel(player, "WheelFlow", 3, "SpinAccepted", {
+            source = "wheel",
+        })
+    end
+
     local reward = WheelConfig.RollReward(self._random)
     local granted, reason = self:_grantReward(player, reward)
     self._spinInProgressByUserId[userId] = nil
 
     if not granted then
-        self._playerStateService:AddWheelSpins(player, 1)
+        self._playerStateService:AddWheelSpins(player, 1, {
+            source = "wheel_refund",
+            productGroup = "WheelSpins",
+            itemSku = "WheelGrantRefund",
+        })
         self:_fireSpinResult(player, {
             ok = false,
             reason = reason or "GrantFailed",
             state = self:BuildStatePayload(player),
         })
         return
+    end
+
+    if self._gameAnalyticsService then
+        self._gameAnalyticsService:TrackFunnel(player, "WheelFlow", 4, "SpinResultGranted", {
+            source = "wheel",
+        })
     end
 
     self:_markDirty(player)
@@ -265,11 +319,22 @@ function WheelService:GrantPurchasedSpins(player, productId)
         return false
     end
 
-    self._playerStateService:AddWheelSpins(player, purchase.Spins)
+    self._playerStateService:AddWheelSpins(player, purchase.Spins, {
+        source = "shop",
+        productGroup = "WheelSpins",
+        itemSku = tostring(productId),
+    })
     self:_markDirty(player)
     self:SyncState(player)
     if self._shopService and self._shopService.NotifyWheelPurchase then
         self._shopService:NotifyWheelPurchase(player, productId)
+    end
+    if self._gameAnalyticsService then
+        self._gameAnalyticsService:TrackFunnel(player, "WheelFlow", 6, "PaidSpinDelivered", {
+            source = "shop",
+            productGroup = "WheelSpins",
+            itemSku = tostring(productId),
+        })
     end
     return true
 end
@@ -293,7 +358,11 @@ function WheelService:_grantFreeSpin(player, now)
         return
     end
 
-    self._playerStateService:AddWheelSpins(player, 1)
+    self._playerStateService:AddWheelSpins(player, 1, {
+        source = "timer",
+        productGroup = "WheelSpins",
+        itemSku = "FreeSpinTimer",
+    })
     repeat
         nextFreeAt += interval
     until nextFreeAt > now
@@ -325,6 +394,7 @@ function WheelService:BindSystems(dependencies)
     self._skinService = dependencies and dependencies.SkinService or self._skinService
     self._healthService = dependencies and dependencies.HealthService or self._healthService
     self._shopService = dependencies and dependencies.ShopService or self._shopService
+    self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
 end
 
 function WheelService:Init(dependencies)
@@ -334,6 +404,7 @@ function WheelService:Init(dependencies)
     self._skinService = dependencies and dependencies.SkinService or nil
     self._healthService = dependencies and dependencies.HealthService or nil
     self._shopService = dependencies and dependencies.ShopService or nil
+    self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or nil
     local remoteEventService = dependencies and dependencies.RemoteEventService or nil
     self._wheelStateSyncEvent = remoteEventService and remoteEventService:GetEvent("WheelStateSync") or nil
     self._requestWheelStateSyncEvent = remoteEventService and remoteEventService:GetEvent("RequestWheelStateSync") or nil
@@ -353,8 +424,8 @@ function WheelService:Init(dependencies)
     end
 
     if self._requestWheelStateSyncEvent then
-        self._requestStateConnection = self._requestWheelStateSyncEvent.OnServerEvent:Connect(function(player)
-            self:SyncState(player)
+        self._requestStateConnection = self._requestWheelStateSyncEvent.OnServerEvent:Connect(function(player, payload)
+            self:_handleStateRequest(player, payload)
         end)
     end
 

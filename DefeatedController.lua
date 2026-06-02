@@ -52,6 +52,7 @@ DefeatedController._countdownEndsAt = 0
 DefeatedController._bindRetryQueued = false
 DefeatedController._panelTweens = {}
 DefeatedController._panelAnimationSerial = 0
+DefeatedController._freeRespawnLevelDefaultText = nil
 
 local HOVER_SCALE = 1.04
 local PRESS_SCALE = 0.92
@@ -366,10 +367,27 @@ function DefeatedController:_updateKillerInfo(payload)
     local killerLevel = killer and killer.level or GameConfig.PLAYER.BaseLevel
     local victimLevel = math.max(1, math.floor(tonumber(payload and payload.victimLevel) or GameConfig.PLAYER.BaseLevel))
     local killerKillCount = math.max(0, math.floor(tonumber(killer and (killer.totalPlayerKills or killer.killCount)) or 0))
+    local dailyFreeReviveEligible = payload and payload.dailyFreeReviveEligible == true
+    local dailyFreeReviveLevel = math.max(1, math.floor(tonumber(payload and payload.dailyFreeReviveLevel) or victimLevel))
+    local freeRespawnLevel = findNested(self._defeatedRoot, "FreeRespawn/Level")
+    local dailyFreeLabel = findNested(self._defeatedRoot, "FreeRespawn/DailyFree")
     setText(findNested(self._defeatedRoot, "Killer/Name"), killerName)
     setText(findNested(self._defeatedRoot, "Killer/KillNum/Num"), tostring(killerKillCount))
     setText(findNested(self._defeatedRoot, "Killer/LvInfo/Num"), string.format("LV.%d", math.max(1, math.floor(tonumber(killerLevel) or 1))))
     setText(findNested(self._defeatedRoot, "Revive/Level"), string.format("With Lv.%d", victimLevel))
+    if freeRespawnLevel and self._freeRespawnLevelDefaultText == nil then
+        self._freeRespawnLevelDefaultText = freeRespawnLevel.Text
+    end
+    if freeRespawnLevel then
+        if dailyFreeReviveEligible == true then
+            setText(freeRespawnLevel, string.format("Revive at Lv.%d", dailyFreeReviveLevel))
+        else
+            setText(freeRespawnLevel, self._freeRespawnLevelDefaultText or string.format("With Lv.%d", victimLevel))
+        end
+    end
+    if dailyFreeLabel and dailyFreeLabel:IsA("GuiObject") then
+        dailyFreeLabel.Visible = dailyFreeReviveEligible == true
+    end
 
     local icon = findNested(self._defeatedRoot, "Killer/Icon")
     local userId = killer and tonumber(killer.userId) or nil
@@ -527,11 +545,18 @@ function DefeatedController:_bindUi(silent)
 
     self:_disconnectButtonBindings()
     self:_setOpen(false, true)
+    local freeRespawnLevel = findNested(self._defeatedRoot, "FreeRespawn/Level")
+    if freeRespawnLevel and self._freeRespawnLevelDefaultText == nil then
+        self._freeRespawnLevelDefaultText = freeRespawnLevel.Text
+    end
     self:_bindClickTarget(self._defeatedRoot:FindFirstChild("Revive", true), function()
         self:_promptDefeatedRevive()
     end)
     self:_bindClickTarget(self._defeatedRoot:FindFirstChild("Revenge", true), function()
         self:_promptRevenge()
+    end)
+    self:_bindClickTarget(self._defeatedRoot:FindFirstChild("FreeRespawn", true), function()
+        self:_closeAndRequest("Close")
     end)
     self:_bindClickTarget(findNested(self._defeatedRoot, "Title/CloseButton"), function()
         self:_closeAndRequest("Close")
@@ -616,6 +641,10 @@ function DefeatedController:Init(dependencies)
 
         self._isRevengePurchasePending = false
         if wasPurchased == true then
+            self:_setOpen(false)
+            if self._requestDefeatedActionEvent then
+                self._requestDefeatedActionEvent:FireServer("RevengePromptClosed")
+            end
             return
         end
 

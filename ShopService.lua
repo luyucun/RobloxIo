@@ -47,6 +47,7 @@ ShopService._shopRewardFeedbackEvent = nil
 ShopService._connections = {}
 ShopService._purchaseContextByUserId = {}
 ShopService._starterPackGrantInProgressByUserId = {}
+ShopService._gameAnalyticsService = nil
 
 local PURCHASE_CONTEXT_TTL_SECONDS = 120
 
@@ -63,6 +64,65 @@ local function getUserId(player)
     return player and player.UserId or 0
 end
 
+local function normalizePurchaseGroup(payload)
+    local productGroup = tostring(type(payload) == "table" and (payload.productGroup or "") or "")
+    if productGroup ~= "" then
+        return productGroup
+    end
+
+    local purchaseType = tostring(type(payload) == "table" and (payload.purchaseType or "") or "")
+    if purchaseType == "WheelSpins" then
+        return "WheelSpins"
+    elseif purchaseType == "Skin" then
+        return "GamePassSkin"
+    elseif purchaseType == "StarterPack" then
+        return "StarterPack"
+    elseif purchaseType == "Potion" then
+        return "Potion"
+    elseif purchaseType ~= "" then
+        return purchaseType
+    end
+
+    return "Shop"
+end
+
+local function normalizeItemSku(payload)
+    if type(payload) ~= "table" then
+        return "Unknown"
+    end
+
+    if payload.itemSku ~= nil then
+        return tostring(payload.itemSku)
+    end
+    if payload.productId ~= nil then
+        return tostring(math.floor(tonumber(payload.productId) or 0))
+    end
+    if payload.gamePassId ~= nil then
+        return tostring(math.floor(tonumber(payload.gamePassId) or 0))
+    end
+    if payload.skinId ~= nil then
+        return tostring(math.floor(tonumber(payload.skinId) or 0))
+    end
+    return "Unknown"
+end
+
+local function buildPurchaseFields(payload)
+    local source = "Shop"
+    if type(payload) == "table" then
+        source = tostring(payload.source or source)
+    end
+
+    return {
+        source = source,
+        productGroup = normalizePurchaseGroup(payload),
+        itemSku = normalizeItemSku(payload),
+        productId = type(payload) == "table" and math.floor(tonumber(payload.productId) or 0) or 0,
+        gamePassId = type(payload) == "table" and math.floor(tonumber(payload.gamePassId) or 0) or 0,
+        skinId = type(payload) == "table" and math.floor(tonumber(payload.skinId) or 0) or 0,
+        intent = type(payload) == "table" and tostring(payload.intent or payload.eventType or "") or "",
+    }
+end
+
 function ShopService:_isPlayerLoaded(player)
     return not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player)
 end
@@ -71,6 +131,14 @@ function ShopService:_markDirty(player)
     if self._rebirthService and self._rebirthService.MarkDirty then
         self._rebirthService:MarkDirty(player)
     end
+end
+
+function ShopService:_trackPurchaseFunnel(player, funnelName, stepNumber, stepName, payload)
+    if not (self._gameAnalyticsService and self._gameAnalyticsService.TrackFunnel) then
+        return
+    end
+
+    self._gameAnalyticsService:TrackFunnel(player, funnelName, stepNumber, stepName, buildPurchaseFields(payload))
 end
 
 function ShopService:_ownsGamePass(player, gamePassId)
@@ -162,15 +230,27 @@ function ShopService:_grantStarterPack(player, source)
                 self._starterPackGrantInProgressByUserId[userId] = nil
                 return false, "PotionServiceUnavailable"
             end
-            local success, reason = self._potionService:AddPotion(player, reward.PotionId, reward.Amount or 1, "StarterPack")
+            local success, reason = self._potionService:AddPotion(player, reward.PotionId, reward.Amount or 1, {
+                source = "shop",
+                productGroup = "StarterPack",
+                itemSku = "StarterPackPotion_" .. tostring(reward.PotionId or "Unknown"),
+            })
             if not success then
                 self._starterPackGrantInProgressByUserId[userId] = nil
                 return false, reason or "PotionGrantFailed"
             end
         elseif rewardType == "WheelSpins" then
-            self._playerStateService:AddWheelSpins(player, reward.Amount or 0)
+            self._playerStateService:AddWheelSpins(player, reward.Amount or 0, {
+                source = "shop",
+                productGroup = "StarterPack",
+                itemSku = "StarterPackWheelSpins",
+            })
         elseif rewardType == "Diamonds" then
-            self._playerStateService:AddDiamonds(player, reward.Amount or 0)
+            self._playerStateService:AddDiamonds(player, reward.Amount or 0, {
+                source = "shop",
+                productGroup = "StarterPack",
+                itemSku = "StarterPackDiamonds",
+            })
         end
         table.insert(grantedRewards, reward)
     end
@@ -180,6 +260,13 @@ function ShopService:_grantStarterPack(player, source)
     self._starterPackGrantInProgressByUserId[userId] = nil
     self:SyncState(player)
     self:_fireRewardFeedback(player, source or "Shop", grantedRewards, "StarterPack")
+    self:_trackPurchaseFunnel(player, "ShopPurchase", 6, "RewardDelivered", {
+        source = source or "Shop",
+        purchaseType = "StarterPack",
+        gamePassId = ShopConfig.StarterPack.GamePassId,
+        productGroup = "StarterPack",
+        itemSku = tostring(ShopConfig.StarterPack.GamePassId),
+    })
     return true, "Granted"
 end
 
@@ -218,6 +305,10 @@ function ShopService:_tryAutoClaimStarterPack(player, source)
 end
 
 function ShopService:_handleStateRequest(player, payload)
+    if type(payload) == "table" and tostring(payload.intent or "") == "ShopOpened" then
+        self:_trackPurchaseFunnel(player, "ShopPurchase", 1, "ShopOpened", payload)
+    end
+
     if type(payload) == "table" and payload.autoClaimStarterPack == true then
         self:_tryAutoClaimStarterPack(player, payload.source or "Shop")
         return
@@ -258,6 +349,14 @@ function ShopService:_handleGamePassFinished(player, gamePassId, wasPurchased)
         return
     end
 
+    self:_trackPurchaseFunnel(player, "ShopPurchase", 5, "ProductReceiptGranted", {
+        source = "Shop",
+        purchaseType = "StarterPack",
+        gamePassId = ShopConfig.StarterPack.GamePassId,
+        productGroup = "StarterPack",
+        itemSku = tostring(gamePassId),
+    })
+
     local success, reason = self:_grantStarterPack(player, "Shop")
     if not success and reason == "DataLoading" then
         self:_queueStarterPackRetry(player, "Shop")
@@ -280,6 +379,9 @@ function ShopService:RecordPurchaseContext(player, payload)
         productId = math.floor(tonumber(payload.productId) or 0),
         gamePassId = math.floor(tonumber(payload.gamePassId) or 0),
         skinId = math.floor(tonumber(payload.skinId) or 0),
+        intent = tostring(payload.intent or payload.eventType or ""),
+        productGroup = tostring(payload.productGroup or ""),
+        itemSku = tostring(payload.itemSku or ""),
         expiresAt = os.clock() + PURCHASE_CONTEXT_TTL_SECONDS,
     }
     return true
@@ -333,6 +435,15 @@ function ShopService:NotifySkinPurchase(player, skinId, gamePassId)
         return false
     end
 
+    self:_trackPurchaseFunnel(player, "ShopPurchase", 6, "RewardDelivered", {
+        source = context.source or "Shop",
+        purchaseType = "Skin",
+        skinId = skin.Id,
+        gamePassId = gamePassId,
+        productGroup = "GamePassSkin",
+        itemSku = tostring(gamePassId or skin.Id),
+    })
+
     self:_fireRewardFeedback(player, context.source or "Shop", {
         { RewardType = "Skin", SkinId = skin.Id, Amount = 1, Icon = skin.IconImage, Label = skin.Name },
     }, "SkinPurchase")
@@ -343,12 +454,14 @@ function ShopService:BindSystems(dependencies)
     self._playerStateService = dependencies and dependencies.PlayerStateService or self._playerStateService
     self._rebirthService = dependencies and dependencies.RebirthService or self._rebirthService
     self._potionService = dependencies and dependencies.PotionService or self._potionService
+    self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
 end
 
 function ShopService:Init(dependencies)
     self._playerStateService = dependencies and dependencies.PlayerStateService or nil
     self._rebirthService = dependencies and dependencies.RebirthService or nil
     self._potionService = dependencies and dependencies.PotionService or nil
+    self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or nil
     local remoteEventService = dependencies and dependencies.RemoteEventService or nil
     self._shopStateSyncEvent = remoteEventService and remoteEventService:GetEvent("ShopStateSync") or nil
     self._requestShopStateSyncEvent = remoteEventService and remoteEventService:GetEvent("RequestShopStateSync") or nil
@@ -372,6 +485,20 @@ function ShopService:Init(dependencies)
     if self._requestPurchaseContextEvent then
         table.insert(self._connections, self._requestPurchaseContextEvent.OnServerEvent:Connect(function(player, payload)
             self:RecordPurchaseContext(player, payload)
+            local intent = type(payload) == "table" and tostring(payload.intent or payload.eventType or "") or ""
+            if intent == "ProductViewed" then
+                self:_trackPurchaseFunnel(player, "ShopPurchase", 2, "ProductViewed", payload)
+            elseif intent == "BuyClicked" then
+                self:_trackPurchaseFunnel(player, "ShopPurchase", 3, "BuyClicked", payload)
+            elseif intent == "PurchasePromptRequested" then
+                self:_trackPurchaseFunnel(player, "ShopPurchase", 4, "PurchasePromptRequested", payload)
+            elseif intent == "PaidSpinPurchaseClicked" then
+                self:_trackPurchaseFunnel(player, "WheelFlow", 5, "PaidSpinPurchaseClicked", payload)
+            elseif intent == "SkinPanelOpened" then
+                self:_trackPurchaseFunnel(player, "SkinFlow", 1, "SkinPanelOpened", payload)
+            elseif intent == "SkinEquipClicked" then
+                self:_trackPurchaseFunnel(player, "SkinFlow", 4, "SkinEquipClicked", payload)
+            end
         end))
     end
     table.insert(self._connections, MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamePassId, wasPurchased)

@@ -17,6 +17,8 @@ GMCommandService._remoteEventService = nil
 GMCommandService._playerStateService = nil
 GMCommandService._botService = nil
 GMCommandService._healthService = nil
+GMCommandService._revengeService = nil
+GMCommandService._gameAnalyticsService = nil
 GMCommandService._connections = {}
 
 local function requireSharedModule(moduleName)
@@ -113,7 +115,11 @@ end
 
 local function addDiamondsForPlayer(playerStateService, player, amount)
     if playerStateService.AddDiamonds then
-        return playerStateService:AddDiamonds(player, amount)
+        return playerStateService:AddDiamonds(player, amount, {
+            source = "gm",
+            productGroup = "GM_StudioOnly",
+            itemSku = "GM_StudioOnly",
+        })
     end
     if not playerStateService.GetState then
         return nil
@@ -276,6 +282,22 @@ function GMCommandService:_handleChatCommand(player, message)
         return true
     end
 
+    if commandName == "testrevenge" then
+        if not (self._revengeService and self._revengeService.RunStudioTest) then
+            warn("[GMCommandService] RevengeService is unavailable")
+            return false, "ServiceUnavailable"
+        end
+
+        local success, result = self._revengeService:RunStudioTest(player)
+        if success then
+            print(string.format("[GMCommandService] %s started test revenge cinematic", player.Name))
+            return true, result
+        end
+
+        warn(string.format("[GMCommandService] Failed to start /testrevenge for %s: %s", player.Name, tostring(result)))
+        return false, result
+    end
+
     local eventId, errorCode = parseEventCommand(message)
     if not eventId then
         if errorCode == "InvalidEventId" then
@@ -305,6 +327,8 @@ function GMCommandService:Init(dependencies)
     self._playerStateService = dependencies and dependencies.PlayerStateService or self._playerStateService
     self._botService = dependencies and dependencies.BotService or self._botService
     self._healthService = dependencies and dependencies.HealthService or self._healthService
+    self._revengeService = dependencies and dependencies.RevengeService or self._revengeService
+    self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
 
     disconnectAll(self._connections)
 

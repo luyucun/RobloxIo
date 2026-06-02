@@ -98,6 +98,20 @@ function FavoritePlacePromptService:_markDirty(player)
     end
 end
 
+function FavoritePlacePromptService:_flushPlayer(player)
+    if not self._rebirthService then
+        return false
+    end
+
+    if self._rebirthService.SavePlayerNow then
+        return self._rebirthService:SavePlayerNow(player)
+    end
+    if self._rebirthService.FlushPlayer then
+        return self._rebirthService:FlushPlayer(player)
+    end
+    return false
+end
+
 function FavoritePlacePromptService:_isPlayerDataReady(player)
     if not (player and player.Parent) then
         return false
@@ -250,6 +264,9 @@ function FavoritePlacePromptService:_handlePromptResult(player, payload)
             favoritePromptState.HasFavorited = true
         end
         self:_markDirty(player)
+        if favoritePromptState.HasFavorited == true then
+            self:_flushPlayer(player)
+        end
     end
 
     self._pendingRequestIdByUserId[userId] = nil

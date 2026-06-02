@@ -538,6 +538,12 @@ function WheelController:_setOpen(isOpen, immediate)
     if self._isOpen then
         ModalUiController:Acquire("Wheel", self._panel)
         self._panel.Visible = true
+        if self._requestStateEvent then
+            self._requestStateEvent:FireServer({
+                intent = "WheelOpened",
+                source = "Wheel",
+            })
+        end
         if not uiScale or immediate == true then
             if uiScale then
                 uiScale.Scale = 1
@@ -746,8 +752,27 @@ function WheelController:_promptPurchase(productId)
 
     if self._requestPurchaseContextEvent then
         self._requestPurchaseContextEvent:FireServer({
+            intent = "BuyClicked",
             source = "Wheel",
             purchaseType = "WheelSpins",
+            productGroup = "WheelSpins",
+            itemSku = tostring(resolvedProductId),
+            productId = resolvedProductId,
+        })
+        self._requestPurchaseContextEvent:FireServer({
+            intent = "PaidSpinPurchaseClicked",
+            source = "Wheel",
+            purchaseType = "WheelSpins",
+            productGroup = "WheelSpins",
+            itemSku = tostring(resolvedProductId),
+            productId = resolvedProductId,
+        })
+        self._requestPurchaseContextEvent:FireServer({
+            intent = "PurchasePromptRequested",
+            source = "Wheel",
+            purchaseType = "WheelSpins",
+            productGroup = "WheelSpins",
+            itemSku = tostring(resolvedProductId),
             productId = resolvedProductId,
         })
     end

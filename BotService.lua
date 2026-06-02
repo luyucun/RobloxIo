@@ -397,7 +397,7 @@ function BotService:_removeBot(botActor)
         return
     end
 
-    botActor.RespawnToken += 1
+    botActor.RespawnToken = (tonumber(botActor.RespawnToken) or 0) + 1
     disconnectAll(botActor.Connections or {})
     botActor.Connections = {}
 
@@ -427,10 +427,11 @@ function BotService:ScheduleRespawn(botActor)
         return
     end
 
-    local respawnToken = botActor.RespawnToken + 1
+    local respawnToken = (tonumber(botActor.RespawnToken) or 0) + 1
     botActor.RespawnToken = respawnToken
+    local respawnDelay = math.max(0, tonumber(GameConfig.BOTS and GameConfig.BOTS.RespawnDelaySeconds) or 1.25)
 
-    task.delay(GameConfig.BOTS.RespawnDelaySeconds, function()
+    task.delay(respawnDelay, function()
         if not self._enabled then
             return
         end

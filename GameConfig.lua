@@ -105,6 +105,8 @@ GameConfig.ARENA = {
     MinSpawnSpacing = 10,
     SpawnCandidateAttempts = 40,
     EnterDebounceSeconds = 1.0,
+    FirstArenaEnterShieldDurationSeconds = 60,
+    ArenaEnterShieldDurationSeconds = 10,
 }
 
 GameConfig.WEAPON = {
@@ -132,6 +134,23 @@ GameConfig.WEAPON_UNLOCK = {
 GameConfig.PERFORMANCE = {
     DebugEnabled = false,
     LogIntervalSeconds = 15,
+}
+
+GameConfig.ANALYTICS = {
+    Enabled = true,
+    StudioDebugPrint = true,
+    StudioSendToRoblox = false,
+    LiveDebugPrint = false,
+    CustomEventSampleRate = 1,
+    GameplayEconomySampleRate = 1,
+    SendBudgetBasePerMinute = 24,
+    SendBudgetPerPlayerPerMinute = 12,
+    SendBudgetSafetyRatio = 0.7,
+    HighFrequencySummaryIntervalSeconds = 45,
+    EventDedupeSeconds = 2,
+    AnalyticsThrottleCooldownSeconds = 60,
+    AnalyticsStatsLogIntervalSeconds = 60,
+    CombatSummarySampleRate = 1,
 }
 
 GameConfig.COMBAT = {
@@ -366,6 +385,8 @@ GameConfig.RESPAWN = {
     DeathRecoverySeconds = 1.0,
     MonsterKillAutoReviveSeconds = 2,
     PlayerKillReviveCountdownSeconds = 15,
+    DailyFreeReviveLevelMaxExclusive = 30,
+    DailyFreeReviveClaimKey = "DefeatedDailyFreeRevive",
 }
 
 GameConfig.BOTS = {

@@ -48,6 +48,7 @@ LocalMonsterRewardService._killReportWindows = {}
 LocalMonsterRewardService._hitReportWindows = {}
 LocalMonsterRewardService._recentKillIdsByUserId = {}
 LocalMonsterRewardService._spawnAuthorizationsByUserId = {}
+LocalMonsterRewardService._gameAnalyticsService = nil
 LocalMonsterRewardService._perfStats = nil
 LocalMonsterRewardService._nextPerfLogClock = 0
 
@@ -592,6 +593,17 @@ function LocalMonsterRewardService:_handleLocalMonsterKilledBatch(player, payloa
     end
 
     self:_grantLocalMonsterKillRewards(player, rewardAccumulator)
+    if self._gameAnalyticsService and #acceptedRequestIds > 0 then
+        if self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(player, "Onboarding.FirstMonsterKillAccepted") then
+            self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 7, "FirstMonsterKillAccepted", {
+                source = "monster",
+                killCount = #acceptedRequestIds,
+            })
+        end
+        self._gameAnalyticsService:TrackCustom(player, "MonsterKillBatchAccepted", #acceptedRequestIds, {
+            source = "monster",
+        })
+    end
     self:_fireKillBatchAck(player, acceptedRequestIds, rejected)
 end
 
@@ -621,6 +633,17 @@ function LocalMonsterRewardService:_handleLocalMonsterKilled(player, payload)
     local accepted, reason = self:_processLocalMonsterKill(player, payload, os.clock(), rewardAccumulator)
     if accepted then
         self:_grantLocalMonsterKillRewards(player, rewardAccumulator)
+        if self._gameAnalyticsService then
+            if self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(player, "Onboarding.FirstMonsterKillAccepted") then
+                self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 7, "FirstMonsterKillAccepted", {
+                    source = "monster",
+                    killCount = 1,
+                })
+            end
+            self._gameAnalyticsService:TrackCustom(player, "MonsterKillBatchAccepted", 1, {
+                source = "monster",
+            })
+        end
         self:_fireKillAck(player, payload, "KillAccepted", reason)
     else
         self:_fireKillAck(player, payload, "KillRejected", reason)
@@ -725,6 +748,7 @@ function LocalMonsterRewardService:Init(dependencies)
     self._experienceOrbService = dependencies.ExperienceOrbService
     self._healthService = dependencies.HealthService
     self._rebirthService = dependencies.RebirthService
+    self._gameAnalyticsService = dependencies.GameAnalyticsService
     self._localMonsterSpawnTokenEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LocalMonsterSpawnToken") or nil
     self._localMonsterKilledEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LocalMonsterKilled") or nil
     self._localMonsterHitPlayerEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("LocalMonsterHitPlayer") or nil

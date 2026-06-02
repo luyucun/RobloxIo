@@ -83,13 +83,33 @@ function HealthService:_fireDeathFeedback(actor, sourceActor)
 
     local victimState = self._playerStateService and self._playerStateService:GetState(actor) or nil
     local killerUserId = sourceActor and ActorUtils.GetCombatUserId(sourceActor) or nil
+    local isPlayerKill = ActorUtils.IsPlayer(sourceActor) and not ActorUtils.IsSameActor(actor, sourceActor)
+    local dailyFreeReviveStatus = isPlayerKill
+        and self._respawnService
+        and self._respawnService.PeekDailyFreeReviveStatus
+        and self._respawnService:PeekDailyFreeReviveStatus(actor)
+        or nil
     self._deathFeedbackEvent:FireClient(actor, {
         reason = "WeaponDamage",
         killerUserId = killerUserId,
         killer = buildKillerPayload(self._playerStateService, sourceActor),
         victimLevel = victimState and victimState.Level or GameConfig.PLAYER.BaseLevel,
+        dailyFreeReviveEligible = dailyFreeReviveStatus and dailyFreeReviveStatus.eligible == true or false,
+        dailyFreeReviveLevel = dailyFreeReviveStatus and dailyFreeReviveStatus.level or nil,
         timestamp = os.clock(),
     })
+
+    if self._gameAnalyticsService then
+        if self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(actor, "Onboarding.FirstDeathOrSurvived60s") then
+            self._gameAnalyticsService:TrackFunnel(actor, "Onboarding", 10, "FirstDeathOrSurvived60s", {
+                source = ActorUtils.IsPlayer(sourceActor) and "player" or "monster",
+                level = victimState and victimState.Level or GameConfig.PLAYER.BaseLevel,
+            })
+        end
+        self._gameAnalyticsService:TrackCustom(actor, "PlayerDied", 1, {
+            source = ActorUtils.IsPlayer(sourceActor) and "player" or "monster",
+        })
+    end
 end
 
 function HealthService:_fireKillInfoFeedback(targetActor, sourceActor)
@@ -119,6 +139,11 @@ function HealthService:_handleActorKill(targetActor, sourceActor)
             self._playerStateService:AwardPlayerKillReward(sourceActor, targetActor)
             self._playerStateService:AddRebirthScore(sourceActor, GameConfig.REBIRTH.PlayerKillScoreReward)
             self:_fireKillInfoFeedback(targetActor, sourceActor)
+            if self._gameAnalyticsService then
+                self._gameAnalyticsService:TrackCustom(sourceActor, "PlayerKilled", 1, {
+                    source = "player",
+                })
+            end
         end
         self._playerStateService:PushState(sourceActor)
     end
@@ -768,6 +793,7 @@ function HealthService:Init(dependencies)
     self._remoteEventService = dependencies.RemoteEventService
     self._respawnService = dependencies.RespawnService
     self._buffService = dependencies.BuffService
+    self._gameAnalyticsService = dependencies.GameAnalyticsService
     self._deathFeedbackEvent = self._remoteEventService and self._remoteEventService:GetEvent("DeathFeedback") or nil
     self._killInfoFeedbackEvent = self._remoteEventService and self._remoteEventService:GetEvent("KillInfoFeedback") or nil
     self._lastDamageClockByUserId = {}

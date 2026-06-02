@@ -126,8 +126,18 @@ function RemoteEventService:Init()
         { Key = "RequestShopStarterPackClaim", Parent = systemEvents, Name = RemoteNames.System.RequestShopStarterPackClaim },
         { Key = "RequestShopPurchaseContext", Parent = systemEvents, Name = RemoteNames.System.RequestShopPurchaseContext },
         { Key = "ShopRewardFeedback", Parent = systemEvents, Name = RemoteNames.System.ShopRewardFeedback },
+        { Key = "RequestCodeRedeem", Parent = systemEvents, Name = RemoteNames.System.RequestCodeRedeem },
+        { Key = "CodeRedeemFeedback", Parent = systemEvents, Name = RemoteNames.System.CodeRedeemFeedback },
+        { Key = "OnlineRewardStateSync", Parent = systemEvents, Name = RemoteNames.System.OnlineRewardStateSync },
+        { Key = "RequestOnlineRewardStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestOnlineRewardStateSync },
+        { Key = "RequestOnlineRewardClaim", Parent = systemEvents, Name = RemoteNames.System.RequestOnlineRewardClaim },
+        { Key = "SevenDayLoginRewardStateSync", Parent = systemEvents, Name = RemoteNames.System.SevenDayLoginRewardStateSync },
+        { Key = "RequestSevenDayLoginRewardStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestSevenDayLoginRewardStateSync },
+        { Key = "RequestSevenDayLoginRewardClaim", Parent = systemEvents, Name = RemoteNames.System.RequestSevenDayLoginRewardClaim },
         { Key = "RequestOptionStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestOptionStateSync },
         { Key = "RequestOptionUpdate", Parent = systemEvents, Name = RemoteNames.System.RequestOptionUpdate },
+        { Key = "RequestFriendsRankingStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestFriendsRankingStateSync },
+        { Key = "FriendsRankingStateSync", Parent = systemEvents, Name = RemoteNames.System.FriendsRankingStateSync },
 
         { Key = "PickupFeedback", Parent = battleEvents, Name = RemoteNames.Battle.PickupFeedback },
         { Key = "ExperienceFeedback", Parent = battleEvents, Name = RemoteNames.Battle.ExperienceFeedback },
@@ -142,6 +152,7 @@ function RemoteEventService:Init()
         { Key = "LeaderboardSync", Parent = battleEvents, Name = RemoteNames.Battle.LeaderboardSync },
         { Key = "ArenaProgressSync", Parent = battleEvents, Name = RemoteNames.Battle.ArenaProgressSync },
         { Key = "NukeCinematic", Parent = battleEvents, Name = RemoteNames.Battle.NukeCinematic },
+        { Key = "RevengeCinematic", Parent = battleEvents, Name = RemoteNames.Battle.RevengeCinematic },
         { Key = "NukeLocalMonsterSweep", Parent = battleEvents, Name = RemoteNames.Battle.NukeLocalMonsterSweep },
     }
 

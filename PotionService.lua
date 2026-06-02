@@ -459,23 +459,41 @@ function PotionService:BuyWithDiamonds(player, potionId)
         return false, "InvalidPotion"
     end
 
-    local state = self._playerStateService:GetState(player)
     local price = math.max(0, math.floor(tonumber(potion.DiamondPrice) or 0))
-    state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0))
-    if state.Diamonds < price then
+    local spent, remainingDiamonds = false, 0
+    if self._playerStateService.TrySpendDiamonds then
+        spent, remainingDiamonds = self._playerStateService:TrySpendDiamonds(player, price, {
+            source = "potion",
+            productGroup = "potion",
+            itemSku = "PotionDiamondPurchase_" .. tostring(potion.Id),
+        })
+    else
+        local state = self._playerStateService:GetState(player)
+        state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0))
+        if state.Diamonds >= price then
+            state.Diamonds -= price
+            spent = true
+            remainingDiamonds = state.Diamonds
+        else
+            remainingDiamonds = state.Diamonds
+        end
+    end
+    if not spent then
         self:_fireFeedback(player, "Failed", "NotEnoughDiamonds", potion.Id)
         return false, "NotEnoughDiamonds"
     end
 
-    state.Diamonds = state.Diamonds - price
     local success, result = self:_activatePotion(player, potion, "DiamondPurchase", "Purchased", "DiamondPurchase")
     if not success then
-        state.Diamonds = state.Diamonds + price
-        self._playerStateService:PushState(player)
+        self._playerStateService:AddDiamonds(player, price, {
+            source = "potion_refund",
+            productGroup = "potion",
+            itemSku = "PotionDiamondPurchaseRefund_" .. tostring(potion.Id),
+        })
         return false, result or "ActivateFailed"
     end
 
-    return true, state.Diamonds
+    return true, remainingDiamonds
 end
 
 function PotionService:GrantRobuxPotion(player, productId)

@@ -1118,11 +1118,25 @@ function WeaponService:_getHighestWeaponTier(weaponStates)
 end
 
 function WeaponService:_syncActorWeaponState(actor, weaponStates)
-    local weaponTier = self:_getHighestWeaponTier(weaponStates)
+    local previousState = self._playerStateService:GetState(actor)
+    local previousTierIndex = math.max(0, tonumber(previousState and previousState.WeaponTierIndex) or 0)
+    local weaponTier, weaponTierIndex = self:_getHighestWeaponTier(weaponStates)
     local weaponCount = #(weaponStates or {})
     self._playerStateService:SetWeaponState(actor, weaponTier, weaponCount)
     self._playerStateService:PushState(actor)
     self:_fireWeaponStateSync(actor, weaponTier, weaponCount, weaponStates or {})
+    if ActorUtils.IsPlayer(actor) and self._gameAnalyticsService and weaponTierIndex > previousTierIndex then
+        if self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(actor, "Onboarding.FirstWeaponUpgrade") then
+            self._gameAnalyticsService:TrackFunnel(actor, "Onboarding", 9, "FirstWeaponUpgrade", {
+                source = "level",
+                tierIndex = weaponTierIndex,
+            })
+        end
+        self._gameAnalyticsService:TrackCustom(actor, "WeaponTierReached", weaponTierIndex, {
+            source = "level",
+            tierIndex = weaponTierIndex,
+        })
+    end
 end
 
 function WeaponService:_refreshWeaponRestoration(actor, currentCount, desiredCount)
@@ -1391,6 +1405,7 @@ function WeaponService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._remoteEventService = dependencies.RemoteEventService
     self._botService = dependencies.BotService
+    self._gameAnalyticsService = dependencies.GameAnalyticsService
     self._runtimeFolder = self:_createRuntimeFolder()
     self._brokenDebrisFolder = self:_createBrokenDebrisFolder()
     self._templateFolder = self:_resolveTemplateFolder()

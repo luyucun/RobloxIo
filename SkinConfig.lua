@@ -11,40 +11,64 @@ SkinConfig.PurchaseChannel = {
     Diamonds = 1,
     GamePass = 2,
     Wheel = 3,
+    SevenDayLoginReward = 4,
 }
 
+-- BEGIN GENERATED SKIN ROWS
+-- Source: IO_BaseBalanceDraft.xlsx / 皮肤表 + 武器数值. Update via tools/SyncCodeConfigFromWorkbook.py.
 SkinConfig.Skins = {
     {
         Id = 10001,
-        Name = "Magma Hammer",
-        TemplateName = "Skin001",
-        TemplatePath = "ReplicatedStorage/Model/Weapon/Skin001",
-        IconImage = "rbxassetid://123177643935146",
+        Name = 'Magma Hammer',
+        TemplateName = 'Skin001',
+        TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin001',
+        IconImage = 'rbxassetid://123177643935146',
         PurchaseChannel = SkinConfig.PurchaseChannel.Diamonds,
         DiamondPrice = 1999,
         GamePassId = 0,
     },
     {
         Id = 10002,
-        Name = "Phantom Reaper",
-        TemplateName = "Skin002",
-        TemplatePath = "ReplicatedStorage/Model/Weapon/Skin002",
-        IconImage = "rbxassetid://96062173104075",
+        Name = 'Phantom Reaper',
+        TemplateName = 'Skin002',
+        TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin002',
+        IconImage = 'rbxassetid://96062173104075',
         PurchaseChannel = SkinConfig.PurchaseChannel.GamePass,
         DiamondPrice = 0,
         GamePassId = 1830742687,
     },
     {
         Id = 10003,
-        Name = "Frozen Chainblade",
-        TemplateName = "Skin003",
-        TemplatePath = "ReplicatedStorage/Model/Weapon/Skin003",
-        IconImage = "rbxassetid://106240490422146",
+        Name = 'Frozen Chainblade',
+        TemplateName = 'Skin003',
+        TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin003',
+        IconImage = 'rbxassetid://106240490422146',
         PurchaseChannel = SkinConfig.PurchaseChannel.Wheel,
         DiamondPrice = 0,
         GamePassId = 0,
     },
+    {
+        Id = 10006,
+        Name = 'Abyss Sword',
+        TemplateName = 'Skin006',
+        TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin006',
+        IconImage = 'rbxassetid://107965659960902',
+        PurchaseChannel = SkinConfig.PurchaseChannel.SevenDayLoginReward,
+        DiamondPrice = 0,
+        GamePassId = 0,
+    },
+    {
+        Id = 10007,
+        Name = 'Watermelon Pop',
+        TemplateName = 'Skin007',
+        TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin007',
+        IconImage = 'rbxassetid://97879805462753',
+        PurchaseChannel = SkinConfig.PurchaseChannel.SevenDayLoginReward,
+        DiamondPrice = 0,
+        GamePassId = 0,
+    },
 }
+-- END GENERATED SKIN ROWS
 
 SkinConfig.ById = {}
 SkinConfig.ByTemplateName = {}
@@ -80,6 +104,10 @@ end
 
 function SkinConfig.IsWheelSkin(skin)
     return skin and tonumber(skin.PurchaseChannel) == SkinConfig.PurchaseChannel.Wheel
+end
+
+function SkinConfig.IsSevenDayLoginRewardSkin(skin)
+    return skin and tonumber(skin.PurchaseChannel) == SkinConfig.PurchaseChannel.SevenDayLoginReward
 end
 
 function SkinConfig.CopyForClient(skin)

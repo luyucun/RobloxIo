@@ -36,6 +36,7 @@ local GameConfig = requireSharedModule("GameConfig")
 local WeaponTierConfig = requireSharedModule("WeaponTierConfig")
 local PotionConfig = requireSharedModule("PotionConfig")
 local SkinConfig = requireSharedModule("SkinConfig")
+local TrailConfig = requireSharedModule("TrailConfig")
 local SubscriptionConfig = requireSharedModule("SubscriptionConfig")
 
 local PlayerStateService = {}
@@ -67,6 +68,7 @@ PlayerStateService._rebirthService = nil
 PlayerStateService._arenaProgressService = nil
 PlayerStateService._healthService = nil
 PlayerStateService._subscriptionService = nil
+PlayerStateService._gameAnalyticsService = nil
 PlayerStateService._friendBonusRefreshToken = 0
 PlayerStateService._friendBonusLoopToken = 0
 PlayerStateService._characterCollisionConnectionsByActorId = {}
@@ -87,6 +89,29 @@ end
 
 local function getPerformanceLogInterval()
     return math.max(1, tonumber(GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.LogIntervalSeconds) or 15)
+end
+
+local function copyAnalyticsFields(context)
+    local fields = {}
+    local source = "system"
+    local productGroup = nil
+
+    if type(context) == "table" then
+        if type(context.fields) == "table" then
+            for key, value in pairs(context.fields) do
+                fields[key] = value
+            end
+        end
+        source = tostring(context.source or fields.source or source)
+        productGroup = context.productGroup or fields.productGroup
+        fields.itemSku = fields.itemSku or context.itemSku
+    end
+
+    fields.source = source
+    if productGroup ~= nil then
+        fields.productGroup = tostring(productGroup)
+    end
+    return fields
 end
 
 local function countMapEntries(map)
@@ -233,6 +258,81 @@ local function normalizeShopClaims(shopClaims)
     return normalized
 end
 
+local function normalizeCodeClaims(codeClaims)
+    local normalized = {}
+    if type(codeClaims) ~= "table" then
+        return normalized
+    end
+
+    for claimKey, claimed in pairs(codeClaims) do
+        local key = tostring(claimKey or "")
+        if key ~= "" and claimed == true then
+            normalized[key] = true
+        end
+    end
+    return normalized
+end
+
+local function normalizeDailyFreeReviveClaims(dailyFreeReviveClaims)
+    local normalized = {}
+    if type(dailyFreeReviveClaims) ~= "table" then
+        return normalized
+    end
+
+    for claimKey, utcDay in pairs(dailyFreeReviveClaims) do
+        local key = tostring(claimKey or "")
+        local day = tostring(utcDay or "")
+        if key ~= "" and day ~= "" then
+            normalized[key] = day
+        end
+    end
+    return normalized
+end
+
+local function normalizeSevenDayLoginRewardState(rewardState)
+    local source = type(rewardState) == "table" and rewardState or {}
+
+    local function normalizeDayFlags(values)
+        local normalized = {}
+        if type(values) ~= "table" then
+            return normalized
+        end
+        for key, value in pairs(values) do
+            local dayIndex = math.max(0, math.floor(tonumber(key) or tonumber(value) or 0))
+            if dayIndex >= 1 and dayIndex <= 7 and value == true then
+                normalized[dayIndex] = true
+            end
+        end
+        return normalized
+    end
+
+    local function normalizeProcessedPurchases(values)
+        local normalized = {}
+        if type(values) ~= "table" then
+            return normalized
+        end
+        for key, value in pairs(values) do
+            local purchaseId = tostring(key or "")
+            if purchaseId ~= "" then
+                normalized[purchaseId] = math.max(0, math.floor(tonumber(value) or os.time()))
+            end
+        end
+        return normalized
+    end
+
+    return {
+        CycleId = math.max(0, math.floor(tonumber(source.CycleId or source.cycleId) or 0)),
+        UnlockedDays = normalizeDayFlags(source.UnlockedDays or source.unlockedDays),
+        ClaimedDays = normalizeDayFlags(source.ClaimedDays or source.claimedDays),
+        LastClaimAt = math.max(0, math.floor(tonumber(source.LastClaimAt or source.lastClaimAt) or 0)),
+        LastSequentialUnlockDay = math.clamp(math.floor(tonumber(source.LastSequentialUnlockDay or source.lastSequentialUnlockDay) or 0), 0, 7),
+        CycleStartUtcDay = math.max(0, math.floor(tonumber(source.CycleStartUtcDay or source.cycleStartUtcDay) or 0)),
+        CycleStartsLockedUntilNextUtc = source.CycleStartsLockedUntilNextUtc == true or source.cycleStartsLockedUntilNextUtc == true,
+        PendingCycleReset = source.PendingCycleReset == true or source.pendingCycleReset == true,
+        ProcessedPurchaseIds = normalizeProcessedPurchases(source.ProcessedPurchaseIds or source.processedPurchaseIds),
+    }
+end
+
 local function normalizeOptions(options)
     local normalized = {
         Music = true,
@@ -296,6 +396,33 @@ local function normalizeEquippedSkinId(equippedSkinId, ownedSkins)
     local skinId = math.floor(tonumber(equippedSkinId) or 0)
     if skinId > 0 and SkinConfig.GetSkin(skinId) and type(ownedSkins) == "table" and ownedSkins[tostring(skinId)] == true then
         return skinId
+    end
+    return nil
+end
+
+local function normalizeOwnedTrails(ownedTrails)
+    local normalized = {}
+    if type(ownedTrails) == "table" then
+        for trailKey, owned in pairs(ownedTrails) do
+            local trailId = owned == true and math.floor(tonumber(trailKey) or 0) or math.floor(tonumber(owned) or 0)
+            if trailId > 0 and TrailConfig.GetTrail(trailId) and (owned == true or tonumber(owned) ~= nil) then
+                normalized[tostring(trailId)] = true
+            end
+        end
+    end
+
+    for _, trail in ipairs(TrailConfig.GetAllTrails()) do
+        if trail.IsDefaultUnlocked == true then
+            normalized[tostring(trail.Id)] = true
+        end
+    end
+    return normalized
+end
+
+local function normalizeEquippedTrailId(equippedTrailId, ownedTrails)
+    local trailId = math.floor(tonumber(equippedTrailId) or 0)
+    if trailId > 0 and TrailConfig.GetTrail(trailId) and type(ownedTrails) == "table" and ownedTrails[tostring(trailId)] == true then
+        return trailId
     end
     return nil
 end
@@ -699,11 +826,16 @@ function PlayerStateService:_applyLevelDerivedState(state)
     state.GroupRewards = normalizeGroupRewards(state.GroupRewards)
     state.SubscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims)
     state.ShopClaims = normalizeShopClaims(state.ShopClaims)
+    state.CodeClaims = normalizeCodeClaims(state.CodeClaims)
+    state.DailyFreeReviveClaims = normalizeDailyFreeReviveClaims(state.DailyFreeReviveClaims)
+    state.SevenDayLoginRewardState = normalizeSevenDayLoginRewardState(state.SevenDayLoginRewardState)
     state.Options = normalizeOptions(state.Options)
     state.GuideCompleted = normalizeGuideCompleted(state.GuideCompleted, true)
     state.FavoritePromptState = normalizeFavoritePromptState(state.FavoritePromptState)
     state.OwnedSkins = normalizeOwnedSkins(state.OwnedSkins)
     state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
+    state.OwnedTrails = normalizeOwnedTrails(state.OwnedTrails)
+    state.EquippedTrailId = normalizeEquippedTrailId(state.EquippedTrailId, state.OwnedTrails)
     state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(
         state.WeaponUnlockRewards,
         getMaxUnlockedTierIndexForLevel(state.HighestLevelReached or state.Level)
@@ -767,11 +899,16 @@ function PlayerStateService:_createDefaultState(actor)
         GroupRewards = {},
         SubscriptionClaims = {},
         ShopClaims = {},
+        CodeClaims = {},
+        DailyFreeReviveClaims = {},
+        SevenDayLoginRewardState = normalizeSevenDayLoginRewardState(nil),
         Options = normalizeOptions(),
         GuideCompleted = true,
         FavoritePromptState = normalizeFavoritePromptState(nil),
         OwnedSkins = {},
         EquippedSkinId = nil,
+        OwnedTrails = {},
+        EquippedTrailId = nil,
         WeaponUnlockRewards = normalizeWeaponUnlockRewards(nil, getMaxUnlockedTierIndexForLevel(GameConfig.PLAYER.BaseLevel)),
         ActivePotions = {},
         ActivePotion = nil,
@@ -1108,6 +1245,7 @@ function PlayerStateService:Init(dependencies)
     self._arenaProgressService = dependencies and dependencies.ArenaProgressService or nil
     self._healthService = dependencies and dependencies.HealthService or nil
     self._subscriptionService = dependencies and dependencies.SubscriptionService or nil
+    self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or nil
     self._playerStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PlayerStateSync") or nil
     self._requestStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestPlayerStateSync") or nil
     self._requestOptionStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestOptionStateSync") or nil
@@ -1189,6 +1327,7 @@ function PlayerStateService:BindSystems(dependencies)
     self._arenaProgressService = dependencies and dependencies.ArenaProgressService or self._arenaProgressService
     self._healthService = dependencies and dependencies.HealthService or self._healthService
     self._subscriptionService = dependencies and dependencies.SubscriptionService or self._subscriptionService
+    self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
 end
 
 function PlayerStateService:_markArenaProgressDirty()
@@ -1211,6 +1350,9 @@ end
 
 function PlayerStateService:OnPlayerAdded(player)
     local state = self:_getOrCreateState(player)
+    if self._gameAnalyticsService and self._gameAnalyticsService.BeginOnboardingSurvivalCheck then
+        self._gameAnalyticsService:BeginOnboardingSurvivalCheck(player, 60)
+    end
     self:_syncLeaderstats(player, state)
     if not self._rebirthService or not self._rebirthService.IsPlayerLoaded or self._rebirthService:IsPlayerLoaded(player) then
         self:PushState(player)
@@ -1241,6 +1383,9 @@ function PlayerStateService:BuildStatePayload(actor)
     local ownedSkins = normalizeOwnedSkins(state.OwnedSkins)
     state.OwnedSkins = ownedSkins
     state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, ownedSkins)
+    local ownedTrails = normalizeOwnedTrails(state.OwnedTrails)
+    state.OwnedTrails = ownedTrails
+    state.EquippedTrailId = normalizeEquippedTrailId(state.EquippedTrailId, ownedTrails)
     local shieldState = self._healthService and self._healthService.GetShieldState and self._healthService:GetShieldState(actor) or nil
     local subscriptionActive = self._subscriptionService and (
         (self._subscriptionService.IsSubscribedCached and self._subscriptionService:IsSubscribedCached(actor) == true)
@@ -1282,6 +1427,9 @@ function PlayerStateService:BuildStatePayload(actor)
         groupRewards = state.GroupRewards,
         subscriptionClaims = normalizeSubscriptionClaims(state.SubscriptionClaims),
         shopClaims = copyBooleanMap(normalizeShopClaims(state.ShopClaims)),
+        codeClaims = copyBooleanMap(normalizeCodeClaims(state.CodeClaims)),
+        dailyFreeReviveClaims = normalizeDailyFreeReviveClaims(state.DailyFreeReviveClaims),
+        sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(state.SevenDayLoginRewardState),
         guideCompleted = state.GuideCompleted == true,
         favoritePromptState = {
             hasFavorited = favoritePromptState.HasFavorited == true,
@@ -1301,6 +1449,8 @@ function PlayerStateService:BuildStatePayload(actor)
         subscriptionCurrentUtcDay = currentUtcDay,
         ownedSkins = copyBooleanMap(ownedSkins),
         equippedSkinId = state.EquippedSkinId,
+        ownedTrails = copyBooleanMap(ownedTrails),
+        equippedTrailId = state.EquippedTrailId,
         weaponUnlockRewards = {
             claimedTiers = copyBooleanMap(weaponUnlockRewards.ClaimedTiers or {}),
             pendingQueue = copyArray(weaponUnlockRewards.PendingQueue or {}),
@@ -1452,7 +1602,34 @@ function PlayerStateService:SetTotalPlayerKills(actor, count)
     return state.TotalPlayerKills
 end
 
-function PlayerStateService:AddDiamonds(actor, amount)
+function PlayerStateService:_trackEconomy(actor, flowType, currency, amount, balance, context)
+    if not (ActorUtils.IsPlayer(actor) and self._gameAnalyticsService and self._gameAnalyticsService.TrackEconomy) then
+        return
+    end
+
+    local normalizedAmount = math.max(0, math.floor(tonumber(amount) or 0))
+    if normalizedAmount <= 0 then
+        return
+    end
+
+    local normalizedContext = type(context) == "table" and context or {}
+    local fields = copyAnalyticsFields(normalizedContext)
+    local itemSku = tostring(normalizedContext.itemSku or fields.itemSku or currency or "Currency")
+    local transactionType = normalizedContext.transactionType or Enum.AnalyticsEconomyTransactionType.Gameplay
+
+    self._gameAnalyticsService:TrackEconomy(
+        actor,
+        flowType,
+        currency,
+        normalizedAmount,
+        balance,
+        transactionType,
+        itemSku,
+        fields
+    )
+end
+
+function PlayerStateService:AddDiamonds(actor, amount, context)
     local state = self:_getOrCreateState(actor)
     local delta = math.floor(tonumber(amount) or 0)
     if delta == 0 then
@@ -1464,10 +1641,18 @@ function PlayerStateService:AddDiamonds(actor, amount)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
+    self:_trackEconomy(
+        actor,
+        delta >= 0 and Enum.AnalyticsEconomyFlowType.Source or Enum.AnalyticsEconomyFlowType.Sink,
+        "Diamonds",
+        math.abs(delta),
+        state.Diamonds,
+        context
+    )
     return state.Diamonds
 end
 
-function PlayerStateService:TrySpendDiamonds(actor, amount)
+function PlayerStateService:TrySpendDiamonds(actor, amount, context)
     local state = self:_getOrCreateState(actor)
     local cost = math.max(0, math.floor(tonumber(amount) or 0))
     state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0))
@@ -1483,10 +1668,18 @@ function PlayerStateService:TrySpendDiamonds(actor, amount)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
+    self:_trackEconomy(
+        actor,
+        Enum.AnalyticsEconomyFlowType.Sink,
+        "Diamonds",
+        cost,
+        state.Diamonds,
+        context
+    )
     return true, state.Diamonds
 end
 
-function PlayerStateService:AddWheelSpins(actor, amount)
+function PlayerStateService:AddWheelSpins(actor, amount, context)
     local state = self:_getOrCreateState(actor)
     local delta = math.floor(tonumber(amount) or 0)
     if delta == 0 then
@@ -1499,10 +1692,18 @@ function PlayerStateService:AddWheelSpins(actor, amount)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
+    self:_trackEconomy(
+        actor,
+        delta >= 0 and Enum.AnalyticsEconomyFlowType.Source or Enum.AnalyticsEconomyFlowType.Sink,
+        "WheelSpins",
+        math.abs(delta),
+        state.WheelSpins,
+        context
+    )
     return state.WheelSpins
 end
 
-function PlayerStateService:TryConsumeWheelSpin(actor)
+function PlayerStateService:TryConsumeWheelSpin(actor, context)
     local state = self:_getOrCreateState(actor)
     state.WheelSpins = math.max(0, math.floor(tonumber(state.WheelSpins) or 0))
     if state.WheelSpins <= 0 then
@@ -1514,6 +1715,14 @@ function PlayerStateService:TryConsumeWheelSpin(actor)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
+    self:_trackEconomy(
+        actor,
+        Enum.AnalyticsEconomyFlowType.Sink,
+        "WheelSpins",
+        1,
+        state.WheelSpins,
+        context
+    )
     return true, state.WheelSpins
 end
 
@@ -1547,6 +1756,36 @@ function PlayerStateService:MarkSubscriptionClaim(actor, subscriptionId, utcDay)
     return true
 end
 
+function PlayerStateService:GetDailyFreeReviveClaims(actor)
+    local state = self:_getOrCreateState(actor)
+    state.DailyFreeReviveClaims = normalizeDailyFreeReviveClaims(state.DailyFreeReviveClaims)
+    return state.DailyFreeReviveClaims
+end
+
+function PlayerStateService:HasDailyFreeReviveClaim(actor, claimKey, utcDay)
+    local claims = self:GetDailyFreeReviveClaims(actor)
+    local key = tostring(claimKey or "")
+    local day = tostring(utcDay or "")
+    return key ~= "" and day ~= "" and claims[key] == day
+end
+
+function PlayerStateService:MarkDailyFreeReviveClaim(actor, claimKey, utcDay)
+    local key = tostring(claimKey or "")
+    local day = tostring(utcDay or "")
+    if key == "" or day == "" then
+        return false
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.DailyFreeReviveClaims = normalizeDailyFreeReviveClaims(state.DailyFreeReviveClaims)
+    state.DailyFreeReviveClaims[key] = day
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
 function PlayerStateService:GetShopClaims(actor)
     local state = self:_getOrCreateState(actor)
     state.ShopClaims = normalizeShopClaims(state.ShopClaims)
@@ -1572,6 +1811,38 @@ function PlayerStateService:MarkShopClaim(actor, claimKey)
     end
 
     state.ShopClaims[key] = true
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
+function PlayerStateService:GetCodeClaims(actor)
+    local state = self:_getOrCreateState(actor)
+    state.CodeClaims = normalizeCodeClaims(state.CodeClaims)
+    return state.CodeClaims
+end
+
+function PlayerStateService:HasCodeClaim(actor, claimKey)
+    local claims = self:GetCodeClaims(actor)
+    local key = tostring(claimKey or "")
+    return key ~= "" and claims[key] == true
+end
+
+function PlayerStateService:MarkCodeClaim(actor, claimKey)
+    local key = tostring(claimKey or "")
+    if key == "" then
+        return false
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.CodeClaims = normalizeCodeClaims(state.CodeClaims)
+    if state.CodeClaims[key] == true then
+        return false
+    end
+
+    state.CodeClaims[key] = true
     self:PushState(actor)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
@@ -1714,7 +1985,82 @@ function PlayerStateService:GetEquippedSkinConfig(actor)
     return skinId and SkinConfig.GetSkin(skinId) or nil
 end
 
-function PlayerStateService:_addDiamondsWithoutPush(actor, amount)
+function PlayerStateService:GetOwnedTrails(actor)
+    local state = self:_getOrCreateState(actor)
+    state.OwnedTrails = normalizeOwnedTrails(state.OwnedTrails)
+    state.EquippedTrailId = normalizeEquippedTrailId(state.EquippedTrailId, state.OwnedTrails)
+    return state.OwnedTrails
+end
+
+function PlayerStateService:OwnsTrail(actor, trailId)
+    local ownedTrails = self:GetOwnedTrails(actor)
+    return ownedTrails[tostring(math.floor(tonumber(trailId) or 0))] == true
+end
+
+function PlayerStateService:GrantTrail(actor, trailId)
+    local trail = TrailConfig.GetTrail(trailId)
+    if not trail then
+        return false, "InvalidTrail"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.OwnedTrails = normalizeOwnedTrails(state.OwnedTrails)
+    local key = tostring(trail.Id)
+    local alreadyOwned = state.OwnedTrails[key] == true
+    state.OwnedTrails[key] = true
+    state.EquippedTrailId = normalizeEquippedTrailId(state.EquippedTrailId, state.OwnedTrails)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true, alreadyOwned and "AlreadyOwned" or "Granted"
+end
+
+function PlayerStateService:EquipTrail(actor, trailId)
+    local trail = TrailConfig.GetTrail(trailId)
+    if not trail then
+        return false, "InvalidTrail"
+    end
+    if not self:OwnsTrail(actor, trail.Id) then
+        return false, "NotOwned"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.EquippedTrailId = trail.Id
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true, "Equipped"
+end
+
+function PlayerStateService:ClearEquippedTrail(actor)
+    local state = self:_getOrCreateState(actor)
+    if state.EquippedTrailId == nil then
+        return true
+    end
+
+    state.EquippedTrailId = nil
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
+function PlayerStateService:GetEquippedTrailId(actor)
+    local state = self:_getOrCreateState(actor)
+    state.OwnedTrails = normalizeOwnedTrails(state.OwnedTrails)
+    state.EquippedTrailId = normalizeEquippedTrailId(state.EquippedTrailId, state.OwnedTrails)
+    return state.EquippedTrailId
+end
+
+function PlayerStateService:GetEquippedTrailConfig(actor)
+    local trailId = self:GetEquippedTrailId(actor)
+    return trailId and TrailConfig.GetTrail(trailId) or nil
+end
+
+function PlayerStateService:_addDiamondsWithoutPush(actor, amount, context)
     local state = self:_getOrCreateState(actor)
     local delta = math.floor(tonumber(amount) or 0)
     if delta == 0 then
@@ -1725,6 +2071,14 @@ function PlayerStateService:_addDiamondsWithoutPush(actor, amount)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
+    self:_trackEconomy(
+        actor,
+        delta >= 0 and Enum.AnalyticsEconomyFlowType.Source or Enum.AnalyticsEconomyFlowType.Sink,
+        "Diamonds",
+        math.abs(delta),
+        state.Diamonds,
+        context
+    )
     return state.Diamonds
 end
 
@@ -1737,7 +2091,11 @@ function PlayerStateService:AwardPlayerKillReward(killer, target)
     end
 
     self:AddKillCount(killer, 1)
-    self:_addDiamondsWithoutPush(killer, GameConfig.ECONOMY.PlayerKillDiamondReward)
+    self:_addDiamondsWithoutPush(killer, GameConfig.ECONOMY.PlayerKillDiamondReward, {
+        source = "player",
+        productGroup = "combat",
+        itemSku = "PlayerKillReward",
+    })
     return true
 end
 
@@ -1957,11 +2315,16 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.GroupRewards = normalizeGroupRewards(savedProgress.groupRewards or savedProgress.GroupRewards)
         state.SubscriptionClaims = normalizeSubscriptionClaims(savedProgress.subscriptionClaims or savedProgress.SubscriptionClaims)
         state.ShopClaims = normalizeShopClaims(savedProgress.shopClaims or savedProgress.ShopClaims)
+        state.CodeClaims = normalizeCodeClaims(savedProgress.codeClaims or savedProgress.CodeClaims)
+        state.DailyFreeReviveClaims = normalizeDailyFreeReviveClaims(savedProgress.dailyFreeReviveClaims or savedProgress.DailyFreeReviveClaims)
+        state.SevenDayLoginRewardState = normalizeSevenDayLoginRewardState(savedProgress.sevenDayLoginRewardState or savedProgress.SevenDayLoginRewardState)
         state.Options = normalizeOptions(savedProgress.options or savedProgress.Options)
         state.GuideCompleted = readGuideCompleted(savedProgress, true)
         state.FavoritePromptState = normalizeFavoritePromptState(savedProgress.favoritePromptState or savedProgress.FavoritePromptState)
         state.OwnedSkins = normalizeOwnedSkins(savedProgress.ownedSkins or savedProgress.OwnedSkins)
         state.EquippedSkinId = normalizeEquippedSkinId(savedProgress.equippedSkinId or savedProgress.EquippedSkinId, state.OwnedSkins)
+        state.OwnedTrails = normalizeOwnedTrails(savedProgress.ownedTrails or savedProgress.OwnedTrails)
+        state.EquippedTrailId = normalizeEquippedTrailId(savedProgress.equippedTrailId or savedProgress.EquippedTrailId, state.OwnedTrails)
         local savedWeaponUnlockRewards = savedProgress.weaponUnlockRewards or savedProgress.WeaponUnlockRewards
         local maxPromptedTierIndex = getMaxUnlockedTierIndexForLevel(state.HighestLevelReached)
         if savedWeaponUnlockRewards ~= nil then
@@ -2153,6 +2516,20 @@ function PlayerStateService:_addExperience(actor, amount, requireActiveInArena)
     end
     if didLevelUp then
         self:_markArenaProgressDirty()
+        if ActorUtils.IsPlayer(actor) and self._gameAnalyticsService then
+            if self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(actor, "Onboarding.FirstLevelUp") then
+                self._gameAnalyticsService:TrackFunnel(actor, "Onboarding", 8, "FirstLevelUp", {
+                    source = "experience",
+                    previousLevel = previousLevel,
+                    level = state.Level,
+                })
+            end
+            self._gameAnalyticsService:TrackCustom(actor, "LevelUp", state.Level, {
+                source = "experience",
+                previousLevel = previousLevel,
+                level = state.Level,
+            })
+        end
     end
     return didLevelUp, state.Level, state.Experience
 end
@@ -2373,6 +2750,11 @@ function PlayerStateService:OnCharacterAdded(actor)
     end
     if wasInArena then
         self:_markArenaProgressDirty()
+    end
+    if ActorUtils.IsPlayer(actor) and self._gameAnalyticsService and self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(actor, "Onboarding.CharacterReady") then
+        self._gameAnalyticsService:TrackFunnel(actor, "Onboarding", 3, "CharacterReady", {
+            source = "spawn",
+        })
     end
     self:_logPerfStats(os.clock())
 end

@@ -57,6 +57,8 @@ local EXPERIENCE_FALLBACK_COLORS = {
     Color3.fromRGB(54, 126, 255),
     Color3.fromRGB(74, 205, 86),
 }
+local REVENGE_KILL_SOUND_PATH = { "Sword", "ONE_INCH_KILLER_PUNCH (1)" }
+local REVENGE_KILL_SOUND_ID = "rbxassetid://137119250639695"
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -568,6 +570,57 @@ function ClientEventController:_playSfxByPath(folderName, soundPath)
     end
 end
 
+function ClientEventController:_playFallbackSound(soundName, soundId)
+    if not (soundId and soundId ~= "") then
+        return false
+    end
+
+    local sound = Instance.new("Sound")
+    sound.Name = tostring(soundName or "RuntimeSfx")
+    sound.SoundId = tostring(soundId)
+    sound.Volume = 1
+    sound.Parent = SoundService
+
+    local cleanedUp = false
+    local function cleanup()
+        if cleanedUp then
+            return
+        end
+        cleanedUp = true
+        if sound then
+            sound:Destroy()
+        end
+    end
+
+    local endedConnection
+    endedConnection = sound.Ended:Connect(function()
+        if endedConnection then
+            endedConnection:Disconnect()
+        end
+        cleanup()
+    end)
+
+    if self._audioSettings and self._audioSettings.PlaySfx then
+        if not self._audioSettings:PlaySfx(sound, true) then
+            if endedConnection then
+                endedConnection:Disconnect()
+            end
+            cleanup()
+            return false
+        end
+    else
+        sound:Play()
+    end
+
+    task.delay(5, function()
+        if endedConnection then
+            endedConnection:Disconnect()
+        end
+        cleanup()
+    end)
+    return true
+end
+
 function ClientEventController:_playCombatFeedbackSound(payload)
     if type(payload) ~= "table" then
         return
@@ -583,6 +636,39 @@ function ClientEventController:_playCombatFeedbackSound(payload)
     elseif payload.eventType == "WeaponHitPlayer" then
         self:_playSfxByPath("Audio", { "Sword", "SwordHitRelease" })
     end
+end
+
+function ClientEventController:_playKillInfoFeedbackSound(payload)
+    if type(payload) ~= "table" then
+        return
+    end
+
+    local killerUserId = tonumber(payload.killerUserId)
+    if not (self._localPlayer and killerUserId and killerUserId == self._localPlayer.UserId) then
+        return
+    end
+
+    if self._audioSettings and self._audioSettings.PlaySfxByPath then
+        if self._audioSettings:PlaySfxByPath("Audio", REVENGE_KILL_SOUND_PATH, true) then
+            return
+        end
+    end
+
+    local folder = SoundService:FindFirstChild("Audio") or SoundService:FindFirstChild("Audio", true)
+    local sound = findSoundByPath(folder, REVENGE_KILL_SOUND_PATH)
+    if sound then
+        sound.SoundId = REVENGE_KILL_SOUND_ID
+        if self._audioSettings and self._audioSettings.PlaySfx then
+            self._audioSettings:PlaySfx(sound, true)
+        else
+            sound:Stop()
+            sound.TimePosition = 0
+            sound:Play()
+        end
+        return
+    end
+
+    self:_playFallbackSound("ONE_INCH_KILLER_PUNCH (1)", REVENGE_KILL_SOUND_ID)
 end
 
 local function animateLevelUpText(effect)
@@ -735,6 +821,11 @@ function ClientEventController:Init(dependencies)
 
     connectEvent(self._connections, systemEventsFolder:WaitForChild(RemoteNames.System.PotionFeedback), function(payload)
         self:_recordFeedback("PotionFeedback", payload)
+    end)
+
+    connectEvent(self._connections, systemEventsFolder:WaitForChild(RemoteNames.System.KillInfoFeedback), function(payload)
+        self:_recordFeedback("KillInfoFeedback", payload)
+        self:_playKillInfoFeedbackSound(payload)
     end)
 
     connectEvent(self._connections, battleEventsFolder:WaitForChild(RemoteNames.Battle.PickupFeedback), function(payload)

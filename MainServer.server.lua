@@ -65,8 +65,10 @@ local MonsterService = requireServerModule("MonsterService")
 local BossService = requireServerModule("BossService")
 local BuffService = requireServerModule("BuffService")
 local LeaderboardService = requireServerModule("LeaderboardService")
+local FriendsRankingService = requireServerModule("FriendsRankingService")
 local BotService = requireServerModule("BotService")
 local NukeService = requireServerModule("NukeService")
+local RevengeService = requireServerModule("RevengeService")
 local RebirthService = requireServerModule("RebirthService")
 local PotionService = requireServerModule("PotionService")
 local SpecialEventService = requireServerModule("SpecialEventService")
@@ -80,6 +82,10 @@ local WheelService = requireServerModule("WheelService")
 local SkinService = requireServerModule("SkinService")
 local SubscriptionService = requireServerModule("SubscriptionService")
 local ShopService = requireServerModule("ShopService")
+local CodeService = requireServerModule("CodeService")
+local OnlineRewardService = requireServerModule("OnlineRewardService")
+local SevenDayLoginRewardService = requireServerModule("SevenDayLoginRewardService")
+local GameAnalyticsService = requireServerModule("GameAnalyticsService")
 
 Players.RespawnTime = GameConfig.RESPAWN.DeathRecoverySeconds
 Players.CharacterAutoLoads = false
@@ -249,13 +255,20 @@ end
 
 RemoteEventService:Init()
 BadgeAwardService:Init()
+GameAnalyticsService:Init({
+    PlayerStateService = PlayerStateService,
+})
 PlayerStateService:Init({
     RemoteEventService = RemoteEventService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 RebirthService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     BadgeAwardService = BadgeAwardService,
+    OnlineRewardService = OnlineRewardService,
+    SevenDayLoginRewardService = SevenDayLoginRewardService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 PotionService:Init({
     RemoteEventService = RemoteEventService,
@@ -268,23 +281,48 @@ WheelService:Init({
     PotionService = PotionService,
     RebirthService = RebirthService,
     HealthService = HealthService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 SkinService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 SubscriptionService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
     BadgeAwardService = BadgeAwardService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 ShopService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
     PotionService = PotionService,
+    GameAnalyticsService = GameAnalyticsService,
+})
+CodeService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+})
+OnlineRewardService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+    HealthService = HealthService,
+})
+SevenDayLoginRewardService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+    SkinService = SkinService,
+    HealthService = HealthService,
 })
 GroupRewardService:Init({
     RemoteEventService = RemoteEventService,
@@ -296,6 +334,7 @@ WeaponUnlockRewardService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 FavoritePlacePromptService:Init({
     RemoteEventService = RemoteEventService,
@@ -313,18 +352,22 @@ ArenaService:Init({
     BotService = BotService,
     RebirthService = RebirthService,
     HealthService = HealthService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 WeaponService:Init({
     PlayerStateService = PlayerStateService,
     RemoteEventService = RemoteEventService,
     BotService = BotService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 RespawnService:Init({
     PlayerStateService = PlayerStateService,
     WeaponService = WeaponService,
     ArenaService = ArenaService,
     BotService = BotService,
+    RevengeService = RevengeService,
     RemoteEventService = RemoteEventService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 BuffService:Init({
     PlayerStateService = PlayerStateService,
@@ -335,6 +378,7 @@ HealthService:Init({
     RemoteEventService = RemoteEventService,
     RespawnService = RespawnService,
     BuffService = BuffService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 CombatService:Init({
     PlayerStateService = PlayerStateService,
@@ -354,6 +398,7 @@ LocalMonsterRewardService:Init({
     HealthService = HealthService,
     RemoteEventService = RemoteEventService,
     RebirthService = RebirthService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 MonsterService:Init({
     PlayerStateService = PlayerStateService,
@@ -372,6 +417,12 @@ LeaderboardService:Init({
     PlayerStateService = PlayerStateService,
     RemoteEventService = RemoteEventService,
 })
+FriendsRankingService:Init({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    LeaderboardService = LeaderboardService,
+    RemoteEventService = RemoteEventService,
+})
 ArenaProgressService:Init({
     PlayerStateService = PlayerStateService,
     RemoteEventService = RemoteEventService,
@@ -385,6 +436,12 @@ NukeService:Init({
     ExperienceOrbService = ExperienceOrbService,
     LocalMonsterRewardService = LocalMonsterRewardService,
 })
+RevengeService:Init({
+    PlayerStateService = PlayerStateService,
+    HealthService = HealthService,
+    RespawnService = RespawnService,
+    RemoteEventService = RemoteEventService,
+})
 SpecialEventService:Init({
     RemoteEventService = RemoteEventService,
     BossService = BossService,
@@ -395,6 +452,8 @@ GMCommandService:Init({
     PlayerStateService = PlayerStateService,
     BotService = BotService,
     HealthService = HealthService,
+    RevengeService = RevengeService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 PlayerStateService:BindSystems({
     WeaponService = WeaponService,
@@ -404,14 +463,20 @@ PlayerStateService:BindSystems({
     ArenaProgressService = ArenaProgressService,
     HealthService = HealthService,
     SubscriptionService = SubscriptionService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 RebirthService:BindSystems({
     HealthService = HealthService,
     RespawnService = RespawnService,
     NukeService = NukeService,
+    RevengeService = RevengeService,
     PotionService = PotionService,
     WheelService = WheelService,
+    SkinService = SkinService,
     BadgeAwardService = BadgeAwardService,
+    OnlineRewardService = OnlineRewardService,
+    SevenDayLoginRewardService = SevenDayLoginRewardService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 PotionService:BindSystems({
     RebirthService = RebirthService,
@@ -423,21 +488,43 @@ WheelService:BindSystems({
     SkinService = SkinService,
     HealthService = HealthService,
     ShopService = ShopService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 SkinService:BindSystems({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
     ShopService = ShopService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 SubscriptionService:BindSystems({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
     BadgeAwardService = BadgeAwardService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 ShopService:BindSystems({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
     PotionService = PotionService,
+    GameAnalyticsService = GameAnalyticsService,
+})
+CodeService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+})
+OnlineRewardService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+    HealthService = HealthService,
+})
+SevenDayLoginRewardService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+    SkinService = SkinService,
+    HealthService = HealthService,
 })
 BotService:BindSystems({
     ArenaService = ArenaService,
@@ -445,9 +532,17 @@ BotService:BindSystems({
     RespawnService = RespawnService,
     ExperienceOrbService = ExperienceOrbService,
 })
+RevengeService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RespawnService = RespawnService,
+    HealthService = HealthService,
+})
 MonsterService:BindSystems({
     BuffService = BuffService,
     PotionService = PotionService,
+})
+GameAnalyticsService:BindSystems({
+    PlayerStateService = PlayerStateService,
 })
 
 local function onPlayerAdded(player)
@@ -456,12 +551,14 @@ local function onPlayerAdded(player)
         return
     end
 
+    GameAnalyticsService:OnPlayerAdded(player)
     PlayerStateService:OnPlayerAdded(player)
     RebirthService:OnPlayerAdded(player)
     WheelService:OnPlayerAdded(player)
     SkinService:OnPlayerAdded(player)
     SubscriptionService:OnPlayerAdded(player)
     ShopService:OnPlayerAdded(player)
+    OnlineRewardService:OnPlayerAdded(player)
     LeaderboardService:OnPlayerAdded(player)
     SpecialEventService:OnPlayerAdded(player)
     ArenaProgressService:OnPlayerAdded(player)
@@ -493,6 +590,7 @@ local function onPlayerAdded(player)
 end
 
 local function onPlayerRemoving(player)
+    GameAnalyticsService:OnPlayerRemoving(player)
     WeaponService:ClearPlayerWeapons(player)
     if LocalMonsterRewardService.OnPlayerRemoving then
         LocalMonsterRewardService:OnPlayerRemoving(player)
@@ -503,16 +601,23 @@ local function onPlayerRemoving(player)
     if HealthService.OnPlayerRemoving then
         HealthService:OnPlayerRemoving(player)
     end
+    if RevengeService.OnPlayerRemoving then
+        RevengeService:OnPlayerRemoving(player)
+    end
     WeaponUnlockRewardService:OnPlayerRemoving(player)
     GroupRewardService:OnPlayerRemoving(player)
     WheelService:OnPlayerRemoving(player)
     SkinService:OnPlayerRemoving(player)
     SubscriptionService:OnPlayerRemoving(player)
     ShopService:OnPlayerRemoving(player)
+    OnlineRewardService:OnPlayerRemoving(player)
     FavoritePlacePromptService:OnPlayerRemoving(player)
     BadgeAwardService:OnPlayerRemoving(player)
     RebirthService:OnPlayerRemoving(player)
     LeaderboardService:OnPlayerRemoving(player)
+    if FriendsRankingService.OnPlayerRemoving then
+        FriendsRankingService:OnPlayerRemoving(player)
+    end
     PlayerStateService:OnPlayerRemoving(player)
     ArenaProgressService:OnPlayerRemoving(player)
 end

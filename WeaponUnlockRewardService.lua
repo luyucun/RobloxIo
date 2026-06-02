@@ -299,7 +299,11 @@ function WeaponUnlockRewardService:Claim(player, requestedTierIndex)
     rewards.PendingQueue = nextQueue
     rewards.ClaimedTiers[requestedKey] = true
     self._playerStateService:SetWeaponUnlockRewards(player, rewards)
-    self._playerStateService:_addDiamondsWithoutPush(player, rewardDiamonds)
+    self._playerStateService:_addDiamondsWithoutPush(player, rewardDiamonds, {
+        source = "weapon_unlock",
+        productGroup = "progression",
+        itemSku = "WeaponUnlockReward_T" .. tostring(tierIndex),
+    })
     if self._rebirthService then
         self._rebirthService:MarkDirty(player)
     end

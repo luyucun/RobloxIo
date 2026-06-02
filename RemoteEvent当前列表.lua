@@ -25,6 +25,13 @@ ReplicatedStorage
     - PotionFeedback
     - SpecialEventSync
     - RequestSpecialEventSync
+    - RequestCodeRedeem
+    - CodeRedeemFeedback
+    - OnlineRewardStateSync
+    - RequestOnlineRewardStateSync
+    - RequestOnlineRewardClaim
+    - RequestFriendsRankingStateSync
+    - FriendsRankingStateSync
   - BattleEvents
     - PickupFeedback
     - ExperienceFeedback
@@ -85,6 +92,71 @@ ReplicatedStorage
 用途：客户端请求重新下发自身状态。
 当前处理：服务端收到后执行 `PushState(player)`。
 
+三-补、兑换码系统 RemoteEvent（V4.2）
+
+RequestCodeRedeem（C -> S）
+发送方：`CodeController`
+接收方：`CodeService`
+用途：玩家点击 `StarterGui.Main.Codes.Use` 后提交兑换码。
+字段：
+- code
+
+CodeRedeemFeedback（S -> C）
+发送方：`CodeService`
+接收方：`CodeController`
+用途：通知兑换结果。成功奖励弹框继续复用 `ShopRewardFeedback` 和 `Main.ClaimSuccessful`。
+字段：
+- success
+- message
+- timestamp
+
+三-补2、在线奖励系统 RemoteEvent（V4.3）
+
+OnlineRewardStateSync（S -> C）
+发送方：`OnlineRewardService:PushState`
+接收方：`OnlineRewardController`
+用途：同步本次在线会话的奖励倒计时、可领取状态、已领取状态、UnlockAll 商品 ID 和是否可购买。
+字段：
+- rewards
+- elapsedSeconds
+- serverTimestamp
+- hasClaimableReward
+- allClaimed
+- productId
+- canUnlockAll
+- claimedRewardCount
+
+RequestOnlineRewardStateSync（C -> S）
+发送方：`OnlineRewardController`
+接收方：`OnlineRewardService`
+用途：打开 `Main.OnlineReward` 或购买完成后请求刷新在线奖励状态。
+字段：无。
+
+RequestOnlineRewardClaim（C -> S）
+发送方：`OnlineRewardController`
+接收方：`OnlineRewardService`
+用途：玩家点击 `OnlineReward.Bg.RewardTemplate.Claim` 克隆项领取单个在线奖励。
+字段：
+- rewardIndex
+
+三-补3、好友榜系统 RemoteEvent（V4.5）
+
+RequestFriendsRankingStateSync（C -> S）
+发送方：`FriendsRankingController`
+接收方：`FriendsRankingService`
+用途：玩家打开 `StarterGui.Main.FriendsRanking` 时请求好友榜数据。服务端收到后由当前 `Player` 调用 `GetFriendsWhoPlayedAsync()` 取得“玩过本体验的好友”UserId 列表，不信任客户端传入好友 ID。
+字段：无。
+
+FriendsRankingStateSync（S -> C）
+发送方：`FriendsRankingService`
+接收方：`FriendsRankingController`
+用途：同步好友榜列表和 TopSummary 自身数据。
+字段：
+- rows：好友行数组，每项包含 userId、name、highestLevelReached、totalPlayerKills、playtimeSeconds
+- self：自身信息，包含 userId、name、highestLevelReached、totalPlayerKills、friendBonusPercent
+- throttled
+- timestamp
+
 四、ArenaTransitionFeedback（S -> C）
 发送方：`ArenaService:_fireTransitionFeedback`
 用途：进入战斗区、返回出生点、进入失败等反馈。
@@ -112,6 +184,8 @@ ReplicatedStorage
 - killerUserId
 - killer：`{ userId, name, level, killCount, totalPlayerKills }`
 - victimLevel
+- dailyFreeReviveEligible
+- dailyFreeReviveLevel
 - timestamp
 当前 reason 固定为 `WeaponDamage`。
 

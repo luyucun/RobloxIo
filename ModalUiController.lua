@@ -25,6 +25,7 @@ local DEFAULT_DORMANT_ROOT_NAMES = {
     "Index",
     "Shop",
     "Sevendays",
+    "SevendaysRepeat",
     "SevenDays",
     "Skin",
     "Upgrade",
@@ -35,9 +36,11 @@ local DEFAULT_DORMANT_ROOT_NAMES = {
     "WheelClaim",
     "Rebirth",
     "GroupReward",
+    "OnlineReward",
     "Option",
     "NewWeaponUnlock",
     "Defeated",
+    "FriendsRanking",
 }
 
 local function findBlurEffect()
