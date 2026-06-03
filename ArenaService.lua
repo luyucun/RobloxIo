@@ -6,6 +6,7 @@ Studio放置路径: ServerScriptService/Services/ArenaService
 ]]
 
 local Players = game:GetService("Players")
+local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -41,6 +42,11 @@ local PORTAL_RANGE_PADDING = 3
 local PORTAL_JOIN_GRACE_SECONDS = 8
 local BATTLE_ENTRY_VERTICAL_PADDING = 12
 local BATTLE_ENTRY_VERIFY_DELAY_SECONDS = 0.25
+local DEFAULT_CHARACTER_COLLISION_GROUP = "IOCharacters"
+local DEFAULT_MONSTER_COLLISION_GROUP = "IOMonsters"
+local DEFAULT_SAFE_BARRIER_COLLISION_GROUP = "IOSafeBarriers"
+local DEFAULT_SAFE_UNLOCKED_CHARACTER_COLLISION_GROUP = "IOSafeUnlockedCharacters"
+local DEFAULT_SAFE_LOCKED_CHARACTER_COLLISION_GROUP = "IOSafeLockedCharacters"
 
 ArenaService._playerStateService = nil
 ArenaService._weaponService = nil
@@ -60,11 +66,17 @@ ArenaService._firstArenaEnterPendingByUserId = {}
 ArenaService._spawnLocation = nil
 ArenaService._portalModel = nil
 ArenaService._battlePart = nil
+ArenaService._safePart = nil
 ArenaService._portalTouchedConnections = {}
 ArenaService._requestJoinBattleConnection = nil
 ArenaService._portalRangeMonitorConnection = nil
+ArenaService._safeReentryMonitorConnection = nil
 ArenaService._playerRemovingConnection = nil
 ArenaService._portalRangeMonitorAccumulator = 0
+ArenaService._safeReentryMonitorAccumulator = 0
+ArenaService._safeReentryLockedByUserId = {}
+ArenaService._safeBarrierParts = {}
+ArenaService._safeBarrierCollisionStateByUserId = {}
 
 local function resetCharacterPhysics(character)
     if not character then
@@ -126,6 +138,117 @@ local function resolveBattlePart()
     return nil
 end
 
+local function resolveSafePart(battlePart)
+    local arenaConfig = GameConfig.ARENA or {}
+    local safePartName = tostring(arenaConfig.SafePartName or "Safe")
+    if safePartName == "" then
+        return nil
+    end
+
+    local battleMapName = tostring(arenaConfig.BattleMapName or "")
+    if battleMapName ~= "" then
+        local battleMap = Workspace:FindFirstChild(battleMapName)
+        if battleMap then
+            local safePart = battleMap:FindFirstChild(safePartName)
+            if safePart and safePart:IsA("BasePart") then
+                return safePart
+            end
+        end
+    end
+
+    if battlePart and battlePart.Parent then
+        local siblingSafePart = battlePart.Parent:FindFirstChild(safePartName)
+        if siblingSafePart and siblingSafePart:IsA("BasePart") then
+            return siblingSafePart
+        end
+    end
+
+    local safePart = Workspace:FindFirstChild(safePartName, true)
+    if safePart and safePart:IsA("BasePart") then
+        return safePart
+    end
+
+    return nil
+end
+
+local function ensureCollisionGroup(groupName)
+    if tostring(groupName or "") == "" then
+        return
+    end
+
+    local found = false
+    local success, groups = pcall(function()
+        return PhysicsService:GetRegisteredCollisionGroups()
+    end)
+    if success and type(groups) == "table" then
+        for _, group in ipairs(groups) do
+            if group.name == groupName or group.Name == groupName then
+                found = true
+                break
+            end
+        end
+    end
+    if not found then
+        pcall(function()
+            PhysicsService:RegisterCollisionGroup(groupName)
+        end)
+    end
+end
+
+local function setCollisionRule(groupA, groupB, canCollide)
+    pcall(function()
+        PhysicsService:CollisionGroupSetCollidable(groupA, groupB, canCollide == true)
+    end)
+end
+
+local function setPartCollisionGroup(basePart, groupName)
+    pcall(function()
+        basePart.CollisionGroup = groupName
+    end)
+end
+
+local function getCharacterCollisionGroupName()
+    return (GameConfig.COLLISION and GameConfig.COLLISION.CharacterGroupName) or DEFAULT_CHARACTER_COLLISION_GROUP
+end
+
+local function getMonsterCollisionGroupName()
+    return (GameConfig.COLLISION and GameConfig.COLLISION.MonsterGroupName) or DEFAULT_MONSTER_COLLISION_GROUP
+end
+
+local function getSafeBarrierCollisionGroupName()
+    return (GameConfig.COLLISION and GameConfig.COLLISION.SafeBarrierGroupName) or DEFAULT_SAFE_BARRIER_COLLISION_GROUP
+end
+
+local function getSafeUnlockedCharacterCollisionGroupName()
+    return (GameConfig.COLLISION and GameConfig.COLLISION.SafeUnlockedCharacterGroupName) or DEFAULT_SAFE_UNLOCKED_CHARACTER_COLLISION_GROUP
+end
+
+local function getSafeLockedCharacterCollisionGroupName()
+    return (GameConfig.COLLISION and GameConfig.COLLISION.SafeLockedCharacterGroupName) or DEFAULT_SAFE_LOCKED_CHARACTER_COLLISION_GROUP
+end
+
+local function disconnectSafeBarrierCollisionState(collisionState)
+    local connection = collisionState and collisionState.Connection
+    if connection then
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+end
+
+local function applyCollisionGroupToCharacter(character, groupName)
+    if not character then
+        return
+    end
+
+    ensureCollisionGroup(groupName)
+    for _, descendant in ipairs(character:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            setPartCollisionGroup(descendant, groupName)
+        end
+    end
+end
+
 function ArenaService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._weaponService = dependencies.WeaponService
@@ -143,10 +266,19 @@ function ArenaService:Init(dependencies)
     self._portalPromptSuppressedUntilExitByUserId = {}
     self._hasEnteredArenaThisSessionByUserId = {}
     self._firstArenaEnterPendingByUserId = {}
+    self._safeReentryLockedByUserId = {}
+    for _, collisionState in pairs(self._safeBarrierCollisionStateByUserId or {}) do
+        disconnectSafeBarrierCollisionState(collisionState)
+    end
+    self._safeBarrierCollisionStateByUserId = {}
+    self._safeBarrierParts = {}
     self._portalRangeMonitorAccumulator = 0
+    self._safeReentryMonitorAccumulator = 0
     self._spawnLocation = resolveSpawnLocation()
     self._portalModel = resolvePortalModel()
     self._battlePart = resolveBattlePart()
+    self._safePart = resolveSafePart(self._battlePart)
+    self:_configureSafeBarrierCollision()
 
     if not self._spawnLocation then
         warn("[ArenaService] 找不到 SpawnLocation，玩家默认出生点逻辑将不可用。")
@@ -157,9 +289,13 @@ function ArenaService:Init(dependencies)
     if not self._battlePart then
         warn("[ArenaService] 找不到 workspace.Battle，战斗区随机出生逻辑将不可用。")
     end
+    if not self._safePart then
+        warn("[ArenaService] 找不到 workspace.Battle01.Safe，Safe 区保护和安全区出生将不可用。")
+    end
 
     self:_disconnectPortalTouchedConnections()
     self:_disconnectPortalRangeMonitor()
+    self:_disconnectSafeReentryMonitor()
 
     if self._requestJoinBattleConnection then
         self._requestJoinBattleConnection:Disconnect()
@@ -183,6 +319,7 @@ function ArenaService:Init(dependencies)
 
     self:_connectPortalTouched()
     self:_connectPortalRangeMonitor()
+    self:_connectSafeReentryMonitor()
 end
 
 function ArenaService:GetHomeStartPart()
@@ -195,6 +332,10 @@ end
 
 function ArenaService:GetBattlePart()
     return self._battlePart
+end
+
+function ArenaService:GetSafePart()
+    return self._safePart
 end
 
 function ArenaService:GetSpawnLocation()
@@ -318,6 +459,14 @@ function ArenaService:_disconnectPortalRangeMonitor()
     self._portalRangeMonitorAccumulator = 0
 end
 
+function ArenaService:_disconnectSafeReentryMonitor()
+    if self._safeReentryMonitorConnection then
+        self._safeReentryMonitorConnection:Disconnect()
+        self._safeReentryMonitorConnection = nil
+    end
+    self._safeReentryMonitorAccumulator = 0
+end
+
 function ArenaService:_connectPortalTouched()
     self:_disconnectPortalTouchedConnections()
     if not self._portalModel then
@@ -342,6 +491,124 @@ function ArenaService:_connectPortalRangeMonitor()
     self._portalRangeMonitorConnection = RunService.Heartbeat:Connect(function(deltaTime)
         self:_onPortalRangeHeartbeat(deltaTime)
     end)
+end
+
+function ArenaService:_connectSafeReentryMonitor()
+    self:_disconnectSafeReentryMonitor()
+    if not (self._safePart and self._playerStateService) then
+        return
+    end
+
+    self._safeReentryMonitorConnection = RunService.Heartbeat:Connect(function(deltaTime)
+        self:_onSafeReentryHeartbeat(deltaTime)
+    end)
+end
+
+function ArenaService:_getBattleMap()
+    local arenaConfig = GameConfig.ARENA or {}
+    local battleMapName = tostring(arenaConfig.BattleMapName or "")
+    if battleMapName == "" then
+        return nil
+    end
+    return Workspace:FindFirstChild(battleMapName)
+end
+
+function ArenaService:_collectSafeBarrierParts()
+    local battleMap = self:_getBattleMap()
+    if not battleMap then
+        return {}
+    end
+
+    local arenaConfig = GameConfig.ARENA or {}
+    local barrierPrefix = tostring(arenaConfig.SafeBarrierNamePrefix or "Safe1")
+    local barrierParts = {}
+    for _, descendant in ipairs(battleMap:GetDescendants()) do
+        if descendant:IsA("BasePart") and barrierPrefix ~= "" and string.sub(descendant.Name, 1, #barrierPrefix) == barrierPrefix then
+            table.insert(barrierParts, descendant)
+        end
+    end
+    return barrierParts
+end
+
+function ArenaService:_configureSafeBarrierCollision()
+    local characterGroup = getCharacterCollisionGroupName()
+    local monsterGroup = getMonsterCollisionGroupName()
+    local safeUnlockedGroup = getSafeUnlockedCharacterCollisionGroupName()
+    local safeLockedGroup = getSafeLockedCharacterCollisionGroupName()
+    local safeBarrierGroup = getSafeBarrierCollisionGroupName()
+
+    ensureCollisionGroup(characterGroup)
+    ensureCollisionGroup(monsterGroup)
+    ensureCollisionGroup(safeUnlockedGroup)
+    ensureCollisionGroup(safeLockedGroup)
+    ensureCollisionGroup(safeBarrierGroup)
+    setCollisionRule("Default", safeBarrierGroup, false)
+    setCollisionRule(characterGroup, safeBarrierGroup, false)
+    setCollisionRule(monsterGroup, safeBarrierGroup, false)
+    setCollisionRule(safeUnlockedGroup, safeBarrierGroup, false)
+    setCollisionRule(safeLockedGroup, safeBarrierGroup, true)
+    setCollisionRule(safeUnlockedGroup, monsterGroup, false)
+    setCollisionRule(safeLockedGroup, monsterGroup, false)
+    setCollisionRule(safeBarrierGroup, safeBarrierGroup, true)
+
+    self._safeBarrierParts = self:_collectSafeBarrierParts()
+    for _, barrierPart in ipairs(self._safeBarrierParts) do
+        if barrierPart and barrierPart.Parent then
+            barrierPart.CanCollide = true
+            barrierPart.CanTouch = false
+            setPartCollisionGroup(barrierPart, safeBarrierGroup)
+        end
+    end
+end
+
+function ArenaService:_setActorSafeBarrierLocked(actor, locked)
+    if not ActorUtils.IsPlayer(actor) then
+        return
+    end
+
+    local userId = actor.UserId
+    self._safeBarrierCollisionStateByUserId = self._safeBarrierCollisionStateByUserId or {}
+    local previousState = self._safeBarrierCollisionStateByUserId[userId]
+    local character = ActorUtils.GetCharacter(actor)
+    if not character then
+        if previousState then
+            disconnectSafeBarrierCollisionState(previousState)
+            self._safeBarrierCollisionStateByUserId[userId] = nil
+        end
+        return
+    end
+
+    local isLocked = locked == true
+    local groupName = isLocked and getSafeLockedCharacterCollisionGroupName() or getCharacterCollisionGroupName()
+    if isLocked
+        and previousState
+        and previousState.Character == character
+        and previousState.Locked == true
+        and previousState.GroupName == groupName
+    then
+        return
+    end
+
+    if previousState then
+        disconnectSafeBarrierCollisionState(previousState)
+        self._safeBarrierCollisionStateByUserId[userId] = nil
+    end
+
+    applyCollisionGroupToCharacter(character, groupName)
+
+    if isLocked then
+        local connection = character.DescendantAdded:Connect(function(descendant)
+            if descendant:IsA("BasePart") then
+                setPartCollisionGroup(descendant, groupName)
+            end
+        end)
+        self._safeBarrierCollisionStateByUserId[userId] = {
+            Character = character,
+            Locked = true,
+            GroupName = groupName,
+            Connection = connection,
+        }
+    end
 end
 
 function ArenaService:_clearPortalPromptState(actor)
@@ -449,11 +716,185 @@ function ArenaService:_isActorInsideBattleBounds(actor)
     return rootPart ~= nil and self:_isPositionInsideBattleBounds(rootPart.Position)
 end
 
+function ArenaService:_getSafeZoneVerticalPadding()
+    local arenaConfig = GameConfig.ARENA or {}
+    return math.max(0, tonumber(arenaConfig.SafeZoneVerticalPadding) or BATTLE_ENTRY_VERTICAL_PADDING)
+end
+
+function ArenaService:IsPositionInsideSafeZone(position)
+    if not (self._safePart and typeof(position) == "Vector3") then
+        return false
+    end
+
+    local localPosition = self._safePart.CFrame:PointToObjectSpace(position)
+    local halfSize = self._safePart.Size * 0.5
+    local verticalPadding = self:_getSafeZoneVerticalPadding()
+
+    return math.abs(localPosition.X) <= halfSize.X
+        and math.abs(localPosition.Z) <= halfSize.Z
+        and localPosition.Y >= -halfSize.Y - verticalPadding
+        and localPosition.Y <= halfSize.Y + verticalPadding
+end
+
+function ArenaService:IsActorInsideSafeZone(actor)
+    if not ActorUtils.IsPlayer(actor) then
+        return false
+    end
+
+    local rootPart = ActorUtils.GetRootPart(actor)
+    return rootPart ~= nil and self:IsPositionInsideSafeZone(rootPart.Position)
+end
+
+function ArenaService:_getSafeReentryLockMinLevel()
+    local arenaConfig = GameConfig.ARENA or {}
+    return math.max(1, math.floor(tonumber(arenaConfig.SafeReentryLockMinLevel) or 31))
+end
+
+function ArenaService:_getSafeReentryCheckInterval()
+    local arenaConfig = GameConfig.ARENA or {}
+    return math.max(0.05, tonumber(arenaConfig.SafeReentryCheckIntervalSeconds) or 0.15)
+end
+
+function ArenaService:_getSafeReentryPushOutDistance()
+    local arenaConfig = GameConfig.ARENA or {}
+    return math.max(0, tonumber(arenaConfig.SafeReentryPushOutDistance) or 8)
+end
+
+function ArenaService:_getActorLevel(actor)
+    local state = self._playerStateService and self._playerStateService:GetState(actor) or nil
+    return math.max(1, math.floor(tonumber(state and state.Level) or GameConfig.PLAYER.BaseLevel))
+end
+
+function ArenaService:_shouldApplySafeReentryLock(actor)
+    return ActorUtils.IsPlayer(actor)
+        and self:_getActorLevel(actor) >= self:_getSafeReentryLockMinLevel()
+end
+
+function ArenaService:_resetSafeReentryLock(actor)
+    if ActorUtils.IsPlayer(actor) then
+        local hadReentryLock = self._safeReentryLockedByUserId[actor.UserId] == true
+        local hadCollisionState = self._safeBarrierCollisionStateByUserId
+            and self._safeBarrierCollisionStateByUserId[actor.UserId] ~= nil
+        self._safeReentryLockedByUserId[actor.UserId] = nil
+        if hadReentryLock or hadCollisionState then
+            self:_setActorSafeBarrierLocked(actor, false)
+        end
+    end
+end
+
+function ArenaService:_setSafeReentryLocked(actor)
+    if ActorUtils.IsPlayer(actor) then
+        self._safeReentryLockedByUserId[actor.UserId] = true
+        self:_setActorSafeBarrierLocked(actor, true)
+    end
+end
+
+function ArenaService:_isSafeReentryLocked(actor)
+    return ActorUtils.IsPlayer(actor)
+        and self._safeReentryLockedByUserId[actor.UserId] == true
+end
+
+function ArenaService:_buildSafeReentryPushOutPosition(position)
+    if not (self._safePart and typeof(position) == "Vector3") then
+        return nil
+    end
+
+    local localPosition = self._safePart.CFrame:PointToObjectSpace(position)
+    local halfSize = self._safePart.Size * 0.5
+    local pushOutDistance = self:_getSafeReentryPushOutDistance()
+    local useX = true
+
+    if halfSize.X <= 0 and halfSize.Z <= 0 then
+        return nil
+    elseif halfSize.X <= 0 then
+        useX = false
+    elseif halfSize.Z > 0 then
+        useX = (math.abs(localPosition.X) / halfSize.X) >= (math.abs(localPosition.Z) / halfSize.Z)
+    end
+
+    local targetLocalPosition
+    if useX then
+        local sign = localPosition.X >= 0 and 1 or -1
+        targetLocalPosition = Vector3.new(
+            sign * (halfSize.X + pushOutDistance),
+            localPosition.Y,
+            math.clamp(localPosition.Z, -halfSize.Z, halfSize.Z)
+        )
+    else
+        local sign = localPosition.Z >= 0 and 1 or -1
+        targetLocalPosition = Vector3.new(
+            math.clamp(localPosition.X, -halfSize.X, halfSize.X),
+            localPosition.Y,
+            sign * (halfSize.Z + pushOutDistance)
+        )
+    end
+
+    local worldPosition = (self._safePart.CFrame * CFrame.new(targetLocalPosition)).Position
+    return Vector3.new(worldPosition.X, position.Y, worldPosition.Z)
+end
+
+function ArenaService:_pushActorOutsideSafeZone(actor)
+    local rootPart = ActorUtils.GetRootPart(actor)
+    if not rootPart then
+        return false
+    end
+
+    local targetPosition = self:_buildSafeReentryPushOutPosition(rootPart.Position)
+    if not targetPosition then
+        return false
+    end
+
+    return self:_teleportActorToPosition(actor, targetPosition)
+end
+
+function ArenaService:_onSafeReentryHeartbeat(deltaTime)
+    self._safeReentryMonitorAccumulator += (deltaTime or 0)
+    if self._safeReentryMonitorAccumulator < self:_getSafeReentryCheckInterval() then
+        return
+    end
+    self._safeReentryMonitorAccumulator = 0
+
+    if not (self._safePart and self._playerStateService) then
+        return
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        local state = self._playerStateService:GetState(player)
+        if not (state and state.IsInArena == true and state.Alive == true) then
+            self:_resetSafeReentryLock(player)
+            continue
+        end
+
+        if not self:_shouldApplySafeReentryLock(player) then
+            self:_resetSafeReentryLock(player)
+            continue
+        end
+
+        local rootPart = ActorUtils.GetRootPart(player)
+        if not rootPart then
+            continue
+        end
+
+        local isInsideSafeZone = self:IsPositionInsideSafeZone(rootPart.Position)
+        if not self:_isSafeReentryLocked(player) then
+            if not isInsideSafeZone then
+                self:_setSafeReentryLocked(player)
+            end
+        else
+            self:_setActorSafeBarrierLocked(player, true)
+            if isInsideSafeZone and self:_pushActorOutsideSafeZone(player) then
+                self:_fireTransitionFeedback(player, "Blocked", "SafeReentryLocked")
+            end
+        end
+    end
+end
+
 function ArenaService:_rollbackFailedArenaEnter(actor, reason)
     if self._playerStateService then
         self._playerStateService:SetInArena(actor, false)
         self._playerStateService:PushState(actor)
     end
+    self:_resetSafeReentryLock(actor)
     if self._weaponService and self._weaponService.ClearPlayerWeapons then
         self._weaponService:ClearPlayerWeapons(actor)
     end
@@ -464,6 +905,7 @@ function ArenaService:_clearArenaSessionState(player)
     if ActorUtils.IsPlayer(player) then
         self._hasEnteredArenaThisSessionByUserId[player.UserId] = nil
         self._firstArenaEnterPendingByUserId[player.UserId] = nil
+        self:_resetSafeReentryLock(player)
     end
 end
 
@@ -725,6 +1167,7 @@ function ArenaService:TeleportActorToSpawnLocation(actor)
     )
     local lookAtPosition = ActorUtils.IsPlayer(actor) and self:_getPortalLookAtPosition() or nil
     self:_teleportActorToPosition(actor, spawnPosition, lookAtPosition)
+    self:_resetSafeReentryLock(actor)
     self:_fireTransitionFeedback(actor, "ReturnHome", "SpawnLocation")
     return true
 end
@@ -759,6 +1202,31 @@ function ArenaService:_samplePointInsideBattle()
     return Vector3.new(worldPoint.X, self:_getPartSurfaceY(self._battlePart), worldPoint.Z)
 end
 
+function ArenaService:_samplePointInsideSafeZone()
+    if not self._safePart then
+        return nil
+    end
+
+    local size = self._safePart.Size
+    local arenaConfig = GameConfig.ARENA or {}
+    local padding = math.max(0, tonumber(arenaConfig.SafeSpawnPadding) or 0)
+    local usableHalfX = math.max(0, (size.X * 0.5) - padding)
+    local usableHalfZ = math.max(0, (size.Z * 0.5) - padding)
+
+    local localX = 0
+    local localZ = 0
+
+    if usableHalfX > 0 then
+        localX = (math.random() * 2 - 1) * usableHalfX
+    end
+    if usableHalfZ > 0 then
+        localZ = (math.random() * 2 - 1) * usableHalfZ
+    end
+
+    local worldPoint = (self._safePart.CFrame * CFrame.new(localX, 0, localZ)).Position
+    return Vector3.new(worldPoint.X, self:_getPartSurfaceY(self._safePart), worldPoint.Z)
+end
+
 function ArenaService:_getCandidateMinDistance(candidatePosition, enteringActor)
     local minDistance = math.huge
     local hasOtherArenaActors = false
@@ -783,7 +1251,7 @@ function ArenaService:_getCandidateMinDistance(candidatePosition, enteringActor)
     return minDistance
 end
 
-function ArenaService:_findBestArenaSpawnPosition(actor)
+function ArenaService:_findBestArenaSpawnPositionFromSampler(actor, sampler)
     local attempts = math.max(1, GameConfig.ARENA.SpawnCandidateAttempts)
     local minSpacing = GameConfig.ARENA.MinSpawnSpacing
 
@@ -791,7 +1259,7 @@ function ArenaService:_findBestArenaSpawnPosition(actor)
     local bestCandidateMinDistance = -math.huge
 
     for _ = 1, attempts do
-        local candidate = self:_samplePointInsideBattle()
+        local candidate = sampler()
         if candidate then
             candidate = Vector3.new(candidate.X, candidate.Y + self:_getActorGroundOffset(actor), candidate.Z)
             local candidateMinDistance = self:_getCandidateMinDistance(candidate, actor)
@@ -807,6 +1275,21 @@ function ArenaService:_findBestArenaSpawnPosition(actor)
     end
 
     return bestCandidate
+end
+
+function ArenaService:_findBestArenaSpawnPosition(actor)
+    if ActorUtils.IsPlayer(actor) and self._safePart then
+        local safeCandidate = self:_findBestArenaSpawnPositionFromSampler(actor, function()
+            return self:_samplePointInsideSafeZone()
+        end)
+        if safeCandidate then
+            return safeCandidate
+        end
+    end
+
+    return self:_findBestArenaSpawnPositionFromSampler(actor, function()
+        return self:_samplePointInsideBattle()
+    end)
 end
 
 function ArenaService:TryEnterArena(actor, options)
@@ -855,6 +1338,7 @@ function ArenaService:TryEnterArena(actor, options)
         return false
     end
 
+    self:_resetSafeReentryLock(actor)
     self._playerStateService:SetInArena(actor, true)
     if ActorUtils.IsPlayer(actor) and self._playerStateService.MarkGuideCompleted then
         self._playerStateService:MarkGuideCompleted(actor)

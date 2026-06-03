@@ -39,6 +39,13 @@ TRAIL_DATA_START_ROW = 7
 TRAIL_BEGIN_MARKER = "-- BEGIN GENERATED TRAIL ROWS"
 TRAIL_END_MARKER = "-- END GENERATED TRAIL ROWS"
 
+TITLE_CONFIG_PATH = ROOT / "TitleConfig.lua"
+TITLE_SHEET_NAME = "称号"
+TITLE_HEADER_ROW = 4
+TITLE_DATA_START_ROW = 5
+TITLE_BEGIN_MARKER = "-- BEGIN GENERATED TITLE ROWS"
+TITLE_END_MARKER = "-- END GENERATED TITLE ROWS"
+
 
 def is_blank(value) -> bool:
     if value is None:
@@ -394,6 +401,36 @@ def math_safe_int(value, default=0) -> int:
         return default
 
 
+def parse_title_unlock_condition(value) -> tuple[dict | None, str | None]:
+    if is_blank(value):
+        return None, "Empty title unlock condition"
+
+    text = str(value).strip()
+    compact = re.sub(r"\s+", "", text)
+    normalized = compact.lower().replace(",", "")
+    patterns = [
+        (r"(?:玩家)?历史最高等级达到(\d+)级?", "HighestLevelReached"),
+        (r"reach(?:lv\.?|level)(\d+)", "HighestLevelReached"),
+        (r"(?:玩家)?累计击杀(\d+)人?", "TotalPlayerKills"),
+        (r"defeat(\d+)players?intotal\.?", "TotalPlayerKills"),
+        (r"(?:玩家)?累计死亡(\d+)次?", "TotalDeaths"),
+        (r"die(\d+)times?intotal\.?", "TotalDeaths"),
+        (r"(?:玩家)?累计获得(?:钻石|宝石)(\d+)", "TotalDiamondsEarned"),
+        (r"earn(\d+)(?:gems?|diamonds?)intotal\.?", "TotalDiamondsEarned"),
+        (r"(?:玩家)?累计在线时长达到(\d+)小时", "TotalOnlineHours"),
+        (r"(?:stayonline|beonline|online|play)(?:for)?(\d+)hours?(?:intotal)?\.?", "TotalOnlineHours"),
+    ]
+    for pattern, condition_type in patterns:
+        match = re.fullmatch(pattern, normalized)
+        if match:
+            return {
+                "Type": condition_type,
+                "Target": math_safe_int(match.group(1), 0),
+            }, None
+
+    return None, f"Unable to parse title unlock condition: {text}"
+
+
 def build_reward_label(reward: dict, workbook_metadata: dict[int, dict]) -> str:
     if not is_blank(reward.get("Label")):
         return str(reward["Label"])
@@ -623,6 +660,74 @@ def build_trail_generated_block(rows) -> str:
     return "\n".join(lines)
 
 
+def read_title_rows():
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, TITLE_SHEET_NAME, len(workbook.worksheets) - 1)
+    header_by_name = {}
+    for column_index in range(1, worksheet.max_column + 1):
+        header = worksheet.cell(TITLE_HEADER_ROW, column_index).value
+        if not is_blank(header):
+            header_by_name[str(header).strip()] = column_index
+
+    required_headers = ["称号Id", "称号名字", "称号描述", "称号解锁条件", "称号图片资源"]
+    missing_headers = [header for header in required_headers if header not in header_by_name]
+    if missing_headers:
+        raise RuntimeError("Missing title sheet headers: " + ", ".join(missing_headers))
+
+    rows = []
+    warnings = []
+    for row_index in range(TITLE_DATA_START_ROW, worksheet.max_row + 1):
+        title_id = math_safe_int(worksheet.cell(row_index, header_by_name["称号Id"]).value, 0)
+        if title_id <= 0:
+            continue
+
+        name = worksheet.cell(row_index, header_by_name["称号名字"]).value
+        description = worksheet.cell(row_index, header_by_name["称号描述"]).value
+        condition_text = worksheet.cell(row_index, header_by_name["称号解锁条件"]).value
+        icon_image = worksheet.cell(row_index, header_by_name["称号图片资源"]).value
+        condition, warning = parse_title_unlock_condition(condition_text)
+        if warning:
+            warnings.append(f"row {row_index}: {warning}")
+
+        rows.append({
+            "Id": title_id,
+            "Name": "" if is_blank(name) else str(name).strip(),
+            "Description": "" if is_blank(description) else str(description).strip(),
+            "UnlockConditionText": "" if is_blank(condition_text) else str(condition_text).strip(),
+            "IconImage": "" if is_blank(icon_image) else str(icon_image).strip(),
+            "Condition": condition,
+        })
+    return rows, warnings
+
+
+def build_title_generated_block(rows) -> str:
+    lines = [
+        TITLE_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 称号. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "TitleConfig.Titles = {",
+    ]
+    for row in rows:
+        lines.extend([
+            "    {",
+            f"        Id = {row['Id']},",
+            f"        Name = {lua_value(row['Name'])},",
+            f"        Description = {lua_value(row['Description'])},",
+            f"        UnlockConditionText = {lua_value(row['UnlockConditionText'])},",
+            f"        IconImage = {lua_value(row['IconImage'])},",
+        ])
+        condition = row.get("Condition")
+        if condition:
+            lines.append(
+                "        Condition = { Type = %s, Target = %d },"
+                % (lua_value(condition["Type"]), math_safe_int(condition["Target"], 0))
+            )
+        lines.extend([
+            "    },",
+        ])
+    lines.extend(["}", TITLE_END_MARKER])
+    return "\n".join(lines)
+
+
 def replace_generated_block(source: str, generated_block: str, begin_marker: str, end_marker: str, config_path: Path) -> str:
     pattern = re.compile(re.escape(begin_marker) + r".*?" + re.escape(end_marker), re.S)
     if not pattern.search(source):
@@ -679,6 +784,17 @@ def main() -> None:
         TRAIL_CONFIG_PATH,
     )
     TRAIL_CONFIG_PATH.write_text(updated_trail_source, encoding="utf-8", newline="\n")
+
+    title_rows, title_warnings = read_title_rows()
+    title_source = TITLE_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_title_source = replace_generated_block(
+        title_source,
+        build_title_generated_block(title_rows),
+        TITLE_BEGIN_MARKER,
+        TITLE_END_MARKER,
+        TITLE_CONFIG_PATH,
+    )
+    TITLE_CONFIG_PATH.write_text(updated_title_source, encoding="utf-8", newline="\n")
     print(json.dumps({
         "codeRows": len(rows),
         "onlineRewardRows": len(online_rows),
@@ -686,7 +802,8 @@ def main() -> None:
         "sevenDayRepeatCycleRows": len(repeat_cycle_rows),
         "skinRows": len(skin_rows),
         "trailRows": len(trail_rows),
-        "warnings": warnings + online_warnings + seven_day_warnings,
+        "titleRows": len(title_rows),
+        "warnings": warnings + online_warnings + seven_day_warnings + title_warnings,
     }, ensure_ascii=False))
 
 

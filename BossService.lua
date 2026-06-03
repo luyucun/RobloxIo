@@ -34,6 +34,7 @@ local MonsterCatalog = requireSharedModule("MonsterCatalog")
 local BossService = {}
 
 BossService._monsterService = nil
+BossService._arenaService = nil
 BossService._battlePart = nil
 BossService._bossFeedbackEvent = nil
 BossService._activeBosses = {}
@@ -52,7 +53,7 @@ local function resolveBattlePart()
     return nil
 end
 
-function BossService:_samplePointInsideBattle()
+function BossService:_sampleRawPointInsideBattle()
     if not self._battlePart then
         return nil
     end
@@ -65,6 +66,23 @@ function BossService:_samplePointInsideBattle()
     local localZ = (math.random() * 2 - 1) * usableHalfZ
     local localY = (size.Y * 0.5) + GameConfig.MONSTER.SpawnHeightOffset
     return (self._battlePart.CFrame * CFrame.new(localX, localY, localZ)).Position
+end
+
+function BossService:_isPositionInsideSafeZone(position)
+    return self._arenaService
+        and self._arenaService.IsPositionInsideSafeZone
+        and self._arenaService:IsPositionInsideSafeZone(position) == true
+end
+
+function BossService:_samplePointInsideBattle()
+    local attempts = math.max(1, math.floor(tonumber(GameConfig.ARENA.SpawnCandidateAttempts) or 40))
+    for _ = 1, attempts do
+        local candidate = self:_sampleRawPointInsideBattle()
+        if candidate and not self:_isPositionInsideSafeZone(candidate) then
+            return candidate
+        end
+    end
+    return nil
 end
 
 function BossService:_getActiveBossCount()
@@ -110,7 +128,13 @@ function BossService:SpawnBoss(monsterDefinitionId)
         return nil
     end
 
-    local bossState = self._monsterService:SpawnMonster(self:_samplePointInsideBattle(), {
+    local spawnPosition = self:_samplePointInsideBattle()
+    if not spawnPosition then
+        warn("[BossService] Boss spawn skipped: no non-Safe Battle spawn point found.")
+        return nil
+    end
+
+    local bossState = self._monsterService:SpawnMonster(spawnPosition, {
         IsBoss = true,
         RuntimeName = GameConfig.BOSS.RuntimeName,
         MonsterDefinitionId = definitionId,
@@ -164,6 +188,7 @@ end
 
 function BossService:Init(dependencies)
     self._monsterService = dependencies.MonsterService
+    self._arenaService = dependencies.ArenaService
     self._battlePart = resolveBattlePart()
     self._bossFeedbackEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("BossFeedback") or nil
     self._activeBosses = {}

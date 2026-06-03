@@ -39,6 +39,7 @@ local PotionConfig = requireSharedModule("PotionConfig")
 local WheelConfig = requireSharedModule("WheelConfig")
 local SkinConfig = requireSharedModule("SkinConfig")
 local TrailConfig = requireSharedModule("TrailConfig")
+local TitleConfig = requireSharedModule("TitleConfig")
 local SevenDayLoginRewardConfig = requireSharedModule("SevenDayLoginRewardConfig")
 
 local RebirthService = {}
@@ -180,6 +181,12 @@ local function normalizeSavedData(data)
             guideCompleted = false,
             favoritePromptState = normalizeFavoritePromptState(nil),
             sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(nil),
+            ownedTitles = {},
+            equippedTitleId = nil,
+            totalDeaths = 0,
+            totalDiamondsEarned = 0,
+            totalOnlineSeconds = 0,
+            hasUnseenTitleUnlock = false,
         }
     end
 
@@ -314,6 +321,22 @@ local function normalizeSavedData(data)
         equippedTrailId = nil
     end
 
+    local ownedTitles = {}
+    local savedOwnedTitles = type(data.ownedTitles) == "table" and data.ownedTitles or data.OwnedTitles
+    if type(savedOwnedTitles) == "table" then
+        for titleKey, owned in pairs(savedOwnedTitles) do
+            local titleId = owned == true and math.floor(tonumber(titleKey) or 0) or math.floor(tonumber(owned) or 0)
+            if titleId > 0 and TitleConfig.GetTitle(titleId) and (owned == true or tonumber(owned) ~= nil) then
+                ownedTitles[tostring(titleId)] = true
+            end
+        end
+    end
+
+    local equippedTitleId = math.floor(tonumber(data.equippedTitleId) or tonumber(data.EquippedTitleId) or 0)
+    if equippedTitleId <= 0 or not (TitleConfig.GetTitle(equippedTitleId) and ownedTitles[tostring(equippedTitleId)] == true) then
+        equippedTitleId = nil
+    end
+
     local function normalizeWeaponUnlockRewards(rewards)
         if type(rewards) ~= "table" then
             return nil
@@ -427,6 +450,12 @@ local function normalizeSavedData(data)
         equippedSkinId = equippedSkinId,
         ownedTrails = ownedTrails,
         equippedTrailId = equippedTrailId,
+        ownedTitles = ownedTitles,
+        equippedTitleId = equippedTitleId,
+        totalDeaths = asNonNegativeInteger(data.totalDeaths or data.TotalDeaths),
+        totalDiamondsEarned = asNonNegativeInteger(data.totalDiamondsEarned or data.TotalDiamondsEarned),
+        totalOnlineSeconds = asNonNegativeInteger(data.totalOnlineSeconds or data.TotalOnlineSeconds),
+        hasUnseenTitleUnlock = data.hasUnseenTitleUnlock == true or data.HasUnseenTitleUnlock == true,
         weaponUnlockRewards = normalizeWeaponUnlockRewards(data.weaponUnlockRewards or data.WeaponUnlockRewards),
         combatSnapshot = combatSnapshot,
         activePotions = activePotions,
@@ -573,6 +602,9 @@ function RebirthService:_buildSavePayload(player, options)
         return nil
     end
 
+    if self._playerStateService.RefreshOnlineTime then
+        self._playerStateService:RefreshOnlineTime(player, true)
+    end
     local state = self._playerStateService:GetState(player)
     local includeCombatSnapshot = options and options.includeCombatSnapshot == true
     local combatSnapshot = nil
@@ -606,6 +638,12 @@ function RebirthService:_buildSavePayload(player, options)
         equippedSkinId = state.EquippedSkinId,
         ownedTrails = state.OwnedTrails or {},
         equippedTrailId = state.EquippedTrailId,
+        ownedTitles = state.OwnedTitles or {},
+        equippedTitleId = state.EquippedTitleId,
+        totalDeaths = math.max(0, math.floor(tonumber(state.TotalDeaths) or 0)),
+        totalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)),
+        totalOnlineSeconds = math.max(0, math.floor(tonumber(state.TotalOnlineSeconds) or 0)),
+        hasUnseenTitleUnlock = state.HasUnseenTitleUnlock == true,
         weaponUnlockRewards = state.WeaponUnlockRewards or {},
         combatSnapshot = combatSnapshot,
         activePotions = self._playerStateService:GetActivePotions(player),
@@ -644,6 +682,12 @@ function RebirthService:_savePlayer(player, options)
                 equippedSkinId = payload.equippedSkinId,
                 ownedTrails = payload.ownedTrails,
                 equippedTrailId = payload.equippedTrailId,
+                ownedTitles = payload.ownedTitles,
+                equippedTitleId = payload.equippedTitleId,
+                totalDeaths = payload.totalDeaths,
+                totalDiamondsEarned = payload.totalDiamondsEarned,
+                totalOnlineSeconds = payload.totalOnlineSeconds,
+                hasUnseenTitleUnlock = payload.hasUnseenTitleUnlock,
                 weaponUnlockRewards = payload.weaponUnlockRewards,
                 combatSnapshot = payload.combatSnapshot,
                 activePotions = payload.activePotions,
@@ -666,7 +710,14 @@ function RebirthService:GetSavedProgressSnapshot(playerOrUserId)
     local onlinePlayer = Players:GetPlayerByUserId(userId)
     local state = onlinePlayer and self._playerStateService and self._playerStateService:GetState(onlinePlayer) or nil
     if state then
-        return buildProgressSnapshot(state.Rebirth, state.RebirthScore, state.HighestLevelReached or state.Level)
+        return buildProgressSnapshot(state.Rebirth, state.RebirthScore, state.HighestLevelReached or state.Level, {
+            ownedTitles = state.OwnedTitles or {},
+            equippedTitleId = state.EquippedTitleId,
+            totalDeaths = state.TotalDeaths,
+            totalDiamondsEarned = state.TotalDiamondsEarned,
+            totalOnlineSeconds = state.TotalOnlineSeconds,
+            hasUnseenTitleUnlock = state.HasUnseenTitleUnlock == true,
+        })
     end
 
     local cached = self._savedProgressCacheByUserId[userId]

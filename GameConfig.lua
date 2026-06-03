@@ -16,6 +16,9 @@ GameConfig.SERVER = {
 GameConfig.COLLISION = {
     CharacterGroupName = "IOCharacters",
     MonsterGroupName = "IOMonsters",
+    SafeBarrierGroupName = "IOSafeBarriers",
+    SafeUnlockedCharacterGroupName = "IOSafeUnlockedCharacters",
+    SafeLockedCharacterGroupName = "IOSafeLockedCharacters",
 }
 
 GameConfig.CAMERA = {
@@ -97,11 +100,25 @@ GameConfig.ARENA = {
     MapFolderName = "Map2",
     PortalsFolderName = "Portals",
     PortalModelName = "Portal",
+    BattleMapName = "Battle01",
     BattlePartName = "Battle",
+    SafePartName = "Safe",
+    SafeBarrierNamePrefix = "Safe1",
 
     SpawnHeightOffset = 4,
     EdgePadding = 6,
     BattleSpawnSquareSize = 360,
+    SafeSpawnPadding = 6,
+    SafeZoneVerticalPadding = 12,
+    SafeReentryLockMinLevel = 31,
+    SafeReentryCheckIntervalSeconds = 0.15,
+    SafeReentryPushOutDistance = 8,
+    SafeExperienceMultipliers = {
+        { MinLevel = 1, MaxLevel = 10, Multiplier = 1 },
+        { MinLevel = 11, MaxLevel = 20, Multiplier = 0.8 },
+        { MinLevel = 21, MaxLevel = 30, Multiplier = 0.5 },
+        { MinLevel = 31, MaxLevel = math.huge, Multiplier = 0 },
+    },
     MinSpawnSpacing = 10,
     SpawnCandidateAttempts = 40,
     EnterDebounceSeconds = 1.0,

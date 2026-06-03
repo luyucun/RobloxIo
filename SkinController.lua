@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
@@ -36,6 +37,7 @@ end
 local RemoteNames = requireSharedModule("RemoteNames")
 local SkinConfig = requireSharedModule("SkinConfig")
 local TrailConfig = requireSharedModule("TrailConfig")
+local TitleConfig = requireSharedModule("TitleConfig")
 
 local SkinController = {}
 
@@ -54,16 +56,24 @@ SkinController._scrollingFrame = nil
 SkinController._template = nil
 SkinController._trailScrollingFrame = nil
 SkinController._trailTemplate = nil
+SkinController._titleScrollingFrame = nil
+SkinController._titleTemplate = nil
+SkinController._titleUnlockPopup = nil
+SkinController._titleUnlockOriginalPosition = nil
+SkinController._titleUnlockCanClose = false
+SkinController._titleUnlockSerial = 0
+SkinController._titleUnlockInputConnection = nil
 SkinController._requestStateEvent = nil
 SkinController._stateSyncEvent = nil
 SkinController._requestPurchaseEvent = nil
 SkinController._requestEquipEvent = nil
 SkinController._feedbackEvent = nil
 SkinController._playerStateSyncEvent = nil
-SkinController._latestState = { skins = {}, equippedSkinId = nil, trails = {}, equippedTrailId = nil }
+SkinController._latestState = { skins = {}, equippedSkinId = nil, trails = {}, equippedTrailId = nil, titles = {}, equippedTitleId = nil, hasUnseenTitleUnlock = false }
 SkinController._latestStateTimestamp = 0
 SkinController._pendingEquipRequest = nil
 SkinController._pendingTrailEquipRequest = nil
+SkinController._pendingTitleEquipRequest = nil
 SkinController._bindRetryQueued = false
 SkinController._panelTweens = {}
 SkinController._panelAnimationSerial = 0
@@ -86,7 +96,11 @@ local OPEN_SETTLE_DURATION = 0.1
 local CLOSE_TO_SCALE = 0.78
 local CLOSE_SHRINK_DURATION = 0.14
 local EQUIP_REQUEST_TIMEOUT_SECONDS = 4
+local EQUIP_DUPLICATE_DEBOUNCE_SECONDS = 0.25
 local TRAIL_ROW_VERTICAL_SCALE_STEP = 0.22
+local TITLE_UNLOCK_CLOSE_DELAY = 1.5
+local TITLE_UNLOCK_SLIDE_OFFSET_SCALE = 0.08
+local TITLE_UNLOCK_OPEN_DURATION = 0.28
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -255,6 +269,14 @@ local function normalizeOptionalTrailId(value)
     return nil
 end
 
+local function normalizeOptionalTitleId(value)
+    local titleId = math.floor(tonumber(value) or 0)
+    if titleId > 0 then
+        return titleId
+    end
+    return nil
+end
+
 local function playTween(binding, key, target, tweenInfo, goal)
     if not (binding and target and tweenInfo and goal) then
         return
@@ -284,6 +306,20 @@ function SkinController:_notify(message)
             })
         end)
     end)
+end
+
+function SkinController:_disconnectTitleUnlockInput()
+    if self._titleUnlockInputConnection and self._titleUnlockInputConnection.Connected then
+        self._titleUnlockInputConnection:Disconnect()
+    end
+    self._titleUnlockInputConnection = nil
+end
+
+function SkinController:_setSkinRedPointVisible(visible)
+    local redPoint = self._leftEntry and self._leftEntry:FindFirstChild("RedPoint", true)
+    if redPoint and redPoint:IsA("GuiObject") then
+        redPoint.Visible = visible == true
+    end
 end
 
 function SkinController:_applyButtonState(binding)
@@ -504,6 +540,7 @@ function SkinController:_setPanelOpen(isOpen, immediate)
     if self._isPanelOpen then
         ModalUiController:Acquire("Skin", self._panel)
         self._panel.Visible = true
+        self:_setSkinRedPointVisible(false)
         if self._requestStateEvent then
             self._requestStateEvent:FireServer({
                 intent = "SkinPanelOpened",
@@ -564,6 +601,70 @@ function SkinController:_setPanelOpen(isOpen, immediate)
         self._panel.Visible = false
         table.clear(self._panelTweens)
         ModalUiController:Release("Skin")
+    end)
+end
+
+function SkinController:_closeTitleUnlockPopup()
+    if not (self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject")) then
+        return
+    end
+    if not self._titleUnlockCanClose then
+        return
+    end
+
+    self:_disconnectTitleUnlockInput()
+    self._titleUnlockCanClose = false
+    self._titleUnlockSerial += 1
+    self._titleUnlockPopup.Visible = false
+    if self._titleUnlockOriginalPosition then
+        self._titleUnlockPopup.Position = self._titleUnlockOriginalPosition
+    end
+    ModalUiController:Release("TitleUnlock")
+end
+
+function SkinController:_playTitleUnlockPopup(title)
+    if not (self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject")) then
+        self:_bindUi(true)
+    end
+    if not (self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject")) then
+        self:_notify("Title unlocked.")
+        return
+    end
+
+    self:_disconnectTitleUnlockInput()
+    self._titleUnlockCanClose = false
+    self._titleUnlockSerial += 1
+    local serial = self._titleUnlockSerial
+
+    setImage(self._titleUnlockPopup:FindFirstChild("Titleimage", true), title and title.iconImage)
+    setText(self._titleUnlockPopup:FindFirstChild("Des", true), title and (title.description or title.unlockConditionText or title.name) or "")
+
+    local originalPosition = self._titleUnlockOriginalPosition or self._titleUnlockPopup.Position
+    self._titleUnlockOriginalPosition = originalPosition
+    self._titleUnlockPopup.Position = UDim2.new(
+        originalPosition.X.Scale + TITLE_UNLOCK_SLIDE_OFFSET_SCALE,
+        originalPosition.X.Offset,
+        originalPosition.Y.Scale,
+        originalPosition.Y.Offset
+    )
+    ModalUiController:Acquire("TitleUnlock", self._titleUnlockPopup)
+    self._titleUnlockPopup.Visible = true
+    TweenService:Create(self._titleUnlockPopup, TweenInfo.new(TITLE_UNLOCK_OPEN_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Position = originalPosition,
+    }):Play()
+
+    task.delay(TITLE_UNLOCK_CLOSE_DELAY, function()
+        if self._titleUnlockSerial ~= serial or not (self._titleUnlockPopup and self._titleUnlockPopup.Parent) then
+            return
+        end
+        self._titleUnlockCanClose = true
+        self:_disconnectTitleUnlockInput()
+        self._titleUnlockInputConnection = UserInputService.InputBegan:Connect(function(inputObject)
+            local inputType = inputObject.UserInputType
+            if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
+                self:_closeTitleUnlockPopup()
+            end
+        end)
     end)
 end
 
@@ -633,6 +734,28 @@ function SkinController:_getTrailEntries()
     return entries
 end
 
+function SkinController:_getTitleEntries()
+    local byId = {}
+    for _, entry in ipairs(self._latestState.titles or {}) do
+        byId[tonumber(entry.id)] = entry
+    end
+
+    local entries = {}
+    for _, title in ipairs(TitleConfig.GetAllTitles()) do
+        local stateEntry = byId[title.Id] or {}
+        table.insert(entries, {
+            id = title.Id,
+            name = stateEntry.name or title.Name,
+            description = stateEntry.description or title.Description,
+            unlockConditionText = stateEntry.unlockConditionText or title.UnlockConditionText,
+            iconImage = stateEntry.iconImage or title.IconImage,
+            owned = stateEntry.owned == true,
+            equipped = stateEntry.equipped == true or tonumber(self._latestState.equippedTitleId) == title.Id,
+        })
+    end
+    return entries
+end
+
 function SkinController:_setButtonVisible(frame, buttonName, visible)
     local buttonRoot = frame and frame:FindFirstChild(buttonName, true)
     if buttonRoot and buttonRoot:IsA("GuiObject") then
@@ -674,6 +797,16 @@ function SkinController:_setLocalEquippedTrailId(equippedTrailId)
     self:_renderList()
 end
 
+function SkinController:_setLocalEquippedTitleId(equippedTitleId)
+    local normalizedEquippedTitleId = normalizeOptionalTitleId(equippedTitleId)
+    self._latestState = self._latestState or { skins = {}, equippedSkinId = nil, trails = {}, equippedTrailId = nil, titles = {}, equippedTitleId = nil }
+    self._latestState.equippedTitleId = normalizedEquippedTitleId
+    for _, entry in ipairs(self._latestState.titles or {}) do
+        entry.equipped = normalizedEquippedTitleId ~= nil and normalizeOptionalTitleId(entry.id) == normalizedEquippedTitleId
+    end
+    self:_renderList()
+end
+
 function SkinController:_shouldIgnoreIncomingSkinState(equippedSkinId)
     if not self:_isEquipRequestPending() then
         return false
@@ -706,8 +839,41 @@ function SkinController:_shouldIgnoreIncomingTrailState(equippedTrailId)
     return true
 end
 
+function SkinController:_shouldIgnoreIncomingTitleState(equippedTitleId)
+    if not self:_isTitleEquipRequestPending() then
+        return false
+    end
+
+    local pending = self._pendingTitleEquipRequest
+    local expectedEquippedTitleId = normalizeOptionalTitleId(pending and pending.expectedEquippedTitleId)
+    local incomingEquippedTitleId = normalizeOptionalTitleId(equippedTitleId)
+    if expectedEquippedTitleId == incomingEquippedTitleId then
+        self._pendingTitleEquipRequest = nil
+        return false
+    end
+
+    return true
+end
+
+function SkinController:_isDuplicateSkinEquipRequest(skinId, action)
+    local pending = self._pendingEquipRequest
+    if not pending then
+        return false
+    end
+
+    local elapsed = os.clock() - (pending.startedAt or 0)
+    if elapsed > EQUIP_REQUEST_TIMEOUT_SECONDS then
+        self._pendingEquipRequest = nil
+        return false
+    end
+
+    return elapsed <= EQUIP_DUPLICATE_DEBOUNCE_SECONDS
+        and normalizeOptionalSkinId(pending.skinId) == normalizeOptionalSkinId(skinId)
+        and tostring(pending.action or "Equip") == tostring(action or "Equip")
+end
+
 function SkinController:_requestEquipChange(skinId, action)
-    if not self._requestEquipEvent or self:_isEquipRequestPending() then
+    if not self._requestEquipEvent then
         return
     end
 
@@ -717,19 +883,24 @@ function SkinController:_requestEquipChange(skinId, action)
     end
 
     local normalizedAction = tostring(action or "")
+    local requestAction = normalizedAction == "Unequip" and "Unequip" or "Equip"
+    if self:_isDuplicateSkinEquipRequest(normalizedSkinId, requestAction) then
+        return
+    end
+
     local expectedEquippedSkinId = nil
-    if normalizedAction ~= "Unequip" then
+    if requestAction ~= "Unequip" then
         expectedEquippedSkinId = normalizedSkinId
     end
     self._pendingEquipRequest = {
         skinId = normalizedSkinId,
-        action = normalizedAction == "Unequip" and "Unequip" or "Equip",
+        action = requestAction,
         expectedEquippedSkinId = expectedEquippedSkinId,
         startedAt = os.clock(),
     }
     self:_setLocalEquippedSkinId(expectedEquippedSkinId)
 
-    if normalizedAction == "Unequip" then
+    if requestAction == "Unequip" then
         self._requestEquipEvent:FireServer(normalizedSkinId, "Unequip")
     else
         self._requestEquipEvent:FireServer(normalizedSkinId)
@@ -773,6 +944,47 @@ function SkinController:_requestTrailEquipChange(trailId, action)
 
     self._requestEquipEvent:FireServer(normalizedTrailId, {
         itemType = "Trail",
+        action = normalizedAction == "Unequip" and "Unequip" or "Equip",
+    })
+end
+
+function SkinController:_isTitleEquipRequestPending()
+    local pending = self._pendingTitleEquipRequest
+    if not pending then
+        return false
+    end
+    if os.clock() - (pending.startedAt or 0) > EQUIP_REQUEST_TIMEOUT_SECONDS then
+        self._pendingTitleEquipRequest = nil
+        return false
+    end
+    return true
+end
+
+function SkinController:_requestTitleEquipChange(titleId, action)
+    if not self._requestEquipEvent or self:_isTitleEquipRequestPending() then
+        return
+    end
+
+    local normalizedTitleId = normalizeOptionalTitleId(titleId)
+    if not normalizedTitleId then
+        return
+    end
+
+    local normalizedAction = tostring(action or "")
+    local expectedEquippedTitleId = nil
+    if normalizedAction ~= "Unequip" then
+        expectedEquippedTitleId = normalizedTitleId
+    end
+    self._pendingTitleEquipRequest = {
+        titleId = normalizedTitleId,
+        action = normalizedAction == "Unequip" and "Unequip" or "Equip",
+        expectedEquippedTitleId = expectedEquippedTitleId,
+        startedAt = os.clock(),
+    }
+    self:_setLocalEquippedTitleId(expectedEquippedTitleId)
+
+    self._requestEquipEvent:FireServer(normalizedTitleId, {
+        itemType = "Title",
         action = normalizedAction == "Unequip" and "Unequip" or "Equip",
     })
 end
@@ -877,7 +1089,7 @@ function SkinController:_populateTrailItem(frame, trail)
 
     local diamondButton, diamondScaleTarget = findButton(frame, "DiamondBuy")
     if diamondButton then
-        local priceLabel = diamondScaleTarget and (diamondScaleTarget:FindFirstChild("Text", true) or diamondScaleTarget:FindFirstChild("Price", true))
+        local priceLabel = diamondScaleTarget and (diamondScaleTarget:FindFirstChild("RMoney", true) or diamondScaleTarget:FindFirstChild("Text", true) or diamondScaleTarget:FindFirstChild("Price", true))
         setText(priceLabel, trail.diamondPrice)
         self:_bindItemButton(diamondButton, function()
             if self._requestPurchaseEvent then
@@ -894,7 +1106,7 @@ function SkinController:_populateTrailItem(frame, trail)
 
     local robuxButton, robuxScaleTarget = findButton(frame, "RobuxButton")
     if robuxButton then
-        local priceLabel = robuxScaleTarget and robuxScaleTarget:FindFirstChild("Price", true)
+        local priceLabel = robuxScaleTarget and (robuxScaleTarget:FindFirstChild("RMoney", true) or robuxScaleTarget:FindFirstChild("Price", true))
         setText(priceLabel, trail.robuxPrice)
         setMarketplaceProductPrice(priceLabel, trail.productId)
         self:_bindItemButton(robuxButton, function()
@@ -925,6 +1137,32 @@ function SkinController:_populateTrailItem(frame, trail)
     if unequipButton then
         self:_bindItemButton(unequipButton, function()
             self:_requestTrailEquipChange(trail.id, "Unequip")
+        end, { ScaleTarget = unequipScaleTarget or unequipButton })
+    end
+end
+
+function SkinController:_populateTitleItem(frame, title)
+    setText(frame:FindFirstChild("Name", true), title.name or ("Title " .. tostring(title.id)))
+    setText(frame:FindFirstChild("Desc", true), title.description or title.unlockConditionText or "")
+    setImage(frame:FindFirstChild("Preview", true), title.iconImage)
+
+    local owned = title.owned == true
+    local equipped = title.equipped == true
+    self:_setButtonVisible(frame, "Locked", not owned)
+    self:_setButtonVisible(frame, "Equip", owned and not equipped)
+    self:_setButtonVisible(frame, "Unequiped", owned and equipped)
+
+    local equipButton, equipScaleTarget = findButton(frame, "Equip")
+    if equipButton then
+        self:_bindItemButton(equipButton, function()
+            self:_requestTitleEquipChange(title.id)
+        end, { ScaleTarget = equipScaleTarget or equipButton })
+    end
+
+    local unequipButton, unequipScaleTarget = findButton(frame, "Unequiped")
+    if unequipButton then
+        self:_bindItemButton(unequipButton, function()
+            self:_requestTitleEquipChange(title.id, "Unequip")
         end, { ScaleTarget = unequipScaleTarget or unequipButton })
     end
 end
@@ -977,6 +1215,39 @@ function SkinController:_renderList()
             self._trailScrollingFrame.CanvasSize.Y.Offset
         )
     end
+
+    if self._titleScrollingFrame and self._titleTemplate then
+        self._titleTemplate.Visible = false
+        local titleEntries = self:_getTitleEntries()
+        local templatePosition = self._titleTemplate.Position
+        local templateSize = self._titleTemplate.Size
+        local rowStepScale = math.max(
+            TRAIL_ROW_VERTICAL_SCALE_STEP,
+            math.abs(templateSize.Y.Scale) > 0 and templateSize.Y.Scale + 0.03 or TRAIL_ROW_VERTICAL_SCALE_STEP
+        )
+        for index, title in ipairs(titleEntries) do
+            local frame = self._titleTemplate:Clone()
+            frame.Name = "Title_" .. tostring(title.id)
+            frame.LayoutOrder = index
+            frame.Position = UDim2.new(
+                templatePosition.X.Scale,
+                templatePosition.X.Offset,
+                templatePosition.Y.Scale + rowStepScale * (index - 1),
+                templatePosition.Y.Offset
+            )
+            frame.Visible = true
+            frame.Parent = self._titleScrollingFrame
+            table.insert(self._itemFrames, frame)
+            self:_populateTitleItem(frame, title)
+        end
+        local requiredCanvasScaleY = math.max(1, templatePosition.Y.Scale + rowStepScale * math.max(1, #titleEntries) + 0.05)
+        self._titleScrollingFrame.CanvasSize = UDim2.new(
+            self._titleScrollingFrame.CanvasSize.X.Scale,
+            self._titleScrollingFrame.CanvasSize.X.Offset,
+            requiredCanvasScaleY,
+            self._titleScrollingFrame.CanvasSize.Y.Offset
+        )
+    end
 end
 
 function SkinController:_applyState(payload)
@@ -990,12 +1261,15 @@ function SkinController:_applyState(payload)
 
     local equippedSkinId = normalizeOptionalSkinId(payload.equippedSkinId)
     local equippedTrailId = normalizeOptionalTrailId(payload.equippedTrailId)
+    local equippedTitleId = normalizeOptionalTitleId(payload.equippedTitleId)
     local ignoreSkinState = self:_shouldIgnoreIncomingSkinState(equippedSkinId)
     local ignoreTrailState = self:_shouldIgnoreIncomingTrailState(equippedTrailId)
+    local ignoreTitleState = self:_shouldIgnoreIncomingTitleState(equippedTitleId)
 
     local skins = type(payload.skins) == "table" and payload.skins or {}
     local trails = type(payload.trails) == "table" and payload.trails or {}
-    local currentState = self._latestState or { skins = {}, trails = {}, equippedSkinId = nil, equippedTrailId = nil }
+    local titles = type(payload.titles) == "table" and payload.titles or {}
+    local currentState = self._latestState or { skins = {}, trails = {}, titles = {}, equippedSkinId = nil, equippedTrailId = nil, equippedTitleId = nil }
     if ignoreSkinState then
         skins = currentState.skins or {}
         equippedSkinId = currentState.equippedSkinId
@@ -1012,16 +1286,28 @@ function SkinController:_applyState(payload)
             entry.equipped = equippedTrailId ~= nil and normalizeOptionalTrailId(entry.id) == equippedTrailId
         end
     end
+    if ignoreTitleState then
+        titles = currentState.titles or {}
+        equippedTitleId = currentState.equippedTitleId
+    else
+        for _, entry in ipairs(titles) do
+            entry.equipped = equippedTitleId ~= nil and normalizeOptionalTitleId(entry.id) == equippedTitleId
+        end
+    end
 
     self._latestState = {
         skins = skins,
         equippedSkinId = equippedSkinId,
         trails = trails,
         equippedTrailId = equippedTrailId,
+        titles = titles,
+        equippedTitleId = equippedTitleId,
+        hasUnseenTitleUnlock = payload.hasUnseenTitleUnlock == true,
     }
     if timestamp then
         self._latestStateTimestamp = timestamp
     end
+    self:_setSkinRedPointVisible(payload.hasUnseenTitleUnlock == true)
     self:_renderList()
 end
 
@@ -1058,14 +1344,58 @@ function SkinController:_applyPlayerState(payload)
             equipped = equippedTrailId == trail.Id,
         })
     end
+    local equippedTitleId = tonumber(payload.equippedTitleId)
+    local titles = {}
+    for _, title in ipairs(TitleConfig.GetAllTitles()) do
+        table.insert(titles, {
+            id = title.Id,
+            name = title.Name,
+            description = title.Description,
+            unlockConditionText = title.UnlockConditionText,
+            iconImage = title.IconImage,
+            owned = type(payload.ownedTitles) == "table" and payload.ownedTitles[tostring(title.Id)] == true,
+            equipped = equippedTitleId == title.Id,
+        })
+    end
 
     self:_applyState({
         skins = skins,
         equippedSkinId = equippedSkinId,
         trails = trails,
         equippedTrailId = equippedTrailId,
+        titles = titles,
+        equippedTitleId = equippedTitleId,
+        hasUnseenTitleUnlock = payload.hasUnseenTitleUnlock == true,
         timestamp = payload.timestamp,
     })
+end
+
+function SkinController:_shouldIgnoreSkinFeedback(payload)
+    local eventType = tostring(payload and payload.eventType or "")
+    if eventType ~= "Equipped" and eventType ~= "Unequipped" and eventType ~= "Failed" then
+        return false
+    end
+    if not self:_isEquipRequestPending() then
+        return false
+    end
+
+    local pending = self._pendingEquipRequest
+    local pendingSkinId = normalizeOptionalSkinId(pending and pending.skinId)
+    local feedbackSkinId = normalizeOptionalSkinId(payload and payload.skinId)
+    if feedbackSkinId ~= nil and pendingSkinId ~= nil and feedbackSkinId ~= pendingSkinId then
+        return true
+    end
+
+    local state = type(payload and payload.state) == "table" and payload.state or nil
+    if state and eventType ~= "Failed" then
+        local expectedEquippedSkinId = normalizeOptionalSkinId(pending and pending.expectedEquippedSkinId)
+        local incomingEquippedSkinId = normalizeOptionalSkinId(state.equippedSkinId)
+        if incomingEquippedSkinId ~= expectedEquippedSkinId then
+            return true
+        end
+    end
+
+    return false
 end
 
 function SkinController:_handleFeedback(payload)
@@ -1074,8 +1404,15 @@ function SkinController:_handleFeedback(payload)
     end
     local eventType = tostring(payload.eventType or "")
     local isTrail = tostring(payload.itemType or "") == "Trail"
+    local isTitle = tostring(payload.itemType or "") == "Title"
+    local isSkin = not isTrail and not isTitle
+    if isSkin and self:_shouldIgnoreSkinFeedback(payload) then
+        return
+    end
     if eventType == "Equipped" or eventType == "Unequipped" or eventType == "Failed" then
-        if isTrail then
+        if isTitle then
+            self._pendingTitleEquipRequest = nil
+        elseif isTrail then
             self._pendingTrailEquipRequest = nil
         else
             self._pendingEquipRequest = nil
@@ -1086,14 +1423,22 @@ function SkinController:_handleFeedback(payload)
     end
 
     local reason = tostring(payload.reason or "")
-    if eventType == "Purchased" then
+    if eventType == "Unlocked" and isTitle then
+        self:_playTitleUnlockPopup(payload.title or {})
+        self:_setSkinRedPointVisible(true)
+    elseif eventType == "Purchased" then
         self:_notify(isTrail and "Trail unlocked." or "Skin unlocked.")
     elseif eventType == "Granted" then
-        self:_notify(isTrail and "Trail unlocked." or "Skin unlocked.")
+        if isTitle then
+            self:_playTitleUnlockPopup(payload.title or {})
+            self:_setSkinRedPointVisible(true)
+        else
+            self:_notify(isTrail and "Trail unlocked." or "Skin unlocked.")
+        end
     elseif eventType == "Equipped" then
-        self:_notify(isTrail and "Trail equipped." or "Skin equipped.")
+        self:_notify(isTitle and "Title equipped." or isTrail and "Trail equipped." or "Skin equipped.")
     elseif eventType == "Unequipped" then
-        self:_notify(isTrail and "Trail unequipped." or "Skin unequipped.")
+        self:_notify(isTitle and "Title unequipped." or isTrail and "Trail unequipped." or "Skin unequipped.")
     elseif eventType == "AlreadyOwned" then
         self:_notify("Already owned.")
     elseif eventType == "OpenWheel" then
@@ -1107,9 +1452,9 @@ function SkinController:_handleFeedback(payload)
         elseif reason == "DataLoading" then
             self:_notify("Data is loading.")
         elseif reason == "NotOwned" then
-            self:_notify(isTrail and "Trail not owned." or "Skin not owned.")
+            self:_notify(isTitle and "Title not owned." or isTrail and "Trail not owned." or "Skin not owned.")
         else
-            self:_notify(isTrail and "Trail unavailable." or "Skin unavailable.")
+            self:_notify(isTitle and "Title unavailable." or isTrail and "Trail unavailable." or "Skin unavailable.")
         end
     end
 end
@@ -1166,7 +1511,10 @@ function SkinController:_bindUi(silent)
     local trailScrollingFrame = trailsPage and trailsPage:FindFirstChild("ScrollingFrame")
     local trailTemplate = trailScrollingFrame and trailScrollingFrame:FindFirstChild("TrailRowTemplate")
     local titlesPage = panel and panel:FindFirstChild("TitlesPage")
-    if not (leftEntry and panel and scrollingFrame and template and tabs and trailsPage and trailScrollingFrame and trailTemplate and titlesPage and panel:IsA("GuiObject") and template:IsA("GuiObject") and trailTemplate:IsA("GuiObject")) then
+    local titleScrollingFrame = titlesPage and titlesPage:FindFirstChild("ScrollingFrame")
+    local titleTemplate = titleScrollingFrame and titleScrollingFrame:FindFirstChild("TitleRowTemplate")
+    local titleUnlockPopup = mainGui:FindFirstChild("TitleUnlock")
+    if not (leftEntry and panel and scrollingFrame and template and tabs and trailsPage and trailScrollingFrame and trailTemplate and titlesPage and titleScrollingFrame and titleTemplate and panel:IsA("GuiObject") and template:IsA("GuiObject") and trailTemplate:IsA("GuiObject") and titleTemplate:IsA("GuiObject")) then
         if not silent then
             self:_queueBindRetry()
         end
@@ -1181,8 +1529,16 @@ function SkinController:_bindUi(silent)
     self._template = template
     self._trailScrollingFrame = trailScrollingFrame
     self._trailTemplate = trailTemplate
+    self._titleScrollingFrame = titleScrollingFrame
+    self._titleTemplate = titleTemplate
+    self._titleUnlockPopup = titleUnlockPopup
+    self._titleUnlockOriginalPosition = titleUnlockPopup and titleUnlockPopup:IsA("GuiObject") and titleUnlockPopup.Position or nil
     self._template.Visible = false
     self._trailTemplate.Visible = false
+    self._titleTemplate.Visible = false
+    if self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject") then
+        self._titleUnlockPopup.Visible = false
+    end
 
     if self._panel.Visible ~= false then
         self._panel.Visible = false
@@ -1276,6 +1632,10 @@ function SkinController:Init(dependencies)
     self._latestStateTimestamp = 0
     self._pendingEquipRequest = nil
     self._pendingTrailEquipRequest = nil
+    self._pendingTitleEquipRequest = nil
+    self._titleUnlockCanClose = false
+    self._titleUnlockSerial = 0
+    self:_disconnectTitleUnlockInput()
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
     self:_disconnectItemButtonBindings()

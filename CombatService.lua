@@ -38,6 +38,7 @@ local CombatService = {}
 CombatService._playerStateService = nil
 CombatService._weaponService = nil
 CombatService._healthService = nil
+CombatService._arenaService = nil
 CombatService._remoteEventService = nil
 CombatService._combatFeedbackEvent = nil
 CombatService._heartbeatConnection = nil
@@ -275,10 +276,19 @@ function CombatService:_fireCombatFeedback(eventType, sourceUserId, targetUserId
     end
 end
 
+function CombatService:_isSafeZoneProtected(actor)
+    return self._arenaService
+        and self._arenaService.IsActorInsideSafeZone
+        and self._arenaService:IsActorInsideSafeZone(actor) == true
+end
+
 function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
     local ownerA = self._weaponService:_resolveActorByCombatUserId(weaponStateA.OwnerUserId)
     local ownerB = self._weaponService:_resolveActorByCombatUserId(weaponStateB.OwnerUserId)
     if not (ownerA and ownerB) then
+        return
+    end
+    if self:_isSafeZoneProtected(ownerA) or self:_isSafeZoneProtected(ownerB) then
         return
     end
 
@@ -343,6 +353,10 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
 end
 
 function CombatService:_applyKnockback(targetActor, sourceActor)
+    if self:_isSafeZoneProtected(targetActor) or self:_isSafeZoneProtected(sourceActor) then
+        return
+    end
+
     local targetRoot = ActorUtils.GetRootPart(targetActor)
     local sourceRoot = ActorUtils.GetRootPart(sourceActor)
     if not (targetRoot and sourceRoot) then
@@ -370,6 +384,9 @@ end
 function CombatService:_applyWeaponVsActor(weaponState, targetActor)
     local sourceActor = self._weaponService:_resolveActorByCombatUserId(weaponState.OwnerUserId)
     if not sourceActor then
+        return
+    end
+    if self:_isSafeZoneProtected(targetActor) or self:_isSafeZoneProtected(sourceActor) then
         return
     end
 
@@ -461,6 +478,7 @@ function CombatService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._weaponService = dependencies.WeaponService
     self._healthService = dependencies.HealthService
+    self._arenaService = dependencies.ArenaService
     self._remoteEventService = dependencies.RemoteEventService
     self._combatFeedbackEvent = self._remoteEventService and self._remoteEventService:GetEvent("CombatFeedback") or nil
     self._weaponPairCooldowns = {}

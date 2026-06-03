@@ -38,6 +38,7 @@ local HealthService = {}
 HealthService._playerStateService = nil
 HealthService._remoteEventService = nil
 HealthService._respawnService = nil
+HealthService._arenaService = nil
 HealthService._deathFeedbackEvent = nil
 HealthService._killInfoFeedbackEvent = nil
 HealthService._buffService = nil
@@ -158,6 +159,12 @@ function HealthService:_recordDamageTaken(actor)
     if ActorUtils.IsPlayer(actor) then
         self._lastDamageClockByUserId[actor.UserId] = os.clock()
     end
+end
+
+function HealthService:_isSafeZoneProtected(actor)
+    return self._arenaService
+        and self._arenaService.IsActorInsideSafeZone
+        and self._arenaService:IsActorInsideSafeZone(actor) == true
 end
 
 function HealthService:_clearDamageTracking(actor)
@@ -712,6 +719,10 @@ function HealthService:ApplyWeaponDamage(targetActor, damage, sourceActor)
         return false, false, state and state.CurrentHealth or nil
     end
 
+    if self:_isSafeZoneProtected(targetActor) or self:_isSafeZoneProtected(sourceActor) then
+        return false, false, state.CurrentHealth
+    end
+
     local damageMultiplier = 1
     if sourceActor and self._buffService then
         damageMultiplier = self._buffService:GetDamageMultiplier(sourceActor)
@@ -792,6 +803,7 @@ function HealthService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._remoteEventService = dependencies.RemoteEventService
     self._respawnService = dependencies.RespawnService
+    self._arenaService = dependencies.ArenaService
     self._buffService = dependencies.BuffService
     self._gameAnalyticsService = dependencies.GameAnalyticsService
     self._deathFeedbackEvent = self._remoteEventService and self._remoteEventService:GetEvent("DeathFeedback") or nil

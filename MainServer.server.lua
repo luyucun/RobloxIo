@@ -377,6 +377,7 @@ HealthService:Init({
     PlayerStateService = PlayerStateService,
     RemoteEventService = RemoteEventService,
     RespawnService = RespawnService,
+    ArenaService = ArenaService,
     BuffService = BuffService,
     GameAnalyticsService = GameAnalyticsService,
 })
@@ -384,6 +385,7 @@ CombatService:Init({
     PlayerStateService = PlayerStateService,
     WeaponService = WeaponService,
     HealthService = HealthService,
+    ArenaService = ArenaService,
     RemoteEventService = RemoteEventService,
 })
 ExperienceOrbService:Init({
@@ -391,6 +393,7 @@ ExperienceOrbService:Init({
     WeaponService = WeaponService,
     RemoteEventService = RemoteEventService,
     BotService = BotService,
+    ArenaService = ArenaService,
 })
 LocalMonsterRewardService:Init({
     PlayerStateService = PlayerStateService,
@@ -412,6 +415,7 @@ MonsterService:Init({
 BossService:Init({
     MonsterService = MonsterService,
     RemoteEventService = RemoteEventService,
+    ArenaService = ArenaService,
 })
 LeaderboardService:Init({
     PlayerStateService = PlayerStateService,
@@ -463,6 +467,7 @@ PlayerStateService:BindSystems({
     ArenaProgressService = ArenaProgressService,
     HealthService = HealthService,
     SubscriptionService = SubscriptionService,
+    SkinService = SkinService,
     GameAnalyticsService = GameAnalyticsService,
 })
 RebirthService:BindSystems({

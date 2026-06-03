@@ -46,6 +46,7 @@ LocalMonsterController._weaponFxController = nil
 LocalMonsterController._audioSettings = nil
 LocalMonsterController._monsterFolder = nil
 LocalMonsterController._battlePart = nil
+LocalMonsterController._safePart = nil
 LocalMonsterController._connections = {}
 LocalMonsterController._renderConnection = nil
 LocalMonsterController._localMonsterSpawnTokenEvent = nil
@@ -58,6 +59,7 @@ LocalMonsterController._spawnTokenQueue = {}
 LocalMonsterController._spawnTokenRequestPending = false
 LocalMonsterController._spawnTokenRequestDeadline = 0
 LocalMonsterController._nextSpawnTokenRequestClock = 0
+LocalMonsterController._safeZoneRespawnDebt = 0
 LocalMonsterController._nextMonsterId = 1
 LocalMonsterController._nextKillRequestId = 1
 LocalMonsterController._nextSpawnClock = 0
@@ -595,6 +597,38 @@ function LocalMonsterController:_resolveBattlePart()
     return nil
 end
 
+function LocalMonsterController:_resolveSafePart()
+    local arenaConfig = GameConfig.ARENA or {}
+    local safePartName = tostring(arenaConfig.SafePartName or "Safe")
+    if safePartName == "" then
+        return nil
+    end
+
+    local battleMapName = tostring(arenaConfig.BattleMapName or "")
+    if battleMapName ~= "" then
+        local battleMap = Workspace:FindFirstChild(battleMapName)
+        if battleMap then
+            local safePart = battleMap:FindFirstChild(safePartName)
+            if safePart and safePart:IsA("BasePart") then
+                return safePart
+            end
+        end
+    end
+
+    if self._battlePart and self._battlePart.Parent then
+        local siblingSafePart = self._battlePart.Parent:FindFirstChild(safePartName)
+        if siblingSafePart and siblingSafePart:IsA("BasePart") then
+            return siblingSafePart
+        end
+    end
+
+    local safePart = Workspace:FindFirstChild(safePartName, true)
+    if safePart and safePart:IsA("BasePart") then
+        return safePart
+    end
+    return nil
+end
+
 function LocalMonsterController:_resolveTemplate(monsterDefinition)
     local modelRoot = ReplicatedStorage:FindFirstChild(GameConfig.MONSTER.ModelRootFolderName)
     local monsterFolder = modelRoot and modelRoot:FindFirstChild(GameConfig.MONSTER.MonsterFolderName)
@@ -630,6 +664,75 @@ function LocalMonsterController:_samplePointInsideBattle()
     local localZ = (math.random() * 2 - 1) * usableHalfZ
 
     local worldPoint = (self._battlePart.CFrame * CFrame.new(localX, 0, localZ)).Position
+    return Vector3.new(worldPoint.X, worldPoint.Y, worldPoint.Z)
+end
+
+function LocalMonsterController:GetSafePart()
+    if not (self._safePart and self._safePart.Parent) then
+        self._safePart = self:_resolveSafePart()
+    end
+    return self._safePart
+end
+
+function LocalMonsterController:_getSafeZoneVerticalPadding()
+    local arenaConfig = GameConfig.ARENA or {}
+    return math.max(0, tonumber(arenaConfig.SafeZoneVerticalPadding) or 12)
+end
+
+function LocalMonsterController:_buildSafeZoneCheckContext()
+    local safePart = self:GetSafePart()
+    if not safePart then
+        return nil
+    end
+
+    return {
+        SafePart = safePart,
+        CFrame = safePart.CFrame,
+        HalfSize = safePart.Size * 0.5,
+        VerticalPadding = self:_getSafeZoneVerticalPadding(),
+    }
+end
+
+function LocalMonsterController:_isPositionInsideSafeZoneWithContext(position, context)
+    if not (context and typeof(position) == "Vector3") then
+        return false
+    end
+
+    local localPosition = context.CFrame:PointToObjectSpace(position)
+    local halfSize = context.HalfSize
+    local verticalPadding = context.VerticalPadding
+    return math.abs(localPosition.X) <= halfSize.X
+        and math.abs(localPosition.Z) <= halfSize.Z
+        and localPosition.Y >= -halfSize.Y - verticalPadding
+        and localPosition.Y <= halfSize.Y + verticalPadding
+end
+
+function LocalMonsterController:IsPositionInsideSafeZone(position)
+    return self:_isPositionInsideSafeZoneWithContext(position, self:_buildSafeZoneCheckContext())
+end
+
+function LocalMonsterController:_samplePointInsideSafeZone()
+    local safePart = self:GetSafePart()
+    if not safePart then
+        return nil
+    end
+
+    local arenaConfig = GameConfig.ARENA or {}
+    local size = safePart.Size
+    local padding = math.max(0, tonumber(arenaConfig.SafeSpawnPadding) or 0)
+    local usableHalfX = math.max(0, (size.X * 0.5) - padding)
+    local usableHalfZ = math.max(0, (size.Z * 0.5) - padding)
+    local localX = 0
+    local localZ = 0
+
+    if usableHalfX > 0 then
+        localX = (math.random() * 2 - 1) * usableHalfX
+    end
+    if usableHalfZ > 0 then
+        localZ = (math.random() * 2 - 1) * usableHalfZ
+    end
+
+    local worldPoint = (safePart.CFrame * CFrame.new(localX, 0, localZ)).Position
     return Vector3.new(worldPoint.X, worldPoint.Y, worldPoint.Z)
 end
 
@@ -958,6 +1061,20 @@ function LocalMonsterController:_discardExpiredSpawnTokens()
     self:_discardSpawnTokensOnServer(discardedTokens)
 end
 
+function LocalMonsterController:_queueSafeZoneRespawnIfNeeded(position)
+    if self:IsPositionInsideSafeZone(position) then
+        self._safeZoneRespawnDebt = math.max(0, math.floor(tonumber(self._safeZoneRespawnDebt) or 0)) + 1
+    end
+end
+
+function LocalMonsterController:_shouldForceSafeZoneRespawn()
+    return math.max(0, math.floor(tonumber(self._safeZoneRespawnDebt) or 0)) > 0
+end
+
+function LocalMonsterController:_consumeSafeZoneRespawnDebt()
+    self._safeZoneRespawnDebt = math.max(0, math.floor(tonumber(self._safeZoneRespawnDebt) or 0) - 1)
+end
+
 function LocalMonsterController:_spawnMonster()
     self:_addPerfStat("SpawnAttempts")
     local spawnAuthorization = nil
@@ -980,13 +1097,22 @@ function LocalMonsterController:_spawnMonster()
     local monsterDefinitionId = monsterDefinition and monsterDefinition.Id or GameConfig.MONSTER.MonsterDefinitionId
     local monsterTemplateName = monsterDefinition and monsterDefinition.TemplateName or GameConfig.MONSTER.TemplateName
     local monsterTypeName = monsterDefinition and monsterDefinition.TypeName or "普通小怪"
-    local spawnPoint = self:_samplePointInsideBattle()
+    local forceSafeZoneRespawn = self:_shouldForceSafeZoneRespawn()
+    local spawnPoint = forceSafeZoneRespawn and self:_samplePointInsideSafeZone() or self:_samplePointInsideBattle()
     if not spawnPoint then
+        if forceSafeZoneRespawn then
+            table.insert(self._spawnTokenQueue, 1, spawnAuthorization)
+        end
         return nil
     end
 
     local groundY = self:_getGroundY(nil)
     local spawnPosition = Vector3.new(spawnPoint.X, groundY, spawnPoint.Z)
+    if forceSafeZoneRespawn then
+        self:_consumeSafeZoneRespawnDebt()
+    end
+    local safeZoneCheckContext = self:_buildSafeZoneCheckContext()
+    local isSpawnInsideSafeZone = self:_isPositionInsideSafeZoneWithContext(spawnPosition, safeZoneCheckContext)
 
     local monsterState = {
         Id = monsterId,
@@ -1031,6 +1157,8 @@ function LocalMonsterController:_spawnMonster()
         HitFlash = nil,
         HitFlashEndClock = 0,
         ActivityState = "Dormant",
+        SafeZoneCachePosition = spawnPosition,
+        SafeZoneCacheValue = isSpawnInsideSafeZone,
         VisualBucket = self._nextMonsterId % getLocalVisualFarUpdateStride(),
         SimulationBucket = self._nextMonsterId % getLocalFarSimulationStride(),
     }
@@ -1102,6 +1230,7 @@ function LocalMonsterController:_clearMonsters(options)
     self._monstersById = {}
     table.clear(self._pendingKillsByRequestId)
     self._pendingKillReportFlushClock = 0
+    self._safeZoneRespawnDebt = 0
     self:_discardSpawnTokensOnServer(discardedTokens)
     if self._monsterFolder and self._monsterFolder.Parent then
         self._monsterFolder:ClearAllChildren()
@@ -1120,6 +1249,7 @@ function LocalMonsterController:_resetLocalMonsterPopulation()
     self._nextSpawnClock = 0
     self._simulationAccumulator = 0
     self._pendingKillReportFlushClock = 0
+    self._safeZoneRespawnDebt = 0
 end
 
 function LocalMonsterController:SweepForNuke(sessionId)
@@ -1267,10 +1397,12 @@ function LocalMonsterController:_reportMonsterKilled(monsterState)
     monsterState.KillRequestId = requestId
     monsterState.KillRequestClock = os.clock()
     monsterState.Alive = false
+    local deathPosition = monsterState.Position or (monsterState.Instance and getInstancePosition(monsterState.Instance))
+    self:_queueSafeZoneRespawnIfNeeded(deathPosition)
     self._pendingKillsByRequestId[requestId] = {
         RequestId = requestId,
         Token = monsterState.SpawnToken,
-        DeathPosition = monsterState.Position or (monsterState.Instance and getInstancePosition(monsterState.Instance)),
+        DeathPosition = deathPosition,
         CreatedClock = monsterState.KillRequestClock,
         NextSendClock = monsterState.KillRequestClock,
         SendCount = 0,
@@ -2773,7 +2905,48 @@ function LocalMonsterController:_step(deltaTime)
     end
 end
 
-function LocalMonsterController:FindNearestAliveMonster(originPosition, minimumPlanarDistance, excludedIds)
+function LocalMonsterController:_getMonsterSafeZoneCachedValue(monsterState, position, context)
+    if not (monsterState and typeof(position) == "Vector3") then
+        return false
+    end
+    if not context then
+        return false
+    end
+
+    if monsterState.SafeZoneCachePosition == position then
+        return monsterState.SafeZoneCacheValue == true
+    end
+
+    local isInsideSafeZone = self:_isPositionInsideSafeZoneWithContext(position, context)
+    monsterState.SafeZoneCachePosition = position
+    monsterState.SafeZoneCacheValue = isInsideSafeZone
+    return isInsideSafeZone
+end
+
+function LocalMonsterController:_prepareMonsterTargetFilter(filterOptions)
+    if type(filterOptions) ~= "table" or filterOptions.ExcludeSafeZone ~= true then
+        return nil
+    end
+
+    return {
+        ExcludeSafeZone = true,
+        SafeZoneContext = self:_buildSafeZoneCheckContext(),
+    }
+end
+
+function LocalMonsterController:_isMonsterTargetFiltered(monsterState, position, filterContext)
+    if type(filterContext) ~= "table" then
+        return false
+    end
+    if filterContext.ExcludeSafeZone == true
+        and self:_getMonsterSafeZoneCachedValue(monsterState, position, filterContext.SafeZoneContext)
+    then
+        return true
+    end
+    return false
+end
+
+function LocalMonsterController:FindNearestAliveMonster(originPosition, minimumPlanarDistance, excludedIds, filterOptions)
     if typeof(originPosition) ~= "Vector3" then
         return nil
     end
@@ -2781,6 +2954,7 @@ function LocalMonsterController:FindNearestAliveMonster(originPosition, minimumP
     local minimumDistance = math.max(0, tonumber(minimumPlanarDistance) or 0)
     local nearestMonsterState = nil
     local nearestDistanceSq = math.huge
+    local filterContext = self:_prepareMonsterTargetFilter(filterOptions)
     for _, monsterState in pairs(self._monstersById) do
         if monsterState.Alive
             and not (excludedIds and excludedIds[monsterState.Id])
@@ -2788,6 +2962,9 @@ function LocalMonsterController:FindNearestAliveMonster(originPosition, minimumP
             local position = monsterState.Position or (monsterState.Instance and getInstancePosition(monsterState.Instance))
             if position then
                 monsterState.Position = position
+                if self:_isMonsterTargetFiltered(monsterState, position, filterContext) then
+                    continue
+                end
                 local deltaX = position.X - originPosition.X
                 local deltaZ = position.Z - originPosition.Z
                 local distanceSq = (deltaX * deltaX) + (deltaZ * deltaZ)
@@ -2812,7 +2989,7 @@ function LocalMonsterController:FindNearestAliveMonster(originPosition, minimumP
     }
 end
 
-function LocalMonsterController:GetAliveMonsterSnapshotById(monsterId)
+function LocalMonsterController:GetAliveMonsterSnapshotById(monsterId, filterOptions)
     if monsterId == nil then
         return nil
     end
@@ -2828,6 +3005,10 @@ function LocalMonsterController:GetAliveMonsterSnapshotById(monsterId)
     end
 
     monsterState.Position = position
+    if self:_isMonsterTargetFiltered(monsterState, position, self:_prepareMonsterTargetFilter(filterOptions)) then
+        return nil
+    end
+
     return {
         id = monsterState.Id,
         monsterDefinitionId = monsterState.MonsterDefinitionId,
@@ -2836,7 +3017,7 @@ function LocalMonsterController:GetAliveMonsterSnapshotById(monsterId)
     }
 end
 
-function LocalMonsterController:FindNearestAliveMonsterOutsideWeaponRange(originPosition, weaponRange, excludedIds)
+function LocalMonsterController:FindNearestAliveMonsterOutsideWeaponRange(originPosition, weaponRange, excludedIds, filterOptions)
     if typeof(originPosition) ~= "Vector3" then
         return nil
     end
@@ -2844,6 +3025,7 @@ function LocalMonsterController:FindNearestAliveMonsterOutsideWeaponRange(origin
     local normalizedWeaponRange = math.max(0, tonumber(weaponRange) or 0)
     local nearestMonsterState = nil
     local nearestDistanceSq = math.huge
+    local filterContext = self:_prepareMonsterTargetFilter(filterOptions)
     for _, monsterState in pairs(self._monstersById) do
         if monsterState.Alive
             and not (excludedIds and excludedIds[monsterState.Id])
@@ -2851,6 +3033,9 @@ function LocalMonsterController:FindNearestAliveMonsterOutsideWeaponRange(origin
             local position = monsterState.Position or (monsterState.Instance and getInstancePosition(monsterState.Instance))
             if position then
                 monsterState.Position = position
+                if self:_isMonsterTargetFiltered(monsterState, position, filterContext) then
+                    continue
+                end
                 local deltaX = position.X - originPosition.X
                 local deltaZ = position.Z - originPosition.Z
                 local distanceSq = (deltaX * deltaX) + (deltaZ * deltaZ)
@@ -2882,11 +3067,13 @@ function LocalMonsterController:Init(dependencies)
     self._weaponFxController = dependencies and dependencies.WeaponFxController or nil
     self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
     self._battlePart = self:_resolveBattlePart()
+    self._safePart = self:_resolveSafePart()
     self._monstersById = {}
     self._spawnTokenQueue = {}
     self._spawnTokenRequestPending = false
     self._spawnTokenRequestDeadline = 0
     self._nextSpawnTokenRequestClock = 0
+    self._safeZoneRespawnDebt = 0
     self._nextMonsterId = 1
     self._nextKillRequestId = 1
     self._nextSpawnClock = 0
@@ -2949,6 +3136,9 @@ function LocalMonsterController:Init(dependencies)
         self:_addPerfStat("RenderFrames")
         if not (self._battlePart and self._battlePart.Parent) then
             self._battlePart = self:_resolveBattlePart()
+        end
+        if not (self._safePart and self._safePart.Parent) then
+            self._safePart = self:_resolveSafePart()
         end
         self:_step(deltaTime)
         self:_updateVisuals(deltaTime)

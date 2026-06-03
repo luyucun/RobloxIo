@@ -33,6 +33,7 @@ end
 
 local SkinConfig = requireSharedModule("SkinConfig")
 local TrailConfig = requireSharedModule("TrailConfig")
+local TitleConfig = requireSharedModule("TitleConfig")
 
 local SkinService = {}
 
@@ -51,7 +52,8 @@ SkinService._lastGamePassOwnershipSyncAttemptByUserId = {}
 SkinService._gameAnalyticsService = nil
 SkinService._trailCharacterConnectionsByUserId = {}
 
-local TRAIL_ACCESSORY_TAG = "IOEquippedTrail"
+local LEGACY_TRAIL_ACCESSORY_TAG = "IOEquippedTrail"
+local TRAIL_ID_ATTRIBUTE = "EquippedTrailId"
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -129,95 +131,69 @@ local function isTrailPayload(payload)
     return itemType == "Trail" or productGroup:lower() == "trail"
 end
 
-local function findPathChild(root, path)
-    local current = root
-    for segment in string.gmatch(tostring(path or ""), "[^/%.]+") do
-        if segment ~= "" and segment ~= "game" then
-            if current == root and segment == "ReplicatedStorage" then
-                current = ReplicatedStorage
-            else
-                current = current and current:FindFirstChild(segment)
-            end
-        end
+local function isTitlePayload(payload)
+    if type(payload) ~= "table" then
+        return false
     end
-    return current
+    local itemType = tostring(payload.itemType or payload.ItemType or payload.purchaseType or "")
+    local productGroup = tostring(payload.productGroup or payload.ProductGroup or "")
+    return itemType == "Title" or productGroup:lower() == "title"
 end
 
-function SkinService:_getTrailTemplate(trail)
-    if type(trail) ~= "table" then
-        return nil
+local function setTrailAttribute(instance, trailId)
+    if not instance then
+        return
     end
-
-    local template = findPathChild(game, trail.TemplatePath)
-    if template then
-        return template
+    local normalizedTrailId = math.floor(tonumber(trailId) or 0)
+    if normalizedTrailId > 0 then
+        instance:SetAttribute(TRAIL_ID_ATTRIBUTE, normalizedTrailId)
+    else
+        instance:SetAttribute(TRAIL_ID_ATTRIBUTE, nil)
     end
-
-    local modelFolder = ReplicatedStorage:FindFirstChild("Model")
-    local trailFolder = modelFolder and modelFolder:FindFirstChild("Trail")
-    template = trailFolder and trailFolder:FindFirstChild(tostring(trail.TemplateName or ""))
-    if not template then
-        warn(string.format("[SkinService] Trail accessory template not found: %s", tostring(trail.TemplatePath or trail.TemplateName or "")))
-    end
-    return template
 end
 
-function SkinService:_clearCharacterTrail(character)
+function SkinService:_clearServerCharacterTrail(character)
     if not character then
         return
     end
     for _, child in ipairs(character:GetChildren()) do
-        if child:GetAttribute(TRAIL_ACCESSORY_TAG) == true then
+        if child:GetAttribute(LEGACY_TRAIL_ACCESSORY_TAG) == true then
             child:Destroy()
         end
     end
 end
 
-function SkinService:_applyTrailToCharacter(player, character)
-    if not (ActorUtils.IsPlayer(player) and character and self._playerStateService) then
+function SkinService:_getEquippedTrailId(player)
+    if not (ActorUtils.IsPlayer(player) and self._playerStateService) then
+        return nil
+    end
+    local trailId = self._playerStateService:GetEquippedTrailId(player)
+    local normalizedTrailId = math.floor(tonumber(trailId) or 0)
+    return normalizedTrailId > 0 and normalizedTrailId or nil
+end
+
+function SkinService:_syncEquippedTrailAttributes(player, character)
+    if not ActorUtils.IsPlayer(player) then
         return
     end
 
-    self:_clearCharacterTrail(character)
-    local trail = self._playerStateService:GetEquippedTrailConfig(player)
-    if not trail then
-        return
+    local equippedTrailId = nil
+    if player.Parent then
+        equippedTrailId = self:_getEquippedTrailId(player)
     end
 
-    local template = self:_getTrailTemplate(trail)
-    if not template then
-        return
-    end
-
-    local clone = template:Clone()
-    clone.Name = "EquippedTrail_" .. tostring(trail.Id)
-    clone:SetAttribute(TRAIL_ACCESSORY_TAG, true)
-    clone:SetAttribute("TrailId", trail.Id)
-
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if clone:IsA("Accessory") and humanoid then
-        local ok, err = pcall(function()
-            humanoid:AddAccessory(clone)
-        end)
-        if not ok then
-            warn("[SkinService] Failed to attach trail accessory: " .. tostring(err))
-            if clone.Parent ~= character then
-                clone.Parent = character
-            end
-        end
-    else
-        clone.Parent = character
+    setTrailAttribute(player, equippedTrailId)
+    if character then
+        self:_clearServerCharacterTrail(character)
+        setTrailAttribute(character, equippedTrailId)
     end
 end
 
-function SkinService:_refreshPlayerTrail(player)
+function SkinService:_syncPlayerTrail(player)
     if not (ActorUtils.IsPlayer(player) and player.Parent) then
         return
     end
-    local character = player.Character
-    if character then
-        self:_applyTrailToCharacter(player, character)
-    end
+    self:_syncEquippedTrailAttributes(player, player.Character)
 end
 
 function SkinService:_queueGamePassOwnershipSync(player, force)
@@ -313,20 +289,44 @@ function SkinService:_buildTrailList(player)
     return list
 end
 
+function SkinService:_buildTitleList(player)
+    local ownedTitles = self._playerStateService and self._playerStateService:GetOwnedTitles(player) or {}
+    local equippedTitleId = self._playerStateService and self._playerStateService:GetEquippedTitleId(player) or nil
+    local list = {}
+    for _, title in ipairs(TitleConfig.GetAllTitles()) do
+        local entry = TitleConfig.CopyForClient(title)
+        entry.itemType = "Title"
+        entry.owned = ownedTitles[tostring(title.Id)] == true
+        entry.equipped = tonumber(equippedTitleId) == tonumber(title.Id)
+        table.insert(list, entry)
+    end
+    return list
+end
+
 function SkinService:BuildStatePayload(player)
     return {
         skins = self:_buildSkinList(player),
         equippedSkinId = self._playerStateService and self._playerStateService:GetEquippedSkinId(player) or nil,
         trails = self:_buildTrailList(player),
         equippedTrailId = self._playerStateService and self._playerStateService:GetEquippedTrailId(player) or nil,
+        titles = self:_buildTitleList(player),
+        equippedTitleId = self._playerStateService and self._playerStateService:GetEquippedTitleId(player) or nil,
+        hasUnseenTitleUnlock = self._playerStateService and self._playerStateService:GetState(player).HasUnseenTitleUnlock == true or false,
         timestamp = os.clock(),
     }
 end
 
 function SkinService:SyncState(player)
-    if not (self._skinStateSyncEvent and ActorUtils.IsPlayer(player) and player.Parent) then
+    if not (ActorUtils.IsPlayer(player) and player.Parent) then
         return
     end
+
+    self:_syncPlayerTrail(player)
+
+    if not self._skinStateSyncEvent then
+        return
+    end
+
     self._skinStateSyncEvent:FireClient(player, self:BuildStatePayload(player))
 end
 
@@ -341,6 +341,8 @@ function SkinService:_fireFeedback(player, eventType, reason, skin, itemType)
         itemType = normalizedItemType,
         skinId = normalizedItemType == "Skin" and skin and skin.Id or nil,
         trailId = normalizedItemType == "Trail" and skin and skin.Id or nil,
+        titleId = normalizedItemType == "Title" and skin and skin.Id or nil,
+        title = normalizedItemType == "Title" and TitleConfig.CopyForClient(skin) or nil,
         state = self:BuildStatePayload(player),
         timestamp = os.clock(),
     })
@@ -555,6 +557,12 @@ end
 function SkinService:_handleStateRequest(player, payload)
     if type(payload) == "table" and tostring(payload.intent or "") == "SkinPanelOpened" then
         self:_trackSkinFunnel(player, 1, "SkinPanelOpened", nil, payload.source or "skin")
+        if self._playerStateService and self._playerStateService.ClearUnseenTitleUnlock then
+            local cleared = self._playerStateService:ClearUnseenTitleUnlock(player)
+            if cleared then
+                self:_markDirty(player)
+            end
+        end
     end
 
     self:_queueGamePassOwnershipSync(player)
@@ -707,7 +715,7 @@ function SkinService:_handleTrailEquipRequest(player, trailId, action)
         if success then
             self:_markDirty(player)
             self:SyncState(player)
-            self:_refreshPlayerTrail(player)
+            self:_syncPlayerTrail(player)
             self:_fireFeedback(player, "Unequipped", reason or "Unequipped", trail, "Trail")
         else
             self:_fireFeedback(player, "Failed", reason, trail, "Trail")
@@ -719,7 +727,7 @@ function SkinService:_handleTrailEquipRequest(player, trailId, action)
     if success then
         self:_markDirty(player)
         self:SyncState(player)
-        self:_refreshPlayerTrail(player)
+        self:_syncPlayerTrail(player)
         self:_fireFeedback(player, "Equipped", reason, trail, "Trail")
         self:_trackTrailFunnel(player, 5, "TrailEquipped", trail, "trail")
     else
@@ -728,6 +736,63 @@ function SkinService:_handleTrailEquipRequest(player, trailId, action)
         end
         self:_fireFeedback(player, "Failed", reason, trail, "Trail")
     end
+end
+
+function SkinService:_handleTitleEquipRequest(player, titleId, action)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return
+    end
+    if not self:_isPlayerLoaded(player) then
+        self:_fireFeedback(player, "Failed", "DataLoading", nil, "Title")
+        return
+    end
+
+    local title = TitleConfig.GetTitle(titleId)
+    if not title then
+        self:_fireFeedback(player, "Failed", "InvalidTitle", nil, "Title")
+        return
+    end
+
+    if tostring(action or "") == "Unequip" then
+        if not self._playerStateService:OwnsTitle(player, title.Id) then
+            self:_fireFeedback(player, "Failed", "NotOwned", title, "Title")
+            return
+        end
+
+        local equippedTitleId = self._playerStateService:GetEquippedTitleId(player)
+        if tonumber(equippedTitleId) ~= tonumber(title.Id) then
+            self:SyncState(player)
+            self:_fireFeedback(player, "Failed", "NotEquipped", title, "Title")
+            return
+        end
+
+        local success, reason = self._playerStateService:ClearEquippedTitle(player)
+        if success then
+            self:_markDirty(player)
+            self:SyncState(player)
+            self:_fireFeedback(player, "Unequipped", reason or "Unequipped", title, "Title")
+        else
+            self:_fireFeedback(player, "Failed", reason, title, "Title")
+        end
+        return
+    end
+
+    local success, reason = self._playerStateService:EquipTitle(player, title.Id)
+    if success then
+        self:_markDirty(player)
+        self:SyncState(player)
+        self:_fireFeedback(player, "Equipped", reason, title, "Title")
+    else
+        self:_fireFeedback(player, "Failed", reason, title, "Title")
+    end
+end
+
+function SkinService:NotifyTitleUnlocked(player, title)
+    if not (ActorUtils.IsPlayer(player) and player.Parent) then
+        return
+    end
+    self:SyncState(player)
+    self:_fireFeedback(player, "Unlocked", "TitleUnlocked", title, "Title")
 end
 
 function SkinService:_handleGamePassFinished(player, gamePassId, wasPurchased)
@@ -821,7 +886,9 @@ function SkinService:Init(dependencies)
     end
     if self._requestSkinEquipEvent then
         table.insert(self._connections, self._requestSkinEquipEvent.OnServerEvent:Connect(function(player, skinId, action)
-            if type(action) == "table" and isTrailPayload(action) then
+            if type(action) == "table" and isTitlePayload(action) then
+                self:_handleTitleEquipRequest(player, skinId, action.action or action.Action)
+            elseif type(action) == "table" and isTrailPayload(action) then
                 self:_handleTrailEquipRequest(player, skinId, action.action or action.Action)
             else
                 self:_handleEquipRequest(player, skinId, action)
@@ -842,7 +909,7 @@ function SkinService:OnPlayerAdded(player)
     self._trailCharacterConnectionsByUserId[userId] = player.CharacterAdded:Connect(function(character)
         task.defer(function()
             if self:_waitForPlayerLoaded(player, 15) then
-                self:_applyTrailToCharacter(player, character)
+                self:_syncEquippedTrailAttributes(player, character)
             end
         end)
     end)
@@ -852,7 +919,7 @@ function SkinService:OnPlayerAdded(player)
             self:_waitForPlayerLoaded(player, 15)
             self:_queueGamePassOwnershipSync(player)
             self:SyncState(player)
-            self:_refreshPlayerTrail(player)
+            self:_syncPlayerTrail(player)
         end
     end)
 end
@@ -867,6 +934,7 @@ function SkinService:OnPlayerRemoving(player)
         characterConnection:Disconnect()
     end
     self._trailCharacterConnectionsByUserId[userId] = nil
+    setTrailAttribute(player, nil)
 end
 
 return SkinService

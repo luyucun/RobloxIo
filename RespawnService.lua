@@ -367,6 +367,9 @@ function RespawnService:HandleActorDeath(actor, sourceActor)
         if userId > 0 then
             self._hasDiedThisSessionByUserId[userId] = true
         end
+        if self._playerStateService and self._playerStateService.RecordDeath then
+            self._playerStateService:RecordDeath(actor)
+        end
     end
     local combatSnapshot = self:_captureCombatSnapshot(actor, deathSerial)
     if combatSnapshot then

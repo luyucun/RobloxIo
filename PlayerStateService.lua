@@ -37,6 +37,7 @@ local WeaponTierConfig = requireSharedModule("WeaponTierConfig")
 local PotionConfig = requireSharedModule("PotionConfig")
 local SkinConfig = requireSharedModule("SkinConfig")
 local TrailConfig = requireSharedModule("TrailConfig")
+local TitleConfig = requireSharedModule("TitleConfig")
 local SubscriptionConfig = requireSharedModule("SubscriptionConfig")
 
 local PlayerStateService = {}
@@ -69,8 +70,10 @@ PlayerStateService._arenaProgressService = nil
 PlayerStateService._healthService = nil
 PlayerStateService._subscriptionService = nil
 PlayerStateService._gameAnalyticsService = nil
+PlayerStateService._skinService = nil
 PlayerStateService._friendBonusRefreshToken = 0
 PlayerStateService._friendBonusLoopToken = 0
+PlayerStateService._onlineTimeLoopToken = 0
 PlayerStateService._characterCollisionConnectionsByActorId = {}
 PlayerStateService._perfStats = nil
 PlayerStateService._nextPerfLogClock = 0
@@ -194,6 +197,33 @@ local function ensureOverheadLevelLabel(root)
     }))
 
     return levelLabel
+end
+
+local function ensureOverheadTitleImage(root)
+    if not root then
+        return nil
+    end
+
+    local titleImage = root:FindFirstChild("Title")
+    if titleImage and not titleImage:IsA("ImageLabel") then
+        titleImage:Destroy()
+        titleImage = nil
+    end
+
+    if not titleImage then
+        titleImage = Instance.new("ImageLabel")
+        titleImage.Name = "Title"
+        titleImage.BackgroundTransparency = 1
+        titleImage.BorderSizePixel = 0
+        titleImage.AnchorPoint = Vector2.new(0.5, 1)
+        titleImage.Position = UDim2.new(0.5, 0, 0, -4)
+        titleImage.Size = UDim2.fromOffset(112, 30)
+        titleImage.ScaleType = Enum.ScaleType.Fit
+        titleImage.Visible = false
+        titleImage.Parent = root
+    end
+
+    return titleImage
 end
 
 local function normalizePotionInventory(potions)
@@ -425,6 +455,44 @@ local function normalizeEquippedTrailId(equippedTrailId, ownedTrails)
         return trailId
     end
     return nil
+end
+
+local function normalizeOwnedTitles(ownedTitles)
+    local normalized = {}
+    if type(ownedTitles) ~= "table" then
+        return normalized
+    end
+
+    for titleKey, owned in pairs(ownedTitles) do
+        local titleId = owned == true and math.floor(tonumber(titleKey) or 0) or math.floor(tonumber(owned) or 0)
+        if titleId > 0 and TitleConfig.GetTitle(titleId) and (owned == true or tonumber(owned) ~= nil) then
+            normalized[tostring(titleId)] = true
+        end
+    end
+    return normalized
+end
+
+local function normalizeEquippedTitleId(equippedTitleId, ownedTitles)
+    local titleId = math.floor(tonumber(equippedTitleId) or 0)
+    if titleId > 0 and TitleConfig.GetTitle(titleId) and type(ownedTitles) == "table" and ownedTitles[tostring(titleId)] == true then
+        return titleId
+    end
+    return nil
+end
+
+local function shouldCountDiamondEarn(delta, context)
+    if math.floor(tonumber(delta) or 0) <= 0 then
+        return false
+    end
+    local source = ""
+    if type(context) == "table" then
+        source = tostring(context.source or context.Source or "")
+    end
+    source = string.lower(source)
+    if source == "skin_refund" or source == "trail_refund" or string.find(source, "refund", 1, true) then
+        return false
+    end
+    return true
 end
 
 local function copyArray(values)
@@ -836,6 +904,12 @@ function PlayerStateService:_applyLevelDerivedState(state)
     state.EquippedSkinId = normalizeEquippedSkinId(state.EquippedSkinId, state.OwnedSkins)
     state.OwnedTrails = normalizeOwnedTrails(state.OwnedTrails)
     state.EquippedTrailId = normalizeEquippedTrailId(state.EquippedTrailId, state.OwnedTrails)
+    state.OwnedTitles = normalizeOwnedTitles(state.OwnedTitles)
+    state.EquippedTitleId = normalizeEquippedTitleId(state.EquippedTitleId, state.OwnedTitles)
+    state.TotalDeaths = normalizeNonNegativeInteger(state.TotalDeaths)
+    state.TotalDiamondsEarned = normalizeNonNegativeInteger(state.TotalDiamondsEarned)
+    state.TotalOnlineSeconds = normalizeNonNegativeInteger(state.TotalOnlineSeconds)
+    state.HasUnseenTitleUnlock = state.HasUnseenTitleUnlock == true
     state.WeaponUnlockRewards = normalizeWeaponUnlockRewards(
         state.WeaponUnlockRewards,
         getMaxUnlockedTierIndexForLevel(state.HighestLevelReached or state.Level)
@@ -909,10 +983,17 @@ function PlayerStateService:_createDefaultState(actor)
         EquippedSkinId = nil,
         OwnedTrails = {},
         EquippedTrailId = nil,
+        OwnedTitles = {},
+        EquippedTitleId = nil,
+        TotalDeaths = 0,
+        TotalDiamondsEarned = 0,
+        TotalOnlineSeconds = 0,
+        HasUnseenTitleUnlock = false,
         WeaponUnlockRewards = normalizeWeaponUnlockRewards(nil, getMaxUnlockedTierIndexForLevel(GameConfig.PLAYER.BaseLevel)),
         ActivePotions = {},
         ActivePotion = nil,
         SessionStartedAt = os.time(),
+        LastOnlineClock = os.clock(),
         Buffs = {},
     }
     self:_applyLevelDerivedState(state)
@@ -1039,6 +1120,8 @@ function PlayerStateService:_createDefaultOverheadHealthBarTemplate()
     countDownTime.TextStrokeTransparency = 0.45
     countDownTime.Parent = shield
 
+    ensureOverheadTitleImage(root)
+
     return billboard
 end
 
@@ -1096,6 +1179,7 @@ function PlayerStateService:_ensureOverheadHealthBar(actor)
     billboard.Adornee = head
     local root = billboard:FindFirstChild("Root")
     ensureOverheadLevelLabel(root)
+    ensureOverheadTitleImage(root)
     billboard.Parent = head
 
     return billboard
@@ -1111,6 +1195,7 @@ function PlayerStateService:UpdateOverheadHealthBar(actor)
     local root = billboard:FindFirstChild("Root")
     local valueLabel = root and root:FindFirstChild("ValueLabel")
     local levelLabel = ensureOverheadLevelLabel(root)
+    local titleImage = ensureOverheadTitleImage(root)
     local barBackground = root and root:FindFirstChild("BarBackground")
     local fill = barBackground and barBackground:FindFirstChild("Fill")
     if not (valueLabel and valueLabel:IsA("TextLabel") and fill and fill:IsA("Frame")) then
@@ -1128,8 +1213,25 @@ function PlayerStateService:UpdateOverheadHealthBar(actor)
         levelLabel.Text = string.format("Lv.%d", normalizeLevel(state.Level))
     end
 
+    local equippedTitle = self:GetEquippedTitleConfig(actor)
+    local titleIcon = equippedTitle and tostring(equippedTitle.IconImage or "") or ""
+    local hasEquippedTitle = titleIcon ~= ""
+    if titleImage and titleImage:IsA("ImageLabel") then
+        titleImage.Image = titleIcon
+        titleImage.Visible = hasEquippedTitle
+    end
+
     local shouldShowHealthBar = state.Alive == true and state.IsInArena == true
-    billboard.Enabled = shouldShowHealthBar
+    if barBackground and barBackground:IsA("GuiObject") then
+        barBackground.Visible = shouldShowHealthBar
+    end
+    if valueLabel and valueLabel:IsA("GuiObject") then
+        valueLabel.Visible = shouldShowHealthBar
+    end
+    if levelLabel and levelLabel:IsA("GuiObject") then
+        levelLabel.Visible = shouldShowHealthBar
+    end
+    billboard.Enabled = shouldShowHealthBar or hasEquippedTitle
     local shieldState = self._healthService and self._healthService.GetShieldState and self._healthService:GetShieldState(actor) or nil
     updateOverheadShieldUi(root, shieldState, shouldShowHealthBar)
     return true
@@ -1238,6 +1340,8 @@ function PlayerStateService:Init(dependencies)
     self._friendBonusRefreshToken = 0
     self._friendBonusLoopToken += 1
     local friendBonusLoopToken = self._friendBonusLoopToken
+    self._onlineTimeLoopToken += 1
+    local onlineTimeLoopToken = self._onlineTimeLoopToken
     self._weaponService = dependencies and dependencies.WeaponService or nil
     self._weaponUnlockRewardService = dependencies and dependencies.WeaponUnlockRewardService or nil
     self._leaderboardService = dependencies and dependencies.LeaderboardService or nil
@@ -1317,6 +1421,18 @@ function PlayerStateService:Init(dependencies)
             self:RefreshFriendExperienceBonuses()
         end
     end)
+
+    task.spawn(function()
+        while self._onlineTimeLoopToken == onlineTimeLoopToken do
+            task.wait(30)
+            if self._onlineTimeLoopToken ~= onlineTimeLoopToken then
+                break
+            end
+            for _, player in ipairs(Players:GetPlayers()) do
+                self:RefreshOnlineTime(player, true)
+            end
+        end
+    end)
 end
 
 function PlayerStateService:BindSystems(dependencies)
@@ -1328,6 +1444,7 @@ function PlayerStateService:BindSystems(dependencies)
     self._healthService = dependencies and dependencies.HealthService or self._healthService
     self._subscriptionService = dependencies and dependencies.SubscriptionService or self._subscriptionService
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
+    self._skinService = dependencies and dependencies.SkinService or self._skinService
 end
 
 function PlayerStateService:_markArenaProgressDirty()
@@ -1350,6 +1467,8 @@ end
 
 function PlayerStateService:OnPlayerAdded(player)
     local state = self:_getOrCreateState(player)
+    state.LastOnlineClock = os.clock()
+    self:CheckTitleUnlocks(player)
     if self._gameAnalyticsService and self._gameAnalyticsService.BeginOnboardingSurvivalCheck then
         self._gameAnalyticsService:BeginOnboardingSurvivalCheck(player, 60)
     end
@@ -1365,6 +1484,7 @@ end
 
 function PlayerStateService:BuildStatePayload(actor)
     local state = self:_getOrCreateState(actor)
+    self:RefreshOnlineTime(actor, false)
     local activePotion = self:GetActivePotion(actor)
     local activePotions = self:GetActivePotions(actor)
     local potionExperienceBonus = self:GetPotionExperienceBonus(actor)
@@ -1386,6 +1506,9 @@ function PlayerStateService:BuildStatePayload(actor)
     local ownedTrails = normalizeOwnedTrails(state.OwnedTrails)
     state.OwnedTrails = ownedTrails
     state.EquippedTrailId = normalizeEquippedTrailId(state.EquippedTrailId, ownedTrails)
+    local ownedTitles = normalizeOwnedTitles(state.OwnedTitles)
+    state.OwnedTitles = ownedTitles
+    state.EquippedTitleId = normalizeEquippedTitleId(state.EquippedTitleId, ownedTitles)
     local shieldState = self._healthService and self._healthService.GetShieldState and self._healthService:GetShieldState(actor) or nil
     local subscriptionActive = self._subscriptionService and (
         (self._subscriptionService.IsSubscribedCached and self._subscriptionService:IsSubscribedCached(actor) == true)
@@ -1422,6 +1545,9 @@ function PlayerStateService:BuildStatePayload(actor)
         nextRebirthScore = GameConfig.GetRequiredRebirthScore(state.Rebirth),
         rebirthExperienceBonus = GameConfig.GetRebirthExperienceBonus(state.Rebirth),
         diamonds = state.Diamonds,
+        totalDiamondsEarned = state.TotalDiamondsEarned,
+        totalDeaths = state.TotalDeaths,
+        totalOnlineSeconds = state.TotalOnlineSeconds,
         wheelSpins = state.WheelSpins,
         potions = state.Potions,
         groupRewards = state.GroupRewards,
@@ -1451,6 +1577,9 @@ function PlayerStateService:BuildStatePayload(actor)
         equippedSkinId = state.EquippedSkinId,
         ownedTrails = copyBooleanMap(ownedTrails),
         equippedTrailId = state.EquippedTrailId,
+        ownedTitles = copyBooleanMap(ownedTitles),
+        equippedTitleId = state.EquippedTitleId,
+        hasUnseenTitleUnlock = state.HasUnseenTitleUnlock == true,
         weaponUnlockRewards = {
             claimedTiers = copyBooleanMap(weaponUnlockRewards.ClaimedTiers or {}),
             pendingQueue = copyArray(weaponUnlockRewards.PendingQueue or {}),
@@ -1588,6 +1717,7 @@ function PlayerStateService:AddKillCount(actor, amount)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
+    self:CheckTitleUnlocks(actor)
     return state.KillCount, state.TotalPlayerKills
 end
 
@@ -1599,6 +1729,7 @@ function PlayerStateService:SetTotalPlayerKills(actor, count)
     if self._leaderboardService then
         self._leaderboardService:MarkDirty()
     end
+    self:CheckTitleUnlocks(actor)
     return state.TotalPlayerKills
 end
 
@@ -1637,6 +1768,9 @@ function PlayerStateService:AddDiamonds(actor, amount, context)
     end
 
     state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0) + delta)
+    if shouldCountDiamondEarn(delta, context) then
+        state.TotalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)) + delta
+    end
     self:PushState(actor)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
@@ -1649,6 +1783,9 @@ function PlayerStateService:AddDiamonds(actor, amount, context)
         state.Diamonds,
         context
     )
+    if shouldCountDiamondEarn(delta, context) then
+        self:CheckTitleUnlocks(actor)
+    end
     return state.Diamonds
 end
 
@@ -2060,6 +2197,200 @@ function PlayerStateService:GetEquippedTrailConfig(actor)
     return trailId and TrailConfig.GetTrail(trailId) or nil
 end
 
+function PlayerStateService:_buildTitleUnlockMetrics(state)
+    return {
+        highestLevelReached = math.max(1, math.floor(tonumber(state.HighestLevelReached or state.Level) or GameConfig.PLAYER.BaseLevel)),
+        totalPlayerKills = math.max(0, math.floor(tonumber(state.TotalPlayerKills) or 0)),
+        totalDeaths = math.max(0, math.floor(tonumber(state.TotalDeaths) or 0)),
+        totalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)),
+        totalOnlineSeconds = math.max(0, math.floor(tonumber(state.TotalOnlineSeconds) or 0)),
+    }
+end
+
+function PlayerStateService:_notifyTitleUnlocked(actor, title)
+    if self._skinService and self._skinService.NotifyTitleUnlocked then
+        self._skinService:NotifyTitleUnlocked(actor, title)
+    end
+end
+
+function PlayerStateService:CheckTitleUnlocks(actor)
+    if not ActorUtils.IsPlayer(actor) then
+        return {}
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.OwnedTitles = normalizeOwnedTitles(state.OwnedTitles)
+    local metrics = self:_buildTitleUnlockMetrics(state)
+    local unlockedTitles = {}
+
+    for _, title in ipairs(TitleConfig.GetAllTitles()) do
+        local key = tostring(title.Id)
+        if state.OwnedTitles[key] ~= true then
+            if TitleConfig.IsUnlocked(title, metrics) then
+                state.OwnedTitles[key] = true
+                state.HasUnseenTitleUnlock = true
+                table.insert(unlockedTitles, title)
+            elseif type(title.Condition) ~= "table" and title._conditionWarningEmitted ~= true then
+                title._conditionWarningEmitted = true
+                warn(string.format(
+                    "[PlayerStateService] Title %s has an unparsed unlock condition and will remain locked: %s",
+                    tostring(title.Id),
+                    tostring(title.UnlockConditionText or "")
+                ))
+            end
+        end
+    end
+
+    if #unlockedTitles <= 0 then
+        return unlockedTitles
+    end
+
+    state.EquippedTitleId = normalizeEquippedTitleId(state.EquippedTitleId, state.OwnedTitles)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    for _, title in ipairs(unlockedTitles) do
+        self:_notifyTitleUnlocked(actor, title)
+    end
+    return unlockedTitles
+end
+
+function PlayerStateService:GetOwnedTitles(actor)
+    local state = self:_getOrCreateState(actor)
+    state.OwnedTitles = normalizeOwnedTitles(state.OwnedTitles)
+    state.EquippedTitleId = normalizeEquippedTitleId(state.EquippedTitleId, state.OwnedTitles)
+    return state.OwnedTitles
+end
+
+function PlayerStateService:OwnsTitle(actor, titleId)
+    local ownedTitles = self:GetOwnedTitles(actor)
+    return ownedTitles[tostring(math.floor(tonumber(titleId) or 0))] == true
+end
+
+function PlayerStateService:GrantTitle(actor, titleId, options)
+    local title = TitleConfig.GetTitle(titleId)
+    if not title then
+        return false, "InvalidTitle"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.OwnedTitles = normalizeOwnedTitles(state.OwnedTitles)
+    local key = tostring(title.Id)
+    local alreadyOwned = state.OwnedTitles[key] == true
+    state.OwnedTitles[key] = true
+    if alreadyOwned ~= true and not (type(options) == "table" and options.silentRedPoint == true) then
+        state.HasUnseenTitleUnlock = true
+    end
+    state.EquippedTitleId = normalizeEquippedTitleId(state.EquippedTitleId, state.OwnedTitles)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if alreadyOwned ~= true and not (type(options) == "table" and options.silentFeedback == true) then
+        self:_notifyTitleUnlocked(actor, title)
+    end
+    return true, alreadyOwned and "AlreadyOwned" or "Granted"
+end
+
+function PlayerStateService:EquipTitle(actor, titleId)
+    local title = TitleConfig.GetTitle(titleId)
+    if not title then
+        return false, "InvalidTitle"
+    end
+    if not self:OwnsTitle(actor, title.Id) then
+        return false, "NotOwned"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.EquippedTitleId = title.Id
+    self:UpdateOverheadHealthBar(actor)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true, "Equipped"
+end
+
+function PlayerStateService:ClearEquippedTitle(actor)
+    local state = self:_getOrCreateState(actor)
+    if state.EquippedTitleId == nil then
+        return true
+    end
+
+    state.EquippedTitleId = nil
+    self:UpdateOverheadHealthBar(actor)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
+function PlayerStateService:GetEquippedTitleId(actor)
+    local state = self:_getOrCreateState(actor)
+    state.OwnedTitles = normalizeOwnedTitles(state.OwnedTitles)
+    state.EquippedTitleId = normalizeEquippedTitleId(state.EquippedTitleId, state.OwnedTitles)
+    return state.EquippedTitleId
+end
+
+function PlayerStateService:GetEquippedTitleConfig(actor)
+    local titleId = self:GetEquippedTitleId(actor)
+    return titleId and TitleConfig.GetTitle(titleId) or nil
+end
+
+function PlayerStateService:ClearUnseenTitleUnlock(actor)
+    local state = self:_getOrCreateState(actor)
+    if state.HasUnseenTitleUnlock ~= true then
+        return false
+    end
+
+    state.HasUnseenTitleUnlock = false
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true
+end
+
+function PlayerStateService:RecordDeath(actor)
+    if not ActorUtils.IsPlayer(actor) then
+        return 0
+    end
+
+    local state = self:_getOrCreateState(actor)
+    state.TotalDeaths = math.max(0, math.floor(tonumber(state.TotalDeaths) or 0)) + 1
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    self:CheckTitleUnlocks(actor)
+    return state.TotalDeaths
+end
+
+function PlayerStateService:RefreshOnlineTime(actor, shouldCheckTitles)
+    if not ActorUtils.IsPlayer(actor) then
+        return 0
+    end
+
+    local state = self:_getOrCreateState(actor)
+    local now = os.clock()
+    local lastClock = tonumber(state.LastOnlineClock) or now
+    local delta = math.floor(now - lastClock)
+    if delta <= 0 then
+        state.LastOnlineClock = lastClock
+        return math.max(0, math.floor(tonumber(state.TotalOnlineSeconds) or 0))
+    end
+
+    state.LastOnlineClock = now
+    state.TotalOnlineSeconds = math.max(0, math.floor(tonumber(state.TotalOnlineSeconds) or 0)) + delta
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if shouldCheckTitles == true then
+        self:CheckTitleUnlocks(actor)
+    end
+    return state.TotalOnlineSeconds
+end
+
 function PlayerStateService:_addDiamondsWithoutPush(actor, amount, context)
     local state = self:_getOrCreateState(actor)
     local delta = math.floor(tonumber(amount) or 0)
@@ -2068,6 +2399,9 @@ function PlayerStateService:_addDiamondsWithoutPush(actor, amount, context)
     end
 
     state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0) + delta)
+    if shouldCountDiamondEarn(delta, context) then
+        state.TotalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)) + delta
+    end
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
@@ -2079,6 +2413,9 @@ function PlayerStateService:_addDiamondsWithoutPush(actor, amount, context)
         state.Diamonds,
         context
     )
+    if shouldCountDiamondEarn(delta, context) then
+        self:CheckTitleUnlocks(actor)
+    end
     return state.Diamonds
 end
 
@@ -2325,6 +2662,13 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.EquippedSkinId = normalizeEquippedSkinId(savedProgress.equippedSkinId or savedProgress.EquippedSkinId, state.OwnedSkins)
         state.OwnedTrails = normalizeOwnedTrails(savedProgress.ownedTrails or savedProgress.OwnedTrails)
         state.EquippedTrailId = normalizeEquippedTrailId(savedProgress.equippedTrailId or savedProgress.EquippedTrailId, state.OwnedTrails)
+        state.OwnedTitles = normalizeOwnedTitles(savedProgress.ownedTitles or savedProgress.OwnedTitles)
+        state.EquippedTitleId = normalizeEquippedTitleId(savedProgress.equippedTitleId or savedProgress.EquippedTitleId, state.OwnedTitles)
+        state.TotalDeaths = normalizeNonNegativeInteger(savedProgress.totalDeaths or savedProgress.TotalDeaths)
+        state.TotalDiamondsEarned = normalizeNonNegativeInteger(savedProgress.totalDiamondsEarned or savedProgress.TotalDiamondsEarned)
+        state.TotalOnlineSeconds = normalizeNonNegativeInteger(savedProgress.totalOnlineSeconds or savedProgress.TotalOnlineSeconds)
+        state.HasUnseenTitleUnlock = savedProgress.hasUnseenTitleUnlock == true or savedProgress.HasUnseenTitleUnlock == true
+        state.LastOnlineClock = os.clock()
         local savedWeaponUnlockRewards = savedProgress.weaponUnlockRewards or savedProgress.WeaponUnlockRewards
         local maxPromptedTierIndex = getMaxUnlockedTierIndexForLevel(state.HighestLevelReached)
         if savedWeaponUnlockRewards ~= nil then
@@ -2360,6 +2704,7 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
     end
     self:_syncLeaderstats(actor, state)
     self:SyncHumanoidMovement(actor)
+    self:CheckTitleUnlocks(actor)
     self:PushState(actor)
     if self._weaponUnlockRewardService and self._weaponUnlockRewardService.SyncPendingPrompt then
         self._weaponUnlockRewardService:SyncPendingPrompt(actor)
@@ -2502,6 +2847,7 @@ function PlayerStateService:_addExperience(actor, amount, requireActiveInArena)
             self._rebirthService:MarkDirty(actor)
         end
         self:_fireLevelUpFeedback(actor, previousLevel, state.Level)
+        self:CheckTitleUnlocks(actor)
     else
         state.NextLevelExperience = GameConfig.GetNextLevelExperience(state.Level)
     end
@@ -2578,6 +2924,7 @@ function PlayerStateService:SetLevelForStudioCommand(actor, level)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
+    self:CheckTitleUnlocks(actor)
     self:PushState(actor)
     if self._leaderboardService then
         self._leaderboardService:MarkDirty()
@@ -2628,6 +2975,7 @@ function PlayerStateService:ApplyLevelMultiplier(actor, multiplier)
         self._rebirthService:MarkDirty(actor)
     end
     self:_fireLevelUpFeedback(actor, previousLevel, state.Level)
+    self:CheckTitleUnlocks(actor)
     self:_syncLeaderstats(actor, state)
     self:PushState(actor)
     if self._leaderboardService then
@@ -2762,6 +3110,9 @@ end
 function PlayerStateService:OnPlayerRemoving(player)
     local state = self._statesByActorId[getActorId(player)]
     local wasInArena = state and state.IsInArena == true
+    if state then
+        self:RefreshOnlineTime(player, true)
+    end
     self._statesByActorId[getActorId(player)] = nil
     local collisionConnection = self._characterCollisionConnectionsByActorId[getActorId(player)]
     if collisionConnection and collisionConnection.Connected then

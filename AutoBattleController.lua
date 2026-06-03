@@ -828,6 +828,37 @@ function AutoBattleController:_calculateAttackRange(monsterSnapshot, weaponRange
     return resolvedWeaponRange + monsterRadius
 end
 
+function AutoBattleController:_getSafeReentryLockMinLevel()
+    local arenaConfig = GameConfig.ARENA or {}
+    return math.max(1, math.floor(tonumber(arenaConfig.SafeReentryLockMinLevel) or 31))
+end
+
+function AutoBattleController:_shouldExcludeSafeZoneAutoTargets(rootPosition)
+    if not (typeof(rootPosition) == "Vector3" and self._localMonsterController) then
+        return false
+    end
+
+    local level = math.floor(tonumber(self._latestState and self._latestState.level) or 0)
+    if level < self:_getSafeReentryLockMinLevel() then
+        return false
+    end
+
+    if not self._localMonsterController.IsPositionInsideSafeZone then
+        return false
+    end
+
+    return self._localMonsterController:IsPositionInsideSafeZone(rootPosition) ~= true
+end
+
+function AutoBattleController:_getAutoTargetFilterOptions(rootPosition)
+    if self:_shouldExcludeSafeZoneAutoTargets(rootPosition) then
+        return {
+            ExcludeSafeZone = true,
+        }
+    end
+    return nil
+end
+
 function AutoBattleController:_findAutoTarget(rootPosition)
     if not self._localMonsterController then
         return nil, nil
@@ -840,13 +871,14 @@ function AutoBattleController:_findAutoTarget(rootPosition)
 
     local now = os.clock()
     local excludedIds = getActiveExcludedIds(self._excludedAutoTargetUntilById, now)
+    local targetFilterOptions = self:_getAutoTargetFilterOptions(rootPosition)
     local target = nil
     if self._autoTargetId and not (excludedIds and excludedIds[self._autoTargetId]) and self._localMonsterController.GetAliveMonsterSnapshotById then
-        target = self._localMonsterController:GetAliveMonsterSnapshotById(self._autoTargetId)
+        target = self._localMonsterController:GetAliveMonsterSnapshotById(self._autoTargetId, targetFilterOptions)
     end
 
     if not target then
-        target = self._localMonsterController:FindNearestAliveMonster(rootPosition, nil, excludedIds)
+        target = self._localMonsterController:FindNearestAliveMonster(rootPosition, nil, excludedIds, targetFilterOptions)
         if target then
             self:_setAutoTargetId(target.id, now)
         end
@@ -866,7 +898,7 @@ function AutoBattleController:_findAutoTarget(rootPosition)
     local canRefreshTarget = now >= (self._nextAutoTargetRefreshClock or 0)
     local canSwitchTarget = now - (self._lastAutoTargetSwitchClock or 0) >= AUTO_TARGET_SWITCH_COOLDOWN_SECONDS
     if distance <= attackRange and canRefreshTarget and canSwitchTarget then
-        local nextTarget = self._localMonsterController:FindNearestAliveMonsterOutsideWeaponRange(rootPosition, weaponRange, excludedIds)
+        local nextTarget = self._localMonsterController:FindNearestAliveMonsterOutsideWeaponRange(rootPosition, weaponRange, excludedIds, targetFilterOptions)
         if nextTarget and nextTarget.id ~= target.id then
             local nextAttackRange = self:_calculateAttackRange(nextTarget, weaponRange)
             if nextAttackRange then

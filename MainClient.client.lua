@@ -99,6 +99,7 @@ local NewWeaponUnlockController = requireLocalModule("NewWeaponUnlockController"
 local OverheadLevelController = requireLocalModule("OverheadLevelController")
 local WheelController = requireLocalModule("WheelController")
 local SkinController = requireLocalModule("SkinController")
+local TrailFxController = requireLocalModule("TrailFxController")
 local SubscriptionController = requireLocalModule("SubscriptionController")
 local ShopController = requireLocalModule("ShopController")
 local CodeController = requireLocalModule("CodeController")
@@ -261,6 +262,11 @@ initController("SkinController", SkinController, {
     RootScript = script,
     WheelController = WheelController,
     SevenDayLoginRewardController = SevenDayLoginRewardController,
+})
+
+initController("TrailFxController", TrailFxController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
 })
 
 initController("ShopController", ShopController, {

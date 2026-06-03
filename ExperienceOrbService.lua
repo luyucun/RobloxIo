@@ -37,6 +37,7 @@ local ExperienceOrbService = {}
 ExperienceOrbService._playerStateService = nil
 ExperienceOrbService._remoteEventService = nil
 ExperienceOrbService._experienceFeedbackEvent = nil
+ExperienceOrbService._arenaService = nil
 ExperienceOrbService._nextDropId = 1
 
 local function buildOrbVisuals(position, totalValue, orbCount)
@@ -73,6 +74,53 @@ function ExperienceOrbService:_fireExperienceFeedback(actor, payload)
     end
 
     self._experienceFeedbackEvent:FireClient(actor, payload)
+end
+
+function ExperienceOrbService:_getSafeZoneExperienceMultiplier(actor)
+    if not (ActorUtils.IsPlayer(actor) and self._arenaService and self._arenaService.IsActorInsideSafeZone) then
+        return 1
+    end
+    if self._arenaService:IsActorInsideSafeZone(actor) ~= true then
+        return 1
+    end
+
+    local state = self._playerStateService and self._playerStateService:GetState(actor) or nil
+    local level = math.max(1, math.floor(tonumber(state and state.Level) or GameConfig.PLAYER.BaseLevel))
+    local arenaConfig = GameConfig.ARENA or {}
+    local multiplierBands = arenaConfig.SafeExperienceMultipliers
+    if type(multiplierBands) == "table" then
+        for _, band in ipairs(multiplierBands) do
+            if type(band) == "table" then
+                local minLevel = math.max(1, math.floor(tonumber(band.MinLevel) or 1))
+                local maxLevel = tonumber(band.MaxLevel) or math.huge
+                if level >= minLevel and level <= maxLevel then
+                    return math.max(0, tonumber(band.Multiplier) or 0)
+                end
+            end
+        end
+    end
+
+    if level >= 31 then
+        return 0
+    elseif level >= 21 then
+        return 0.5
+    elseif level >= 11 then
+        return 0.8
+    end
+    return 1
+end
+
+function ExperienceOrbService:_applySafeZoneExperienceMultiplier(actor, amount)
+    local baseAmount = math.max(0, math.floor(tonumber(amount) or 0))
+    if baseAmount <= 0 then
+        return 0
+    end
+
+    local multiplier = self:_getSafeZoneExperienceMultiplier(actor)
+    if multiplier >= 1 then
+        return baseAmount
+    end
+    return math.max(0, math.floor(baseAmount * multiplier))
 end
 
 function ExperienceOrbService:_grantExperience(actor, amount, options)
@@ -113,6 +161,7 @@ function ExperienceOrbService:DropExperience(position, totalValue, orbCount, tar
     end
 
     local totalAmount = self:_resolveAwardAmount(targetActor, totalValue, options)
+    totalAmount = self:_applySafeZoneExperienceMultiplier(targetActor, totalAmount)
     local visuals, count, valuePerOrb = buildOrbVisuals(position, totalAmount, orbCount)
     if totalAmount <= 0 then
         return 0
@@ -161,6 +210,7 @@ end
 function ExperienceOrbService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._remoteEventService = dependencies.RemoteEventService
+    self._arenaService = dependencies.ArenaService
     self._experienceFeedbackEvent = self._remoteEventService and self._remoteEventService:GetEvent("ExperienceFeedback") or nil
     self._nextDropId = 1
 end
