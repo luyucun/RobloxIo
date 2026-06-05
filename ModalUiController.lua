@@ -43,6 +43,10 @@ local DEFAULT_DORMANT_ROOT_NAMES = {
     "FriendsRanking",
 }
 
+local DORMANT_ROOT_EXCLUDED_NAMES = {
+    TitleUnlock = true,
+}
+
 local function findBlurEffect()
     local blur = Lighting:FindFirstChild("Blur")
     if blur and blur:IsA("BlurEffect") then
@@ -321,7 +325,7 @@ function ModalUiController:RegisterDefaultDormantRoots(localPlayer)
     end
 
     for _, child in ipairs(mainGui:GetChildren()) do
-        if child:IsA("GuiObject") and child.Visible == false then
+        if child:IsA("GuiObject") and child.Visible == false and DORMANT_ROOT_EXCLUDED_NAMES[child.Name] ~= true then
             registerRoot(child)
         end
     end

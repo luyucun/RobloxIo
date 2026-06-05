@@ -184,8 +184,7 @@ FriendsRankingStateSync（S -> C）
 - killerUserId
 - killer：`{ userId, name, level, killCount, totalPlayerKills }`
 - victimLevel
-- dailyFreeReviveEligible
-- dailyFreeReviveLevel
+- freeRespawnLevel
 - timestamp
 当前 reason 固定为 `WeaponDamage`。
 

@@ -8,7 +8,6 @@ Purpose: Handles V1.6 defeated revive/revenge UI.
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
@@ -48,6 +47,7 @@ DefeatedController._countdownConnection = nil
 DefeatedController._isOpen = false
 DefeatedController._isRevengePurchasePending = false
 DefeatedController._isRevivePurchasePending = false
+DefeatedController._canRevenge = false
 DefeatedController._countdownEndsAt = 0
 DefeatedController._bindRetryQueued = false
 DefeatedController._panelTweens = {}
@@ -109,6 +109,46 @@ local function setText(textObject, value)
     end
 end
 
+local function formatRobuxPrice(value)
+    local price = tonumber(value)
+    if not price then
+        return nil
+    end
+    return tostring(math.max(0, math.floor(price + 0.5)))
+end
+
+local function setMarketplaceRobuxPrice(textObject, productId)
+    if not (textObject and (textObject:IsA("TextLabel") or textObject:IsA("TextButton") or textObject:IsA("TextBox"))) then
+        return
+    end
+
+    local resolvedProductId = math.floor(tonumber(productId) or 0)
+    if resolvedProductId <= 0 then
+        return
+    end
+
+    local fallbackText = tostring(textObject.Text or "")
+    setText(textObject, "...")
+    task.spawn(function()
+        local success, productInfo = pcall(function()
+            return MarketplaceService:GetProductInfoAsync(resolvedProductId, Enum.InfoType.Product)
+        end)
+        if not (success and type(productInfo) == "table") then
+            if fallbackText ~= "" then
+                setText(textObject, fallbackText)
+            end
+            return
+        end
+
+        local priceText = formatRobuxPrice(productInfo.PriceInRobux)
+        if priceText then
+            setText(textObject, priceText)
+        elseif fallbackText ~= "" then
+            setText(textObject, fallbackText)
+        end
+    end)
+end
+
 local function setImage(imageObject, image)
     if imageObject and (imageObject:IsA("ImageLabel") or imageObject:IsA("ImageButton")) then
         imageObject.Image = tostring(image or "")
@@ -121,10 +161,6 @@ local function findNested(root, path)
         current = current and current:FindFirstChild(part)
     end
     return current
-end
-
-local function getReviveCountdownDuration()
-    return math.max(1, tonumber(GameConfig.RESPAWN.PlayerKillReviveCountdownSeconds) or 15)
 end
 
 function DefeatedController:_cancelPanelTweens()
@@ -141,17 +177,49 @@ function DefeatedController:_nextPanelAnimationSerial()
     return self._panelAnimationSerial
 end
 
-function DefeatedController:_setProgress(ratio, secondsLeft)
+local function getFreeRespawnLevel(victimLevel, payload)
+    local configuredLevel = tonumber(payload and payload.freeRespawnLevel)
+    local fallbackLevel = math.floor((tonumber(victimLevel) or GameConfig.PLAYER.BaseLevel) / 2)
+    return math.clamp(
+        math.floor(configuredLevel or fallbackLevel),
+        GameConfig.PLAYER.BaseLevel,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
+end
+
+function DefeatedController:_refreshProductPrices()
     if not self._defeatedRoot then
         return
     end
 
-    local progress = findNested(self._defeatedRoot, "ProgressBg/Progress")
-    if progress and progress:IsA("GuiObject") then
-        progress.Size = UDim2.fromScale(math.clamp(tonumber(ratio) or 0, 0, 1), 1)
+    local monetization = GameConfig.MONETIZATION or {}
+    local revengeRoot = self._defeatedRoot:FindFirstChild("Revenge", true)
+    local reviveRoot = self._defeatedRoot:FindFirstChild("Revive", true)
+    setMarketplaceRobuxPrice(revengeRoot and revengeRoot:FindFirstChild("RMoney", true), monetization.RevengeProductId)
+    setMarketplaceRobuxPrice(reviveRoot and reviveRoot:FindFirstChild("RMoney", true), monetization.DefeatedReviveProductId)
+end
+
+function DefeatedController:_setCountdownVisible(isVisible)
+    if not self._defeatedRoot then
+        return
     end
 
-    setText(self._defeatedRoot:FindFirstChild("Time", true), string.format("%dS", math.max(0, math.ceil(tonumber(secondsLeft) or 0))))
+    local visible = isVisible == true
+    local progressBg = findNested(self._defeatedRoot, "ProgressBg")
+    if progressBg and progressBg:IsA("GuiObject") then
+        progressBg.Visible = visible
+    end
+
+    local progress = findNested(self._defeatedRoot, "ProgressBg/Progress")
+    if progress and progress:IsA("GuiObject") then
+        progress.Size = UDim2.fromScale(1, 1)
+    end
+
+    local timeLabel = self._defeatedRoot:FindFirstChild("Time", true)
+    if timeLabel and timeLabel:IsA("GuiObject") then
+        timeLabel.Visible = visible
+    end
+    setText(timeLabel, "")
 end
 
 function DefeatedController:_stopCountdown()
@@ -159,52 +227,16 @@ function DefeatedController:_stopCountdown()
         self._countdownConnection:Disconnect()
         self._countdownConnection = nil
     end
-end
-
-function DefeatedController:_startCountdown(existingEndsAt)
-    self:_stopCountdown()
-    local duration = getReviveCountdownDuration()
-    self._countdownEndsAt = tonumber(existingEndsAt) or (os.clock() + duration)
-    local initialSecondsLeft = math.max(0, self._countdownEndsAt - os.clock())
-    self:_setProgress(initialSecondsLeft / duration, initialSecondsLeft)
-
-    self._countdownConnection = RunService.RenderStepped:Connect(function()
-        if not self._isOpen then
-            return
-        end
-
-        local secondsLeft = math.max(0, self._countdownEndsAt - os.clock())
-        self:_setProgress(secondsLeft / duration, secondsLeft)
-        if secondsLeft <= 0 then
-            self:_closeAndRequest("Revive")
-        end
-    end)
+    self._countdownEndsAt = 0
+    self:_setCountdownVisible(false)
 end
 
 function DefeatedController:_resumeCountdownAfterRevengeCancel()
-    if not self._isOpen then
-        return
-    end
-
-    if self._countdownEndsAt <= os.clock() then
-        self:_closeAndRequest("Revive")
-        return
-    end
-
-    self:_startCountdown(self._countdownEndsAt)
+    self:_setCountdownVisible(false)
 end
 
 function DefeatedController:_resumeCountdownAfterRevivePurchaseCancel()
-    if not self._isOpen then
-        return
-    end
-
-    if self._countdownEndsAt <= os.clock() then
-        self:_closeAndRequest("Revive")
-        return
-    end
-
-    self:_startCountdown(self._countdownEndsAt)
+    self:_setCountdownVisible(false)
 end
 
 function DefeatedController:_setOpen(isOpen, immediate)
@@ -299,6 +331,9 @@ function DefeatedController:_closeAndRequest(action)
 end
 
 function DefeatedController:_promptRevenge()
+    if not self._canRevenge then
+        return
+    end
     if self._isRevengePurchasePending then
         return
     end
@@ -367,30 +402,31 @@ function DefeatedController:_updateKillerInfo(payload)
     local killerLevel = killer and killer.level or GameConfig.PLAYER.BaseLevel
     local victimLevel = math.max(1, math.floor(tonumber(payload and payload.victimLevel) or GameConfig.PLAYER.BaseLevel))
     local killerKillCount = math.max(0, math.floor(tonumber(killer and (killer.totalPlayerKills or killer.killCount)) or 0))
-    local dailyFreeReviveEligible = payload and payload.dailyFreeReviveEligible == true
-    local dailyFreeReviveLevel = math.max(1, math.floor(tonumber(payload and payload.dailyFreeReviveLevel) or victimLevel))
+    local freeRespawnReviveLevel = getFreeRespawnLevel(victimLevel, payload)
     local freeRespawnLevel = findNested(self._defeatedRoot, "FreeRespawn/Level")
     local dailyFreeLabel = findNested(self._defeatedRoot, "FreeRespawn/DailyFree")
+    local userId = killer and tonumber(killer.userId) or 0
+    local canRevenge = userId > 0
+    self._canRevenge = canRevenge
     setText(findNested(self._defeatedRoot, "Killer/Name"), killerName)
     setText(findNested(self._defeatedRoot, "Killer/KillNum/Num"), tostring(killerKillCount))
     setText(findNested(self._defeatedRoot, "Killer/LvInfo/Num"), string.format("LV.%d", math.max(1, math.floor(tonumber(killerLevel) or 1))))
     setText(findNested(self._defeatedRoot, "Revive/Level"), string.format("With Lv.%d", victimLevel))
+    local revengeRoot = self._defeatedRoot:FindFirstChild("Revenge", true)
+    if revengeRoot and revengeRoot:IsA("GuiObject") then
+        revengeRoot.Visible = canRevenge
+    end
     if freeRespawnLevel and self._freeRespawnLevelDefaultText == nil then
         self._freeRespawnLevelDefaultText = freeRespawnLevel.Text
     end
     if freeRespawnLevel then
-        if dailyFreeReviveEligible == true then
-            setText(freeRespawnLevel, string.format("Revive at Lv.%d", dailyFreeReviveLevel))
-        else
-            setText(freeRespawnLevel, self._freeRespawnLevelDefaultText or string.format("With Lv.%d", victimLevel))
-        end
+        setText(freeRespawnLevel, string.format("Revive at Lv.%d", freeRespawnReviveLevel))
     end
     if dailyFreeLabel and dailyFreeLabel:IsA("GuiObject") then
-        dailyFreeLabel.Visible = dailyFreeReviveEligible == true
+        dailyFreeLabel.Visible = false
     end
 
     local icon = findNested(self._defeatedRoot, "Killer/Icon")
-    local userId = killer and tonumber(killer.userId) or nil
     if icon and userId and userId > 0 then
         task.spawn(function()
             local ok, thumbnail = pcall(function()
@@ -400,6 +436,8 @@ function DefeatedController:_updateKillerInfo(payload)
                 setImage(icon, thumbnail)
             end
         end)
+    else
+        setImage(icon, "")
     end
 end
 
@@ -556,11 +594,15 @@ function DefeatedController:_bindUi(silent)
         self:_promptRevenge()
     end)
     self:_bindClickTarget(self._defeatedRoot:FindFirstChild("FreeRespawn", true), function()
-        self:_closeAndRequest("Close")
+        self:_closeAndRequest("FreeRespawn")
+    end)
+    self:_bindClickTarget(self._defeatedRoot:FindFirstChild("Lobby", true), function()
+        self:_closeAndRequest("Lobby")
     end)
     self:_bindClickTarget(findNested(self._defeatedRoot, "Title/CloseButton"), function()
-        self:_closeAndRequest("Close")
+        self:_closeAndRequest("Lobby")
     end)
+    self:_refreshProductPrices()
     return true
 end
 
@@ -574,10 +616,11 @@ function DefeatedController:_onDeathFeedback(payload)
     end
 
     self:_updateKillerInfo(payload)
+    self:_refreshProductPrices()
     self._isRevengePurchasePending = false
     self._isRevivePurchasePending = false
     self:_setOpen(true)
-    self:_startCountdown()
+    self:_setCountdownVisible(false)
 end
 
 function DefeatedController:Init(dependencies)

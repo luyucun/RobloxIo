@@ -438,6 +438,8 @@ function RevengeService:_fireStudioKillInfo(ownerPlayer, targetActor)
         killerName = getActorDisplayName(ownerPlayer),
         victimUserId = getActorUserId(targetActor),
         victimName = getActorDisplayName(targetActor),
+        killSource = "Revenge",
+        isRevengeKill = true,
         timestamp = os.clock(),
     })
 end
@@ -563,7 +565,10 @@ function RevengeService:_runRevenge(ownerPlayer, targetActor, defeatRecord, opti
             if ownerPlayer and ownerPlayer.Parent and targetActor and self:_isAliveTarget(targetActor) and self._healthService then
                 local killOk, _, killResult = pcall(function()
                     if self._healthService.KillActor then
-                        return self._healthService:KillActor(targetActor, ownerPlayer)
+                        return self._healthService:KillActor(targetActor, ownerPlayer, {
+                            killSource = "Revenge",
+                            isRevengeKill = true,
+                        })
                     end
                     return self._healthService:ApplyWeaponDamage(targetActor, GameConfig.MONETIZATION.NukeDamage, ownerPlayer)
                 end)

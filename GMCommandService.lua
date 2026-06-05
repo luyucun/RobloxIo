@@ -43,6 +43,7 @@ end
 
 local RemoteNames = requireSharedModule("RemoteNames")
 local GameConfig = requireSharedModule("GameConfig")
+local TitleConfig = requireSharedModule("TitleConfig")
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -113,6 +114,15 @@ local function markStateDirty(playerStateService, player)
     end
 end
 
+local function syncSkinState(playerStateService, player)
+    local skinService = playerStateService and playerStateService._skinService
+    if skinService and skinService.SyncState then
+        skinService:SyncState(player)
+    elseif playerStateService and playerStateService.PushState then
+        playerStateService:PushState(player)
+    end
+end
+
 local function addDiamondsForPlayer(playerStateService, player, amount)
     if playerStateService.AddDiamonds then
         return playerStateService:AddDiamonds(player, amount, {
@@ -154,6 +164,14 @@ local function addKillsForPlayer(playerStateService, player, amount)
     end
     local state = playerStateService:GetState(player)
     return math.max(0, math.floor(tonumber(state.KillCount) or 0)), math.max(0, math.floor(tonumber(state.TotalPlayerKills) or 0))
+end
+
+local function buildTitleListText()
+    local parts = {}
+    for _, title in ipairs(TitleConfig.GetAllTitles()) do
+        table.insert(parts, string.format("%d:%s", math.floor(tonumber(title.Id) or 0), tostring(title.Name or "")))
+    end
+    return table.concat(parts, ", ")
 end
 
 function GMCommandService:_handleChatCommand(player, message)
@@ -223,6 +241,95 @@ function GMCommandService:_handleChatCommand(player, message)
         return true, level
     end
 
+    if commandName == "titlelist" then
+        print(string.format("[GMCommandService] Available titles: %s", buildTitleListText()))
+        return true
+    end
+
+    if commandName == "titlecheck" then
+        if not (self._playerStateService and self._playerStateService.CheckTitleUnlocks) then
+            warn("[GMCommandService] PlayerStateService cannot check title unlocks")
+            return false, "ServiceUnavailable"
+        end
+
+        local unlockedTitles = self._playerStateService:CheckTitleUnlocks(player)
+        syncSkinState(self._playerStateService, player)
+        print(string.format("[GMCommandService] %s checked title unlocks, newlyUnlocked=%d", player.Name, #unlockedTitles))
+        return true, #unlockedTitles
+    end
+
+    if commandName == "titleclear" then
+        if not (self._playerStateService and self._playerStateService.ClearEquippedTitle) then
+            warn("[GMCommandService] PlayerStateService cannot clear title")
+            return false, "ServiceUnavailable"
+        end
+
+        local success, result = self._playerStateService:ClearEquippedTitle(player)
+        syncSkinState(self._playerStateService, player)
+        print(string.format("[GMCommandService] %s cleared equipped title: success=%s, result=%s", player.Name, tostring(success), tostring(result)))
+        return success == true, result
+    end
+
+    if commandName == "titleall" then
+        if not (self._playerStateService and self._playerStateService.GrantTitle) then
+            warn("[GMCommandService] PlayerStateService cannot grant titles")
+            return false, "ServiceUnavailable"
+        end
+
+        local grantedCount = 0
+        for _, title in ipairs(TitleConfig.GetAllTitles()) do
+            if not self._playerStateService:OwnsTitle(player, title.Id) then
+                local success = self._playerStateService:GrantTitle(player, title.Id, {
+                    silentFeedback = true,
+                    silentRedPoint = true,
+                })
+                if success then
+                    grantedCount += 1
+                end
+            end
+        end
+        syncSkinState(self._playerStateService, player)
+        print(string.format("[GMCommandService] %s granted all titles, newlyGranted=%d", player.Name, grantedCount))
+        return true, grantedCount
+    end
+
+    if commandName == "titlegrant" or commandName == "titleequip" then
+        if not (self._playerStateService and self._playerStateService.GrantTitle and self._playerStateService.EquipTitle) then
+            warn("[GMCommandService] PlayerStateService cannot grant/equip title")
+            return false, "ServiceUnavailable"
+        end
+
+        local titleId, errorCode = parsePositiveAmountCommand(message, commandName)
+        if not titleId then
+            warn(string.format("[GMCommandService] Invalid /%s command from %s: %s", commandName, player.Name, tostring(message)))
+            return false, errorCode or "InvalidTitleId"
+        end
+
+        local title = TitleConfig.GetTitle(titleId)
+        if not title then
+            warn(string.format("[GMCommandService] Invalid title id %d from %s", titleId, player.Name))
+            return false, "InvalidTitle"
+        end
+
+        if commandName == "titlegrant" then
+            local success, result = self._playerStateService:GrantTitle(player, title.Id)
+            syncSkinState(self._playerStateService, player)
+            print(string.format("[GMCommandService] %s granted title %d (%s): success=%s, result=%s", player.Name, title.Id, tostring(title.Name or ""), tostring(success), tostring(result)))
+            return success == true, result
+        end
+
+        if not self._playerStateService:OwnsTitle(player, title.Id) then
+            self._playerStateService:GrantTitle(player, title.Id, {
+                silentFeedback = true,
+                silentRedPoint = true,
+            })
+        end
+        local success, result = self._playerStateService:EquipTitle(player, title.Id)
+        syncSkinState(self._playerStateService, player)
+        print(string.format("[GMCommandService] %s equipped title %d (%s): success=%s, result=%s", player.Name, title.Id, tostring(title.Name or ""), tostring(success), tostring(result)))
+        return success == true, result
+    end
+
     if commandName == "shield" then
         if not (self._healthService and self._healthService.GrantShield) then
             warn("[GMCommandService] HealthService is unavailable")
@@ -261,6 +368,23 @@ function GMCommandService:_handleChatCommand(player, message)
         })
         print(string.format("[GMCommandService] %s prompted group join dialog", player.Name))
         return true
+    end
+
+    if commandName == "testdefeated" or commandName == "defeated" then
+        if not (self._healthService and self._healthService.RunStudioDefeatedTest) then
+            warn("[GMCommandService] HealthService cannot run defeated test")
+            return false, "ServiceUnavailable"
+        end
+
+        local success, result, killer = self._healthService:RunStudioDefeatedTest(player)
+        if success then
+            local killerName = killer and killer.Name or "GM Test Killer"
+            print(string.format("[GMCommandService] %s triggered defeated test, mode=%s, killer=%s", player.Name, tostring(result), tostring(killerName)))
+            return true, result
+        end
+
+        warn(string.format("[GMCommandService] Failed to run defeated test for %s: %s", player.Name, tostring(result)))
+        return false, result
     end
 
     if commandName == "testkillinfo" then

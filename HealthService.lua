@@ -52,17 +52,29 @@ HealthService._nextShieldClock = 0
 HealthService._missingShieldTemplateWarned = false
 
 local function buildKillerPayload(playerStateService, sourceActor)
-    if not ActorUtils.IsPlayer(sourceActor) then
-        return nil
+    if ActorUtils.IsPlayer(sourceActor) then
+        local state = playerStateService and playerStateService:GetState(sourceActor) or nil
+        return {
+            userId = sourceActor.UserId,
+            name = sourceActor.DisplayName ~= "" and sourceActor.DisplayName or sourceActor.Name,
+            level = state and state.Level or GameConfig.PLAYER.BaseLevel,
+            killCount = state and state.KillCount or 0,
+            totalPlayerKills = state and state.TotalPlayerKills or 0,
+            isPlayer = true,
+        }
     end
 
-    local state = playerStateService and playerStateService:GetState(sourceActor) or nil
+    local fallbackName = sourceActor and ActorUtils.GetActorName(sourceActor) or "Unknown"
+    if fallbackName == "" then
+        fallbackName = "Unknown"
+    end
     return {
-        userId = sourceActor.UserId,
-        name = sourceActor.DisplayName ~= "" and sourceActor.DisplayName or sourceActor.Name,
-        level = state and state.Level or GameConfig.PLAYER.BaseLevel,
-        killCount = state and state.KillCount or 0,
-        totalPlayerKills = state and state.TotalPlayerKills or 0,
+        userId = 0,
+        name = fallbackName,
+        level = GameConfig.PLAYER.BaseLevel,
+        killCount = 0,
+        totalPlayerKills = 0,
+        isPlayer = false,
     }
 end
 
@@ -74,6 +86,28 @@ local function getPlayerDisplayName(player)
     return player.DisplayName ~= "" and player.DisplayName or player.Name
 end
 
+local function findStudioTestKiller(playerStateService, victim)
+    local fallbackPlayer = nil
+    for _, candidate in ipairs(Players:GetPlayers()) do
+        if candidate ~= victim and candidate.Parent then
+            fallbackPlayer = fallbackPlayer or candidate
+            local state = playerStateService and playerStateService:GetState(candidate) or nil
+            if state and state.Alive == true then
+                return candidate
+            end
+        end
+    end
+    return fallbackPlayer
+end
+
+local function getHalfFreeRespawnLevel(victimLevel)
+    return math.clamp(
+        math.floor((tonumber(victimLevel) or GameConfig.PLAYER.BaseLevel) / 2),
+        GameConfig.PLAYER.BaseLevel,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
+end
+
 function HealthService:_fireDeathFeedback(actor, sourceActor)
     if not self._deathFeedbackEvent then
         return
@@ -83,20 +117,23 @@ function HealthService:_fireDeathFeedback(actor, sourceActor)
     end
 
     local victimState = self._playerStateService and self._playerStateService:GetState(actor) or nil
+    local victimLevel = math.clamp(
+        math.floor(tonumber(victimState and victimState.Level) or GameConfig.PLAYER.BaseLevel),
+        GameConfig.PLAYER.BaseLevel,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
     local killerUserId = sourceActor and ActorUtils.GetCombatUserId(sourceActor) or nil
-    local isPlayerKill = ActorUtils.IsPlayer(sourceActor) and not ActorUtils.IsSameActor(actor, sourceActor)
-    local dailyFreeReviveStatus = isPlayerKill
-        and self._respawnService
-        and self._respawnService.PeekDailyFreeReviveStatus
-        and self._respawnService:PeekDailyFreeReviveStatus(actor)
-        or nil
+    local freeRespawnLevel = math.clamp(
+        math.floor(victimLevel / 2),
+        GameConfig.PLAYER.BaseLevel,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
     self._deathFeedbackEvent:FireClient(actor, {
         reason = "WeaponDamage",
         killerUserId = killerUserId,
         killer = buildKillerPayload(self._playerStateService, sourceActor),
-        victimLevel = victimState and victimState.Level or GameConfig.PLAYER.BaseLevel,
-        dailyFreeReviveEligible = dailyFreeReviveStatus and dailyFreeReviveStatus.eligible == true or false,
-        dailyFreeReviveLevel = dailyFreeReviveStatus and dailyFreeReviveStatus.level or nil,
+        victimLevel = victimLevel,
+        freeRespawnLevel = freeRespawnLevel,
         timestamp = os.clock(),
     })
 
@@ -113,7 +150,7 @@ function HealthService:_fireDeathFeedback(actor, sourceActor)
     end
 end
 
-function HealthService:_fireKillInfoFeedback(targetActor, sourceActor)
+function HealthService:_fireKillInfoFeedback(targetActor, sourceActor, options)
     if not self._killInfoFeedbackEvent then
         return
     end
@@ -124,22 +161,31 @@ function HealthService:_fireKillInfoFeedback(targetActor, sourceActor)
         return
     end
 
-    self._killInfoFeedbackEvent:FireAllClients({
+    local isRevengeKill = options
+        and (options.isRevengeKill == true or options.killSource == "Revenge")
+        or false
+    local payload = {
         eventType = "PlayerKilled",
         killerUserId = sourceActor.UserId,
         killerName = getPlayerDisplayName(sourceActor),
         victimUserId = targetActor.UserId,
         victimName = getPlayerDisplayName(targetActor),
         timestamp = os.clock(),
-    })
+    }
+    if isRevengeKill then
+        payload.killSource = "Revenge"
+        payload.isRevengeKill = true
+    end
+
+    self._killInfoFeedbackEvent:FireAllClients(payload)
 end
 
-function HealthService:_handleActorKill(targetActor, sourceActor)
+function HealthService:_handleActorKill(targetActor, sourceActor, options)
     if sourceActor and not ActorUtils.IsSameActor(sourceActor, targetActor) then
         if ActorUtils.IsPlayer(sourceActor) and ActorUtils.IsPlayer(targetActor) then
             self._playerStateService:AwardPlayerKillReward(sourceActor, targetActor)
             self._playerStateService:AddRebirthScore(sourceActor, GameConfig.REBIRTH.PlayerKillScoreReward)
-            self:_fireKillInfoFeedback(targetActor, sourceActor)
+            self:_fireKillInfoFeedback(targetActor, sourceActor, options)
             if self._gameAnalyticsService then
                 self._gameAnalyticsService:TrackCustom(sourceActor, "PlayerKilled", 1, {
                     source = "player",
@@ -757,7 +803,7 @@ function HealthService:ApplyWeaponDamage(targetActor, damage, sourceActor)
     return true, didKill, remainingHealthAfterDamage
 end
 
-function HealthService:KillActor(targetActor, sourceActor)
+function HealthService:KillActor(targetActor, sourceActor, options)
     if not targetActor then
         return false, false, nil
     end
@@ -775,8 +821,93 @@ function HealthService:KillActor(targetActor, sourceActor)
     self._playerStateService:SyncHumanoidHealth(targetActor)
     self:_updateShieldOverheadUi(targetActor)
     self._playerStateService:PushState(targetActor)
-    self:_handleActorKill(targetActor, sourceActor)
+    self:_handleActorKill(targetActor, sourceActor, options)
     return true, true, 0
+end
+
+function HealthService:_runSyntheticStudioDefeatedTest(player)
+    if not RunService:IsStudio() then
+        return false, "StudioOnly"
+    end
+    if not (
+        ActorUtils.IsPlayer(player)
+        and player.Parent
+        and self._playerStateService
+        and self._respawnService
+        and self._deathFeedbackEvent
+        and self._respawnService._nextDeathSerial
+        and self._respawnService._captureCombatSnapshot
+        and self._respawnService._recordPlayerDefeat
+    ) then
+        return false, "ServiceUnavailable"
+    end
+
+    local state = self._playerStateService:GetState(player)
+    if not (state and state.Alive == true) then
+        return false, "AlreadyDead"
+    end
+
+    local victimLevel = math.clamp(
+        math.floor(tonumber(state.Level) or GameConfig.PLAYER.BaseLevel),
+        GameConfig.PLAYER.BaseLevel,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
+    local deathSerial = self._respawnService:_nextDeathSerial(player)
+    state.CurrentHealth = 0
+    state.Alive = false
+    self:_clearDamageTracking(player)
+    self:_removeRecoverEffect(player)
+    self:_removeShieldEffect(player)
+    self._playerStateService:SyncHumanoidHealth(player)
+    self:_updateShieldOverheadUi(player)
+    self._playerStateService:PushState(player)
+
+    if self._playerStateService.RecordDeath then
+        self._playerStateService:RecordDeath(player)
+    end
+    local combatSnapshot = self._respawnService:_captureCombatSnapshot(player, deathSerial)
+    self._playerStateService:ResetCombatState(player)
+    if self._respawnService._weaponService and self._respawnService._weaponService.ClearPlayerWeapons then
+        self._respawnService._weaponService:ClearPlayerWeapons(player)
+    end
+    self._playerStateService:PushState(player)
+    self._respawnService:_recordPlayerDefeat(player, nil, deathSerial, combatSnapshot)
+
+    self._deathFeedbackEvent:FireClient(player, {
+        reason = "GMTestDefeated",
+        killerUserId = 0,
+        killer = {
+            userId = 0,
+            name = "GM Test Killer",
+            level = victimLevel,
+            killCount = 0,
+            totalPlayerKills = 0,
+        },
+        victimLevel = victimLevel,
+        freeRespawnLevel = getHalfFreeRespawnLevel(victimLevel),
+        timestamp = os.clock(),
+    })
+    return true, "Synthetic"
+end
+
+function HealthService:RunStudioDefeatedTest(player)
+    if not RunService:IsStudio() then
+        return false, "StudioOnly"
+    end
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false, "InvalidPlayer"
+    end
+
+    local killer = findStudioTestKiller(self._playerStateService, player)
+    if killer then
+        local success, didKill = self:KillActor(player, killer)
+        if success and didKill then
+            return true, "KilledByPlayer", killer
+        end
+        return false, "KillFailed", killer
+    end
+
+    return self:_runSyntheticStudioDefeatedTest(player)
 end
 
 function HealthService:ResetPlayerHealth(actor)

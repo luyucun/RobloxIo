@@ -5,12 +5,12 @@
 
 项目名称: IO项目
 当前版本: V3.0
-文档更新时间: 2026-04-26
+文档更新时间: 2026-06-05
 同步依据: 当前 Release 目录代码。
 
 一、架构定位
 1.当前架构以服务端为玩法真值。
-2.核心状态由 `PlayerStateService` 管理：Level、Experience、Health、WeaponTier、WeaponCount、KillCount、TotalPlayerKills、Diamonds、Buffs、IsInArena、Alive，以及订阅/商店/每日免费复活等持久领取状态。
+2.核心状态由 `PlayerStateService` 管理：Level、Experience、Health、WeaponTier、WeaponCount、KillCount、TotalPlayerKills、Diamonds、Buffs、IsInArena、Alive，以及订阅/商店等持久领取状态。
 3.武器生成、武器碰撞、玩家伤害、小怪伤害、经验结算、Buff 生效、死亡和排行榜均由服务端判定。
 4.客户端当前主要通过 `WeaponFxController` 消费 `WeaponStateSync`，为所有真实玩家创建更顺滑的武器视觉副本；服务端武器实例继续保留为碰撞和伤害真值。
 
@@ -74,13 +74,15 @@
 - 处理武器环绕、武器残骸、武器损毁、玩家武器表现状态广播；客户端用同步数据渲染玩家可见的平滑视觉副本，Bot 仍使用服务端实例表现。
 6.`RespawnService`
 - 处理玩家/Bot 死亡后的战斗状态重置、武器清理和 Bot 延迟重生。
-- 处理 Defeated 免费复活、付费保级复活与普通关闭复活的服务端权威判定；每日免费保级复活只在本次会话首死、死亡前等级小于 30、且当天未使用时生效。
+- 玩家死亡后会保持死亡并等待 Defeated 面板按钮，不再按任何倒计时自动复活；非玩家来源死亡也走 Defeated，但无复仇目标。
+- 处理 Defeated 免费半等级复活、付费保级复活与 Lobby 回大厅复活的服务端权威判定；免费复活和 Lobby 回大厅复活均为 `max(1, floor(死亡前等级 / 2))`，经验和局内击杀数不恢复。
+- 玩家在 Defeated 死亡状态离线时，保存 `DefeatedHalfLevel` 快照；下次登录在大厅按半等级复活，该快照不受普通战场临时快照 30 分钟过期限制。
 - 玩家复活后再次进战场时，会显式标记为 `IsRevive = true`，避免误走首次入场的 60 秒新手护盾分支。
 7.`BuffService`
 - 管理 DamageMultiplier Buff 的生成、触碰拾取、状态写入和伤害倍率查询。
 8.`HealthService`
 - 处理受伤、Buff 伤害倍率、死亡、击杀计数、死亡反馈和重生入口。
-- 死亡反馈会附带 Defeated 免费复活是否可用、对应死亡前等级等客户端展示字段，但最终资格仍以 `RespawnService` 服务端判定为准。
+- 死亡反馈会附带 Defeated 免费半等级复活的目标等级展示字段；非玩家击杀来源使用 `userId = 0` 占位击杀者，客户端隐藏 Revenge，最终资格仍以 `RespawnService` 服务端判定为准。
 - `GrantShield` 只负责护盾时长叠加与表现同步，护盾时长由入场入口决定，不改动原有叠加规则。
 9.`CombatService`
 - 每帧扫描战斗区 Actor。
@@ -92,7 +94,7 @@
 - 接收客户端私有普通小怪击杀/攻击事件，做战斗区状态校验、限速、重复击杀过滤，并按 `MonsterCatalog` 校验定义与结算经验、重生积分。
 12.`MonsterService`
 - 当前只保留 Boss 运行体服务端逻辑。
-- 普通小怪由客户端 `LocalMonsterController` 按 `MonsterCatalog` 权重随机私有生成、AI、受击和销毁。
+- 普通小怪由客户端 `LocalMonsterController` 按 `MonsterCatalog` 权重随机私有生成、AI、受击和销毁；所有已生成普通小怪都在所属客户端物化为可见模型，Dormant 小怪静默但不隐藏，`LocalMaxCombatActiveMonsters` 只限制追击/攻击/模拟的活跃数量。
 - Boss 仍处理目标获取、脱战待机、追击、接触伤害、受武器伤害、死亡掉落经验和 Boss 掉 Buff。
 13.`BossService`
 - 按时间间隔调用 `MonsterService:SpawnMonster` 生成 Boss，并广播 Boss 反馈。
@@ -116,6 +118,7 @@
 2.线上环境继续使用正式库名：`IO_PlayerRebirth_v1`、`IO_GlobalPlaytime_v1`、`IO_GlobalKills_v1`，避免正式数据因改名断档。
 3.如果以后确实需要 Studio 跨次持久化测试，必须只打开 `GameConfig.DATASTORE.StudioPersistenceEnabled`，并写入 `Studio_` 前缀的独立 Store。
 4.未来新增 GM、清档、发资源、刷等级、调试命令等功能时，入口必须显式检查 `RunService:IsStudio()`；线上环境必须直接拒绝执行。
+5.当前 Studio GM 命令 `/testdefeated` 和 `/defeated` 只用于模拟当前玩家进入 Defeated 死亡状态；线上环境必须拒绝执行。
 
 六、初始化顺序
 `MainServer` 当前初始化顺序：
@@ -148,9 +151,9 @@
 4.武器对战：
 `CombatService:_stepCombat -> Aura 盒体命中检测 -> TierIndex 比较 -> WeaponService:HandleBrokenWeapon -> WeaponStateSync -> CombatFeedback`
 5.武器打玩家：
-`CombatService:_stepCombat -> Aura 盒体命中玩家半径 -> CombatService:_applyWeaponVsActor -> HealthService:ApplyWeaponDamage -> SyncHumanoidHealth -> PlayerStateSync -> 玩家击杀时 AwardPlayerKillReward 增加 TotalPlayerKills 和 Diamonds / DeathFeedback(附带免费复活展示字段) / RespawnService`
+`CombatService:_stepCombat -> Aura 盒体命中玩家半径 -> CombatService:_applyWeaponVsActor -> HealthService:ApplyWeaponDamage -> SyncHumanoidHealth -> PlayerStateSync -> 玩家击杀时 AwardPlayerKillReward 增加 TotalPlayerKills 和 Diamonds / DeathFeedback(附带免费半等级复活展示字段) / RespawnService`
 6.小怪：
-`MonsterService:_maintainPopulation -> SpawnMonster -> 怪物碰撞组/怪物间分离 -> 攻击范围内锁定最近 Arena Actor -> 超出脱战距离则清空目标并待机 -> 接触伤害 -> 受武器 Aura 伤害 -> 掉经验`
+`LocalMonsterController:_maintainPopulation -> 请求 LocalMonsterSpawnToken -> 按 MonsterCatalog 权重本地生成普通小怪 -> 全部物化为所属客户端可见模型 -> Dormant 静默待机 / CombatActive 预算内追击攻击 -> 本地武器命中 -> LocalMonsterRewardService 校验攻击/击杀 -> 服务端结算经验 -> 击杀者客户端播放经验块表现`
 7.Boss/Buff：
 `BossService:_step -> MonsterService:SpawnMonster(IsBoss) -> Boss 死亡 -> DropExperience + BuffService:DropBuffs -> BuffService:ApplyDamageBuff`
 8.排行榜：
@@ -205,6 +208,9 @@
 8.`ArenaProgressController` 负责监听 `ArenaProgressSync` 和本地 `PlayerStateSync`，只有本地玩家在战场且存活时显示 `PlayerGui.Main.Progress`，并按服务端同步的场内玩家等级区间渲染头像位置。
 9.`TopStatsController` 负责监听 `PlayerStateSync`，以原始整数显示永久击杀数和钻石数，并在钻石增加时播放客户端飞入动画；客户端不决定数值增减。
 10.`ShopController` 负责商店页面打开/关闭、购买入口绑定、领奖弹框表现，以及商店 Skin 商品名称上 `Secret1` / `Secret2` 渐变的首尾衔接循环流动。
+11.`DefeatedController` 负责监听 `DeathFeedback` 打开 Defeated 面板，隐藏倒计时 UI，展示免费半等级复活目标等级，并通过 Marketplace 产品信息实时刷新 Revenge / Revive 的 RMoney 价格。
+12.`DefeatedController` 点击 FreeRespawn、Lobby、Close、Revive、Revenge 时只发送意图或触发购买；复活等级、复仇目标、离线快照和是否允许 Revenge 均由服务端判定。
+13.`LocalMonsterController` 负责普通小怪本地私有生成和显示：所有生成小怪均物化为所属客户端可见模型，Dormant 小怪保持静默可见，只有 CombatActive 小怪参与追击、攻击、动画和模拟预算。
 
 =====================================================
 文档结束

@@ -423,10 +423,13 @@ local function normalizeSavedData(data)
         local level = math.floor(tonumber(savedCombatSnapshot.level) or 0)
         local experience = math.max(0, math.floor(tonumber(savedCombatSnapshot.experience) or 0))
         local maxAge = math.max(1, tonumber(GameConfig.REBIRTH.CombatSnapshotMaxAgeSeconds) or 1800)
-        if restoreEligible and savedAt > 0 and level >= 1 and (os.time() - savedAt) <= maxAge then
+        local respawnMode = tostring(savedCombatSnapshot.respawnMode or "")
+        local bypassMaxAge = respawnMode == "DefeatedHalfLevel"
+        if restoreEligible and savedAt > 0 and level >= 1 and (bypassMaxAge or (os.time() - savedAt) <= maxAge) then
             combatSnapshot = {
                 schemaVersion = math.max(1, math.floor(tonumber(savedCombatSnapshot.schemaVersion) or 1)),
                 restoreEligible = true,
+                respawnMode = respawnMode,
                 savedAt = savedAt,
                 level = math.clamp(level, 1, GameConfig.PLAYER.MaxSupportedLevel),
                 experience = experience,
@@ -526,6 +529,12 @@ function RebirthService:_awardNewPlayerBadge(player)
     end
 end
 
+function RebirthService:_syncSkinStateAfterLoad(player)
+    if self._skinService and self._skinService.SyncState and player and player.Parent then
+        self._skinService:SyncState(player)
+    end
+end
+
 function RebirthService:_loadPlayer(player)
     if not (player and player.Parent and self._playerStateService) then
         return
@@ -544,6 +553,7 @@ function RebirthService:_loadPlayer(player)
         self:_awardNewPlayerBadge(player)
         self._loadStateByUserId[userId] = "Loaded"
         self._loadRetryClockByUserId[userId] = nil
+        self:_syncSkinStateAfterLoad(player)
         self._savedProgressCacheByUserId[userId] = {
             snapshot = buildProgressSnapshot(rebirth, rebirthScore, highestLevelReached, savedProgress),
             clock = os.clock(),
@@ -581,6 +591,7 @@ function RebirthService:_loadPlayer(player)
     end
     self._loadStateByUserId[userId] = "Loaded"
     self._loadRetryClockByUserId[userId] = nil
+    self:_syncSkinStateAfterLoad(player)
     if self._gameAnalyticsService and self._gameAnalyticsService.MarkOnce and self._gameAnalyticsService:MarkOnce(player, "Onboarding.PlayerDataReady") then
         self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 2, "PlayerDataReady", {
             source = "data",
@@ -616,6 +627,8 @@ function RebirthService:_buildSavePayload(player, options)
             level = math.max(1, math.floor(tonumber(state.Level) or GameConfig.PLAYER.BaseLevel)),
             experience = math.max(0, math.floor(tonumber(state.Experience) or 0)),
         }
+    elseif self._respawnService and self._respawnService.GetOfflineRespawnSaveSnapshot then
+        combatSnapshot = self._respawnService:GetOfflineRespawnSaveSnapshot(player)
     end
 
     local payload = {
@@ -1100,6 +1113,9 @@ end
 
 function RebirthService:OnPlayerRemoving(player)
     self:_savePlayer(player, { includeCombatSnapshot = self._shutdownInProgress == true })
+    if self._respawnService and self._respawnService.ClearOfflineRespawnSaveSnapshot then
+        self._respawnService:ClearOfflineRespawnSaveSnapshot(player)
+    end
     if self._sevenDayLoginRewardService and self._sevenDayLoginRewardService.OnPlayerRemoving then
         self._sevenDayLoginRewardService:OnPlayerRemoving(player)
     end

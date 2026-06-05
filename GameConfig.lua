@@ -155,7 +155,7 @@ GameConfig.PERFORMANCE = {
 
 GameConfig.ANALYTICS = {
     Enabled = true,
-    StudioDebugPrint = true,
+    StudioDebugPrint = false,
     StudioSendToRoblox = false,
     LiveDebugPrint = false,
     CustomEventSampleRate = 1,
@@ -209,7 +209,7 @@ GameConfig.MONSTER = {
     BossTemplateName = "Boss001",
     ClientOwnedNormalMonsters = true,
     ServerPopulationEnabled = false,
-    MaxActiveCount = 300,
+    MaxActiveCount = 350,
     SpawnIntervalSeconds = 0.5,
     MaxSpawnPerInterval = 16,
     PreloadSpawnIntervalSeconds = 0.1,

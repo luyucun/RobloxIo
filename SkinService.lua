@@ -342,6 +342,7 @@ function SkinService:_fireFeedback(player, eventType, reason, skin, itemType)
         skinId = normalizedItemType == "Skin" and skin and skin.Id or nil,
         trailId = normalizedItemType == "Trail" and skin and skin.Id or nil,
         titleId = normalizedItemType == "Title" and skin and skin.Id or nil,
+        titleIconImage = normalizedItemType == "Title" and skin and skin.IconImage or nil,
         title = normalizedItemType == "Title" and TitleConfig.CopyForClient(skin) or nil,
         state = self:BuildStatePayload(player),
         timestamp = os.clock(),

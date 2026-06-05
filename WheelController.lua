@@ -44,8 +44,8 @@ WheelController._connections = {}
 WheelController._buttonBindings = {}
 WheelController._mainGui = nil
 WheelController._panel = nil
-WheelController._wheelIcon = nil
-WheelController._wheelIconClickButton = nil
+WheelController._wheelEntry = nil
+WheelController._wheelEntryClickButton = nil
 WheelController._wheelColorBg = nil
 WheelController._wheelClaim = nil
 WheelController._wheelClaimTemplate = nil
@@ -333,12 +333,18 @@ function WheelController:_disconnectButtonBindings()
     table.clear(self._buttonBindings)
 end
 
-function WheelController:_ensureWheelIconClickButton()
-    if not (self._wheelIcon and self._wheelIcon:IsA("GuiObject")) then
+function WheelController:_ensureWheelEntryClickButton()
+    if not (self._wheelEntry and self._wheelEntry:IsA("GuiObject")) then
         return nil
     end
 
-    local clickButton = self._wheelIcon:FindFirstChild("WheelClickButton")
+    for _, descendant in ipairs(self._wheelEntry:GetDescendants()) do
+        if descendant:IsA("GuiButton") then
+            return descendant
+        end
+    end
+
+    local clickButton = self._wheelEntry:FindFirstChild("WheelClickButton")
     if clickButton and clickButton:IsA("TextButton") then
         return clickButton
     end
@@ -351,8 +357,8 @@ function WheelController:_ensureWheelIconClickButton()
     clickButton.AutoButtonColor = false
     clickButton.Size = UDim2.fromScale(1, 1)
     clickButton.Position = UDim2.fromScale(0, 0)
-    clickButton.ZIndex = self._wheelIcon.ZIndex + 10
-    clickButton.Parent = self._wheelIcon
+    clickButton.ZIndex = self._wheelEntry.ZIndex + 10
+    clickButton.Parent = self._wheelEntry
     return clickButton
 end
 
@@ -913,9 +919,9 @@ function WheelController:_bindUi(silent)
     end
 
     local panel = mainGui:FindFirstChild("WheelBg")
-    local wheelIconRoot = mainGui:FindFirstChild("WheelIcon")
-    local wheelIcon = wheelIconRoot and wheelIconRoot:FindFirstChild("Wheel")
-    if not (panel and wheelIcon and panel:IsA("GuiObject") and wheelIcon:IsA("GuiObject")) then
+    local leftRoot = mainGui:FindFirstChild("Left")
+    local wheelEntry = leftRoot and leftRoot:FindFirstChild("Wheel")
+    if not (panel and wheelEntry and panel:IsA("GuiObject") and wheelEntry:IsA("GuiObject")) then
         if not silent then
             self:_queueBindRetry()
         end
@@ -924,13 +930,13 @@ function WheelController:_bindUi(silent)
 
     self:_disconnectButtonBindings()
     self._panel = panel
-    self._wheelIcon = wheelIcon
-    self._wheelIconClickButton = self:_ensureWheelIconClickButton()
+    self._wheelEntry = wheelEntry
+    self._wheelEntryClickButton = self:_ensureWheelEntryClickButton()
     self._wheelColorBg = panel:FindFirstChild("WheelColorBg")
     self._wheelClaim = mainGui:FindFirstChild("WheelClaim")
     self._wheelClaimTemplate = self._wheelClaim and self._wheelClaim:FindFirstChild("GiftTemplate")
     self._wheelClaimGiftSourceRoot = self:_findWheelClaimGiftSourceRoot()
-    self._infoText = findDescendant(wheelIconRoot, "Text")
+    self._infoText = findDescendant(wheelEntry, "Text")
     local freeCountdownRoot = panel:FindFirstChild("FreeCountDownTime")
     local remainingRoot = panel:FindFirstChild("RemainingTime")
     self._freeCountdownText = freeCountdownRoot and freeCountdownRoot:FindFirstChild("Time")
@@ -950,12 +956,16 @@ function WheelController:_bindUi(silent)
     if self._wheelClaimTemplate and self._wheelClaimTemplate:IsA("GuiObject") then
         self._wheelClaimTemplate.Visible = false
     end
+    local wheelIconRoot = mainGui:FindFirstChild("WheelIcon")
+    if wheelIconRoot and wheelIconRoot:IsA("GuiObject") then
+        wheelIconRoot.Visible = false
+    end
 
-    if self._wheelIconClickButton then
-        self:_bindButton(self._wheelIconClickButton, function()
+    if self._wheelEntryClickButton then
+        self:_bindButton(self._wheelEntryClickButton, function()
             self:_setOpen(true)
         end, {
-            ScaleTarget = wheelIcon,
+            ScaleTarget = wheelEntry,
             HoverScale = ICON_HOVER_SCALE,
             PressScale = ICON_PRESS_SCALE,
         })
@@ -1001,7 +1011,7 @@ function WheelController:_queueBindRetry()
             task.wait(0.5)
         until os.clock() >= deadline
         self._bindRetryQueued = false
-        warn("[WheelController] Could not find PlayerGui/Main/WheelBg and WheelIcon.")
+        warn("[WheelController] Could not find PlayerGui/Main/WheelBg and Left.Wheel.")
     end)
 end
 
@@ -1105,8 +1115,8 @@ function WheelController:Init(dependencies)
     end
 
     table.insert(self._connections, RunService.RenderStepped:Connect(function(deltaTime)
-        if self._wheelIcon and self._wheelIcon.Parent then
-            self._wheelIcon.Rotation = (self._wheelIcon.Rotation + (ICON_ROTATION_SPEED * deltaTime)) % 360
+        if self._wheelEntry and self._wheelEntry.Parent then
+            self._wheelEntry.Rotation = (self._wheelEntry.Rotation + (ICON_ROTATION_SPEED * deltaTime)) % 360
         end
         self:_updateSpinSegmentSound()
         self:_refreshTexts()

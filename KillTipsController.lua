@@ -224,6 +224,23 @@ local function restoreImageVisibility(root)
     end
 end
 
+local function shouldShowRevengeMarker(payload)
+    return payload and (payload.isRevengeKill == true or payload.killSource == "Revenge") or false
+end
+
+local function setMarkerVisible(root, markerName, visible)
+    local marker = root:FindFirstChild(markerName, true)
+    if marker and marker:IsA("GuiObject") then
+        marker.Visible = visible
+    end
+end
+
+local function applyKillSourceMarkers(root, payload)
+    local showRevengeMarker = shouldShowRevengeMarker(payload)
+    setMarkerVisible(root, "Icon", showRevengeMarker)
+    setMarkerVisible(root, "Revenge", showRevengeMarker)
+end
+
 local function configureTextLabel(root, text)
     local label = root:FindFirstChild("KillInfo", true)
     if not isTextObject(label) then
@@ -357,6 +374,7 @@ function KillTipsController:_createTip(payload)
     clone.LayoutOrder = 0
     clone.Parent = self._template.Parent
     restoreImageVisibility(clone)
+    applyKillSourceMarkers(clone, payload)
     configureTextLabel(clone, formatKillText(payload))
 
     local targets = captureTransparencyTargets(clone)

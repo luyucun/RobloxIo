@@ -11,6 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 
@@ -45,6 +46,7 @@ SkinController._localPlayer = nil
 SkinController._connections = {}
 SkinController._buttonBindings = {}
 SkinController._itemButtonBindings = {}
+SkinController._skinRegionConnections = {}
 SkinController._itemFrames = {}
 SkinController._tabButtons = {}
 SkinController._pageFrames = {}
@@ -63,6 +65,7 @@ SkinController._titleUnlockOriginalPosition = nil
 SkinController._titleUnlockCanClose = false
 SkinController._titleUnlockSerial = 0
 SkinController._titleUnlockInputConnection = nil
+SkinController._titleUnlockImageGuardConnection = nil
 SkinController._requestStateEvent = nil
 SkinController._stateSyncEvent = nil
 SkinController._requestPurchaseEvent = nil
@@ -71,6 +74,8 @@ SkinController._feedbackEvent = nil
 SkinController._playerStateSyncEvent = nil
 SkinController._latestState = { skins = {}, equippedSkinId = nil, trails = {}, equippedTrailId = nil, titles = {}, equippedTitleId = nil, hasUnseenTitleUnlock = false }
 SkinController._latestStateTimestamp = 0
+SkinController._listRenderDirty = true
+SkinController._lastPlayerCosmeticSignature = nil
 SkinController._pendingEquipRequest = nil
 SkinController._pendingTrailEquipRequest = nil
 SkinController._pendingTitleEquipRequest = nil
@@ -80,6 +85,8 @@ SkinController._panelAnimationSerial = 0
 SkinController._isPanelOpen = false
 SkinController._wheelController = nil
 SkinController._sevenDayLoginRewardController = nil
+SkinController._skinRegionBindSerial = 0
+SkinController._lastSkinRegionOpenClock = 0
 
 local HOVER_SCALE = 1.05
 local PRESS_SCALE = 0.92
@@ -95,6 +102,8 @@ local OPEN_OVERSHOOT_DURATION = 0.16
 local OPEN_SETTLE_DURATION = 0.1
 local CLOSE_TO_SCALE = 0.78
 local CLOSE_SHRINK_DURATION = 0.14
+local SKIN_REGION_WAIT_SECONDS = 30
+local SKIN_REGION_TOUCH_COOLDOWN_SECONDS = 1
 local EQUIP_REQUEST_TIMEOUT_SECONDS = 4
 local EQUIP_DUPLICATE_DEBOUNCE_SECONDS = 0.25
 local TRAIL_ROW_VERTICAL_SCALE_STEP = 0.22
@@ -253,6 +262,140 @@ local function setImage(imageObject, image)
     end
 end
 
+local function normalizeTitleId(value)
+    local titleId = math.floor(tonumber(value) or 0)
+    if titleId > 0 then
+        return titleId
+    end
+    return nil
+end
+
+local function firstNonEmptyString(...)
+    for index = 1, select("#", ...) do
+        local value = select(index, ...)
+        if value ~= nil and tostring(value) ~= "" then
+            return tostring(value)
+        end
+    end
+    return ""
+end
+
+local function toTitlePopupImage(image)
+    local sourceImage = tostring(image or "")
+    if sourceImage == "" then
+        return sourceImage
+    end
+
+    if sourceImage:match("^%d+$") then
+        return "rbxassetid://" .. sourceImage
+    end
+
+    return sourceImage
+end
+
+local function resolveTitleUnlockData(payload)
+    local payloadTable = type(payload) == "table" and payload or {}
+    local titlePayload = type(payloadTable.title) == "table" and payloadTable.title or payloadTable
+    local titleId = normalizeTitleId(payloadTable.titleId)
+        or normalizeTitleId(payloadTable.TitleId)
+        or normalizeTitleId(titlePayload.id)
+        or normalizeTitleId(titlePayload.titleId)
+        or normalizeTitleId(titlePayload.Id)
+        or normalizeTitleId(titlePayload.TitleId)
+    local config = titleId and TitleConfig.GetTitle(titleId) or nil
+    local sourceImage = firstNonEmptyString(
+        config and config.IconImage,
+        titlePayload.iconImage,
+        titlePayload.IconImage,
+        titlePayload.titleIconImage,
+        titlePayload.image,
+        titlePayload.Image,
+        payloadTable.titleIconImage,
+        payloadTable.iconImage,
+        payloadTable.IconImage
+    )
+
+    return {
+        id = titleId,
+        name = firstNonEmptyString(config and config.Name, titlePayload.name, titlePayload.Name, payloadTable.name, payloadTable.Name),
+        description = firstNonEmptyString(
+            config and config.Description,
+            config and config.UnlockConditionText,
+            titlePayload.description,
+            titlePayload.Description,
+            titlePayload.unlockConditionText,
+            titlePayload.UnlockConditionText,
+            payloadTable.description,
+            payloadTable.unlockConditionText,
+            config and config.Name,
+            titlePayload.name,
+            titlePayload.Name
+        ),
+        sourceImage = sourceImage,
+        displayImage = toTitlePopupImage(sourceImage),
+    }
+end
+
+local function findTitleUnlockImageObject(popup)
+    if not popup then
+        return nil
+    end
+
+    local imageObject = popup:FindFirstChild("Titleimage")
+    if not imageObject then
+        imageObject = popup:FindFirstChild("Titleimage", true)
+    end
+    if imageObject and (imageObject:IsA("ImageLabel") or imageObject:IsA("ImageButton")) then
+        return imageObject
+    end
+
+    warn("[SkinController][TitleUnlock] Missing ImageLabel/ImageButton named Titleimage.")
+    return nil
+end
+
+local function findTitleUnlockDescriptionObject(popup)
+    if not popup then
+        return nil
+    end
+
+    local descriptionObject = popup:FindFirstChild("Des")
+    if not descriptionObject then
+        descriptionObject = popup:FindFirstChild("Des", true)
+    end
+    if descriptionObject and (descriptionObject:IsA("TextLabel") or descriptionObject:IsA("TextButton") or descriptionObject:IsA("TextBox")) then
+        return descriptionObject
+    end
+
+    warn("[SkinController][TitleUnlock] Missing text object named Des.")
+    return nil
+end
+
+local function applyTitleUnlockPopupContent(popup, titleData)
+    local data = type(titleData) == "table" and titleData or resolveTitleUnlockData(nil)
+    local imageObject = findTitleUnlockImageObject(popup)
+    local descriptionObject = findTitleUnlockDescriptionObject(popup)
+
+    if imageObject then
+        imageObject.Image = ""
+        imageObject.ImageTransparency = 0
+        imageObject.BackgroundTransparency = 1
+        imageObject.ScaleType = Enum.ScaleType.Fit
+        imageObject.Visible = data.displayImage ~= ""
+        imageObject.Image = data.displayImage
+    end
+    setText(descriptionObject, data.description)
+
+    print(string.format(
+        "[SkinController][TitleUnlock] titleId=%s sourceImage=%s displayImage=%s imagePath=%s actualImage=%s",
+        tostring(data.id or "nil"),
+        tostring(data.sourceImage or ""),
+        tostring(data.displayImage or ""),
+        imageObject and imageObject:GetFullName() or "nil",
+        imageObject and imageObject.Image or ""
+    ))
+    return data, imageObject
+end
+
 local function normalizeOptionalSkinId(value)
     local skinId = math.floor(tonumber(value) or 0)
     if skinId > 0 then
@@ -275,6 +418,44 @@ local function normalizeOptionalTitleId(value)
         return titleId
     end
     return nil
+end
+
+local function compareIdStrings(left, right)
+    local leftNumber = tonumber(left)
+    local rightNumber = tonumber(right)
+    if leftNumber and rightNumber and leftNumber ~= rightNumber then
+        return leftNumber < rightNumber
+    end
+    return left < right
+end
+
+local function appendOwnedIdsSignature(parts, label, ownedMap)
+    table.insert(parts, label)
+    table.insert(parts, "=")
+    if type(ownedMap) == "table" then
+        local ids = {}
+        for id, owned in pairs(ownedMap) do
+            if owned == true then
+                table.insert(ids, tostring(id))
+            end
+        end
+        table.sort(ids, compareIdStrings)
+        table.insert(parts, table.concat(ids, ","))
+    end
+    table.insert(parts, ";")
+end
+
+local function buildPlayerCosmeticSignature(payload)
+    local parts = {
+        "skin=", tostring(normalizeOptionalSkinId(payload.equippedSkinId) or ""), ";",
+        "trail=", tostring(normalizeOptionalTrailId(payload.equippedTrailId) or ""), ";",
+        "title=", tostring(normalizeOptionalTitleId(payload.equippedTitleId) or ""), ";",
+        "unseen=", payload.hasUnseenTitleUnlock == true and "1" or "0", ";",
+    }
+    appendOwnedIdsSignature(parts, "ownedSkins", payload.ownedSkins)
+    appendOwnedIdsSignature(parts, "ownedTrails", payload.ownedTrails)
+    appendOwnedIdsSignature(parts, "ownedTitles", payload.ownedTitles)
+    return table.concat(parts)
 end
 
 local function playTween(binding, key, target, tweenInfo, goal)
@@ -313,6 +494,13 @@ function SkinController:_disconnectTitleUnlockInput()
         self._titleUnlockInputConnection:Disconnect()
     end
     self._titleUnlockInputConnection = nil
+end
+
+function SkinController:_disconnectTitleUnlockImageGuard()
+    if self._titleUnlockImageGuardConnection and self._titleUnlockImageGuardConnection.Connected then
+        self._titleUnlockImageGuardConnection:Disconnect()
+    end
+    self._titleUnlockImageGuardConnection = nil
 end
 
 function SkinController:_setSkinRedPointVisible(visible)
@@ -461,16 +649,11 @@ function SkinController:_setActiveCustomizationTab(tabName)
         if buttonRoot and buttonRoot:IsA("GuiObject") then
             local idle = buttonRoot:FindFirstChild("IdleBg")
             local selected = buttonRoot:FindFirstChild("SelectedBg")
-            local label = buttonRoot:FindFirstChild("TextLabel")
             if idle then
                 idle.Visible = name ~= normalizedTab
             end
             if selected then
                 selected.Visible = name == normalizedTab
-            end
-            if label and label:IsA("TextLabel") then
-                label.TextColor3 = name == normalizedTab and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(115, 83, 18)
-                label.TextStrokeTransparency = name == normalizedTab and 0.35 or 0.72
             end
         end
     end
@@ -540,6 +723,7 @@ function SkinController:_setPanelOpen(isOpen, immediate)
     if self._isPanelOpen then
         ModalUiController:Acquire("Skin", self._panel)
         self._panel.Visible = true
+        self:_renderListOnOpen()
         self:_setSkinRedPointVisible(false)
         if self._requestStateEvent then
             self._requestStateEvent:FireServer({
@@ -604,6 +788,103 @@ function SkinController:_setPanelOpen(isOpen, immediate)
     end)
 end
 
+function SkinController:_openSkinPanelFromEntry()
+    if not self._panel then
+        self:_bindUi(true)
+    end
+    self:_setPanelOpen(true)
+end
+
+function SkinController:_disconnectSkinRegion()
+    self._skinRegionBindSerial += 1
+    disconnectAll(self._skinRegionConnections)
+end
+
+function SkinController:_findSkinRegion()
+    local map2 = Workspace:WaitForChild("Map2", SKIN_REGION_WAIT_SECONDS)
+    if not map2 then
+        return nil
+    end
+
+    local machines = map2:WaitForChild("Machines", SKIN_REGION_WAIT_SECONDS)
+    if not machines then
+        return nil
+    end
+
+    local custom = machines:WaitForChild("Custom", SKIN_REGION_WAIT_SECONDS)
+    if not custom then
+        return nil
+    end
+
+    return custom:WaitForChild("SquareRegion", SKIN_REGION_WAIT_SECONDS)
+end
+
+function SkinController:_isLocalCharacterPart(part)
+    local character = self._localPlayer and self._localPlayer.Character
+    return part and character and part:IsDescendantOf(character) or false
+end
+
+function SkinController:_handleSkinRegionTouched(hit)
+    if not self:_isLocalCharacterPart(hit) then
+        return
+    end
+    if self._isPanelOpen then
+        return
+    end
+
+    local now = os.clock()
+    if now - (self._lastSkinRegionOpenClock or 0) < SKIN_REGION_TOUCH_COOLDOWN_SECONDS then
+        return
+    end
+    self._lastSkinRegionOpenClock = now
+
+    self:_openSkinPanelFromEntry()
+end
+
+function SkinController:_bindSkinRegionPart(part, serial)
+    if not (part and part:IsA("BasePart")) then
+        return
+    end
+
+    table.insert(self._skinRegionConnections, part.Touched:Connect(function(hit)
+        if self._skinRegionBindSerial ~= serial then
+            return
+        end
+        self:_handleSkinRegionTouched(hit)
+    end))
+end
+
+function SkinController:_bindSkinRegion(region, serial)
+    if not region or self._skinRegionBindSerial ~= serial then
+        return
+    end
+
+    self:_bindSkinRegionPart(region, serial)
+    for _, descendant in ipairs(region:GetDescendants()) do
+        self:_bindSkinRegionPart(descendant, serial)
+    end
+
+    table.insert(self._skinRegionConnections, region.DescendantAdded:Connect(function(descendant)
+        if self._skinRegionBindSerial ~= serial then
+            return
+        end
+        self:_bindSkinRegionPart(descendant, serial)
+    end))
+end
+
+function SkinController:_connectSkinRegion()
+    self:_disconnectSkinRegion()
+    local serial = self._skinRegionBindSerial
+
+    task.spawn(function()
+        local region = self:_findSkinRegion()
+        if self._skinRegionBindSerial ~= serial then
+            return
+        end
+        self:_bindSkinRegion(region, serial)
+    end)
+end
+
 function SkinController:_closeTitleUnlockPopup()
     if not (self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject")) then
         return
@@ -613,6 +894,7 @@ function SkinController:_closeTitleUnlockPopup()
     end
 
     self:_disconnectTitleUnlockInput()
+    self:_disconnectTitleUnlockImageGuard()
     self._titleUnlockCanClose = false
     self._titleUnlockSerial += 1
     self._titleUnlockPopup.Visible = false
@@ -622,7 +904,7 @@ function SkinController:_closeTitleUnlockPopup()
     ModalUiController:Release("TitleUnlock")
 end
 
-function SkinController:_playTitleUnlockPopup(title)
+function SkinController:_playTitleUnlockPopup(payload)
     if not (self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject")) then
         self:_bindUi(true)
     end
@@ -632,12 +914,11 @@ function SkinController:_playTitleUnlockPopup(title)
     end
 
     self:_disconnectTitleUnlockInput()
+    self:_disconnectTitleUnlockImageGuard()
     self._titleUnlockCanClose = false
     self._titleUnlockSerial += 1
     local serial = self._titleUnlockSerial
-
-    setImage(self._titleUnlockPopup:FindFirstChild("Titleimage", true), title and title.iconImage)
-    setText(self._titleUnlockPopup:FindFirstChild("Des", true), title and (title.description or title.unlockConditionText or title.name) or "")
+    local titleData = resolveTitleUnlockData(payload)
 
     local originalPosition = self._titleUnlockOriginalPosition or self._titleUnlockPopup.Position
     self._titleUnlockOriginalPosition = originalPosition
@@ -649,6 +930,45 @@ function SkinController:_playTitleUnlockPopup(title)
     )
     ModalUiController:Acquire("TitleUnlock", self._titleUnlockPopup)
     self._titleUnlockPopup.Visible = true
+    if ModalUiController.DeactivateDormantRoot then
+        ModalUiController:DeactivateDormantRoot(self._titleUnlockPopup)
+    end
+
+    local resolvedTitleData, titleImageObject = applyTitleUnlockPopupContent(self._titleUnlockPopup, titleData)
+    if titleImageObject and (resolvedTitleData.displayImage or "") ~= "" then
+        local expectedImage = resolvedTitleData.displayImage
+        self._titleUnlockImageGuardConnection = titleImageObject:GetPropertyChangedSignal("Image"):Connect(function()
+            if self._titleUnlockSerial ~= serial or not (titleImageObject and titleImageObject.Parent) then
+                return
+            end
+            if titleImageObject.Image ~= expectedImage then
+                warn(string.format(
+                    "[SkinController][TitleUnlock] Image changed after apply; restoring titleId=%s expected=%s actual=%s",
+                    tostring(resolvedTitleData.id or "nil"),
+                    tostring(expectedImage),
+                    tostring(titleImageObject.Image)
+                ))
+                titleImageObject.Image = expectedImage
+            end
+        end)
+        task.defer(function()
+            for _ = 1, 15 do
+                task.wait(0.2)
+                if self._titleUnlockSerial ~= serial or not (titleImageObject and titleImageObject.Parent) then
+                    return
+                end
+                if titleImageObject.Image ~= expectedImage then
+                    warn(string.format(
+                        "[SkinController][TitleUnlock] Image guard tick restored titleId=%s expected=%s actual=%s",
+                        tostring(resolvedTitleData.id or "nil"),
+                        tostring(expectedImage),
+                        tostring(titleImageObject.Image)
+                    ))
+                    titleImageObject.Image = expectedImage
+                end
+            end
+        end)
+    end
     TweenService:Create(self._titleUnlockPopup, TweenInfo.new(TITLE_UNLOCK_OPEN_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
         Position = originalPosition,
     }):Play()
@@ -784,7 +1104,7 @@ function SkinController:_setLocalEquippedSkinId(equippedSkinId)
     for _, entry in ipairs(self._latestState.skins or {}) do
         entry.equipped = normalizedEquippedSkinId ~= nil and normalizeOptionalSkinId(entry.id) == normalizedEquippedSkinId
     end
-    self:_renderList()
+    self:_renderListIfVisible()
 end
 
 function SkinController:_setLocalEquippedTrailId(equippedTrailId)
@@ -794,7 +1114,7 @@ function SkinController:_setLocalEquippedTrailId(equippedTrailId)
     for _, entry in ipairs(self._latestState.trails or {}) do
         entry.equipped = normalizedEquippedTrailId ~= nil and normalizeOptionalTrailId(entry.id) == normalizedEquippedTrailId
     end
-    self:_renderList()
+    self:_renderListIfVisible()
 end
 
 function SkinController:_setLocalEquippedTitleId(equippedTitleId)
@@ -804,7 +1124,7 @@ function SkinController:_setLocalEquippedTitleId(equippedTitleId)
     for _, entry in ipairs(self._latestState.titles or {}) do
         entry.equipped = normalizedEquippedTitleId ~= nil and normalizeOptionalTitleId(entry.id) == normalizedEquippedTitleId
     end
-    self:_renderList()
+    self:_renderListIfVisible()
 end
 
 function SkinController:_shouldIgnoreIncomingSkinState(equippedSkinId)
@@ -1250,6 +1570,20 @@ function SkinController:_renderList()
     end
 end
 
+function SkinController:_renderListIfVisible()
+    if self._isPanelOpen and self._panel and self._panel:IsA("GuiObject") and self._panel.Visible == true then
+        self._listRenderDirty = false
+        self:_renderList()
+        return
+    end
+    self._listRenderDirty = true
+end
+
+function SkinController:_renderListOnOpen()
+    self._listRenderDirty = false
+    self:_renderList()
+end
+
 function SkinController:_applyState(payload)
     if type(payload) ~= "table" then
         return
@@ -1308,7 +1642,7 @@ function SkinController:_applyState(payload)
         self._latestStateTimestamp = timestamp
     end
     self:_setSkinRedPointVisible(payload.hasUnseenTitleUnlock == true)
-    self:_renderList()
+    self:_renderListIfVisible()
 end
 
 function SkinController:_applyPlayerState(payload)
@@ -1316,7 +1650,26 @@ function SkinController:_applyPlayerState(payload)
         return
     end
 
-    local equippedSkinId = tonumber(payload.equippedSkinId)
+    local timestamp = tonumber(payload.timestamp)
+    if timestamp and timestamp < (self._latestStateTimestamp or 0) then
+        return
+    end
+
+    local cosmeticSignature = buildPlayerCosmeticSignature(payload)
+    if cosmeticSignature == self._lastPlayerCosmeticSignature then
+        if timestamp then
+            self._latestStateTimestamp = timestamp
+        end
+        if self._latestState then
+            self._latestState.hasUnseenTitleUnlock = payload.hasUnseenTitleUnlock == true
+        end
+        self:_setSkinRedPointVisible(payload.hasUnseenTitleUnlock == true)
+        return
+    end
+
+    self._lastPlayerCosmeticSignature = cosmeticSignature
+    local equippedSkinId = normalizeOptionalSkinId(payload.equippedSkinId)
+    local ownedSkins = type(payload.ownedSkins) == "table" and payload.ownedSkins or {}
     local skins = {}
     for _, skin in ipairs(SkinConfig.GetAllSkins()) do
         table.insert(skins, {
@@ -1326,11 +1679,12 @@ function SkinController:_applyPlayerState(payload)
             purchaseChannel = skin.PurchaseChannel,
             diamondPrice = skin.DiamondPrice,
             gamePassId = skin.GamePassId,
-            owned = type(payload.ownedSkins) == "table" and payload.ownedSkins[tostring(skin.Id)] == true,
+            owned = ownedSkins[tostring(skin.Id)] == true,
             equipped = equippedSkinId == skin.Id,
         })
     end
-    local equippedTrailId = tonumber(payload.equippedTrailId)
+    local equippedTrailId = normalizeOptionalTrailId(payload.equippedTrailId)
+    local ownedTrails = type(payload.ownedTrails) == "table" and payload.ownedTrails or {}
     local trails = {}
     for _, trail in ipairs(TrailConfig.GetAllTrails()) do
         table.insert(trails, {
@@ -1340,11 +1694,12 @@ function SkinController:_applyPlayerState(payload)
             diamondPrice = trail.DiamondPrice,
             robuxPrice = trail.RobuxPrice,
             productId = trail.ProductId,
-            owned = type(payload.ownedTrails) == "table" and payload.ownedTrails[tostring(trail.Id)] == true,
+            owned = ownedTrails[tostring(trail.Id)] == true,
             equipped = equippedTrailId == trail.Id,
         })
     end
-    local equippedTitleId = tonumber(payload.equippedTitleId)
+    local equippedTitleId = normalizeOptionalTitleId(payload.equippedTitleId)
+    local ownedTitles = type(payload.ownedTitles) == "table" and payload.ownedTitles or {}
     local titles = {}
     for _, title in ipairs(TitleConfig.GetAllTitles()) do
         table.insert(titles, {
@@ -1353,7 +1708,7 @@ function SkinController:_applyPlayerState(payload)
             description = title.Description,
             unlockConditionText = title.UnlockConditionText,
             iconImage = title.IconImage,
-            owned = type(payload.ownedTitles) == "table" and payload.ownedTitles[tostring(title.Id)] == true,
+            owned = ownedTitles[tostring(title.Id)] == true,
             equipped = equippedTitleId == title.Id,
         })
     end
@@ -1424,13 +1779,13 @@ function SkinController:_handleFeedback(payload)
 
     local reason = tostring(payload.reason or "")
     if eventType == "Unlocked" and isTitle then
-        self:_playTitleUnlockPopup(payload.title or {})
+        self:_playTitleUnlockPopup(payload)
         self:_setSkinRedPointVisible(true)
     elseif eventType == "Purchased" then
         self:_notify(isTrail and "Trail unlocked." or "Skin unlocked.")
     elseif eventType == "Granted" then
         if isTitle then
-            self:_playTitleUnlockPopup(payload.title or {})
+            self:_playTitleUnlockPopup(payload)
             self:_setSkinRedPointVisible(true)
         else
             self:_notify(isTrail and "Trail unlocked." or "Skin unlocked.")
@@ -1548,7 +1903,7 @@ function SkinController:_bindUi(silent)
     local entryScaleTarget = self:_resolveEntryScaleTarget()
     local entryRotationTarget = self:_resolveEntryRotationTarget()
     self:_bindButton(leftButton, function()
-        self:_setPanelOpen(true)
+        self:_openSkinPanelFromEntry()
     end, {
         ScaleTarget = entryScaleTarget or leftButton,
         HoverScale = ENTRY_HOVER_SCALE,
@@ -1566,7 +1921,7 @@ function SkinController:_bindUi(silent)
     })
 
     self:_bindCustomizationTabs(panel)
-    self:_renderList()
+    self:_renderListIfVisible()
     return true
 end
 
@@ -1630,6 +1985,10 @@ function SkinController:Init(dependencies)
     self._sevenDayLoginRewardController = dependencies and dependencies.SevenDayLoginRewardController or nil
     self._activeTab = "Skins"
     self._latestStateTimestamp = 0
+    self._isPanelOpen = false
+    self._listRenderDirty = true
+    self._lastPlayerCosmeticSignature = nil
+    self._lastSkinRegionOpenClock = 0
     self._pendingEquipRequest = nil
     self._pendingTrailEquipRequest = nil
     self._pendingTitleEquipRequest = nil
@@ -1639,12 +1998,14 @@ function SkinController:Init(dependencies)
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
     self:_disconnectItemButtonBindings()
+    self:_disconnectSkinRegion()
     self:_clearItems()
 
     self:_connectRemotes()
     if not self:_bindUi(true) then
         self:_queueBindRetry()
     end
+    self:_connectSkinRegion()
 
     local playerGui = self._localPlayer and self._localPlayer:FindFirstChild("PlayerGui")
     if playerGui then

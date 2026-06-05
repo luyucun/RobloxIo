@@ -2087,7 +2087,32 @@ end
 function LocalMonsterController:_getMonsterWakeDistance(monsterState)
     local attackRange = getMonsterValue(monsterState, "AttackRange", GameConfig.MONSTER.AttackRange)
     local aggroRadius = getMonsterValue(monsterState, "AggroRadius", GameConfig.MONSTER.AggroRadius)
-    return math.max(0, attackRange, aggroRadius)
+    attackRange = tonumber(attackRange) or 0
+    if attackRange > 0 then
+        return attackRange
+    end
+    return math.max(0, tonumber(aggroRadius) or 0)
+end
+
+function LocalMonsterController:_getMonsterPlayerAttackDistanceSq(monsterState)
+    if not (monsterState and typeof(monsterState.Position) == "Vector3") then
+        return nil
+    end
+
+    local contactRadius = getMonsterValue(monsterState, "ContactRadius", GameConfig.MONSTER.ContactRadius)
+    for _, weaponSnapshot in ipairs(self._localWeaponHitSnapshots or {}) do
+        local weaponPosition = weaponSnapshot.Position
+        if typeof(weaponPosition) == "Vector3" then
+            local reach = math.max(0, tonumber(weaponSnapshot.Reach) or 0) + contactRadius
+            local delta = monsterState.Position - weaponPosition
+            local distanceSq = (delta.X * delta.X) + (delta.Z * delta.Z)
+            if distanceSq <= reach * reach then
+                return distanceSq
+            end
+        end
+    end
+
+    return nil
 end
 
 function LocalMonsterController:_setMonsterActivityState(monsterState, activityState)
@@ -2140,6 +2165,7 @@ function LocalMonsterController:_refreshMonsterActivityStates(rootPosition)
             local delta = monsterState.Position - rootPosition
             local distanceSq = (delta.X * delta.X) + (delta.Z * delta.Z)
             local wakeDistance = self:_getMonsterWakeDistance(monsterState)
+            local weaponDistanceSq = self:_getMonsterPlayerAttackDistanceSq(monsterState)
             local sleepDistance = wakeDistance + sleepPadding
             local isActive = self:_isMonsterCombatActive(monsterState)
             if isActive then
@@ -2147,20 +2173,21 @@ function LocalMonsterController:_refreshMonsterActivityStates(rootPosition)
                     self:_setMonsterActivityState(monsterState, "CombatActive")
                     isActive = self:_isMonsterCombatActive(monsterState)
                 end
-                if distanceSq > sleepDistance * sleepDistance then
+                local sleepRangeSq = sleepDistance * sleepDistance
+                if distanceSq > sleepRangeSq and not weaponDistanceSq then
                     self:_setMonsterActivityState(monsterState, "Dormant")
                     isActive = false
                 else
                     table.insert(candidates, {
                         MonsterState = monsterState,
-                        DistanceSq = distanceSq,
+                        DistanceSq = weaponDistanceSq or distanceSq,
                         Sticky = true,
                     })
                 end
-            elseif distanceSq <= wakeDistance * wakeDistance then
+            elseif distanceSq <= wakeDistance * wakeDistance or weaponDistanceSq then
                 table.insert(candidates, {
                     MonsterState = monsterState,
-                    DistanceSq = distanceSq,
+                    DistanceSq = weaponDistanceSq or distanceSq,
                     Sticky = false,
                 })
             end
@@ -2857,6 +2884,7 @@ function LocalMonsterController:_step(deltaTime)
         return
     end
 
+    self:_refreshLocalWeaponHitSnapshots()
     local activeCount = self:_refreshMonsterActivityStates(rootPosition)
     if activeCount <= 0 then
         if startedAt then
@@ -2870,7 +2898,6 @@ function LocalMonsterController:_step(deltaTime)
     end
 
     local grid = self:_buildCombatActiveSpatialGrid()
-    self:_refreshLocalWeaponHitSnapshots()
     local nearDistance = getLocalVisualNearDistance()
     local nearDistanceSq = nearDistance * nearDistance
     local farSimulationStride = getLocalFarSimulationStride()

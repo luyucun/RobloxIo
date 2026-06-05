@@ -30,7 +30,6 @@ local function requireSharedModule(moduleName)
 end
 
 local GameConfig = requireSharedModule("GameConfig")
-local SubscriptionConfig = requireSharedModule("SubscriptionConfig")
 
 local RespawnService = {}
 
@@ -47,7 +46,7 @@ RespawnService._deathSerialByActorId = {}
 RespawnService._defeatRecordsByUserId = {}
 RespawnService._arenaRevivePendingByUserId = {}
 RespawnService._arenaReviveOptionsByUserId = {}
-RespawnService._hasDiedThisSessionByUserId = {}
+RespawnService._offlineRespawnSaveSnapshotByUserId = {}
 
 local function getActorId(actor)
     return ActorUtils.GetActorId(actor)
@@ -58,6 +57,66 @@ local function getUserId(actor)
         return actor.UserId
     end
     return 0
+end
+
+local function getHalfFreeRespawnLevel(combatSnapshot)
+    local preDeathLevel = math.clamp(
+        math.floor(tonumber(combatSnapshot and combatSnapshot.preDeathLevel) or GameConfig.PLAYER.BaseLevel),
+        GameConfig.PLAYER.BaseLevel,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
+    return math.clamp(
+        math.floor(preDeathLevel / 2),
+        GameConfig.PLAYER.BaseLevel,
+        GameConfig.PLAYER.MaxSupportedLevel
+    )
+end
+
+local function buildHalfLevelRespawnSnapshot(combatSnapshot)
+    if type(combatSnapshot) ~= "table" then
+        return nil
+    end
+
+    return {
+        preDeathLevel = getHalfFreeRespawnLevel(combatSnapshot),
+        preDeathExperience = GameConfig.PLAYER.BaseExperience,
+        preDeathKillCount = 0,
+    }
+end
+
+local function buildOfflineRespawnSaveSnapshot(combatSnapshot)
+    local halfLevelSnapshot = buildHalfLevelRespawnSnapshot(combatSnapshot)
+    if not halfLevelSnapshot then
+        return nil
+    end
+
+    return {
+        schemaVersion = 1,
+        restoreEligible = true,
+        respawnMode = "DefeatedHalfLevel",
+        savedAt = os.time(),
+        level = halfLevelSnapshot.preDeathLevel,
+        experience = halfLevelSnapshot.preDeathExperience,
+    }
+end
+
+local function copyOfflineRespawnSaveSnapshot(snapshot)
+    if type(snapshot) ~= "table" then
+        return nil
+    end
+
+    return {
+        schemaVersion = math.max(1, math.floor(tonumber(snapshot.schemaVersion) or 1)),
+        restoreEligible = snapshot.restoreEligible == true,
+        respawnMode = tostring(snapshot.respawnMode or ""),
+        savedAt = math.max(0, math.floor(tonumber(snapshot.savedAt) or os.time())),
+        level = math.clamp(
+            math.floor(tonumber(snapshot.level) or GameConfig.PLAYER.BaseLevel),
+            GameConfig.PLAYER.BaseLevel,
+            GameConfig.PLAYER.MaxSupportedLevel
+        ),
+        experience = math.max(0, math.floor(tonumber(snapshot.experience) or GameConfig.PLAYER.BaseExperience)),
+    }
 end
 
 function RespawnService:_nextDeathSerial(actor)
@@ -103,54 +162,6 @@ function RespawnService:IsDefeatRecordForCurrentDeath(player, defeatRecord)
 
     return defeatRecord
         and tonumber(defeatRecord.deathSerial) == self:_getDeathSerial(player)
-end
-
-function RespawnService:_getDailyFreeReviveConfig()
-    local respawnConfig = GameConfig.RESPAWN or {}
-    return tostring(respawnConfig.DailyFreeReviveClaimKey or "DefeatedDailyFreeRevive"),
-        math.max(1, math.floor(tonumber(respawnConfig.DailyFreeReviveLevelMaxExclusive) or 30))
-end
-
-function RespawnService:_buildDailyFreeReviveStatus(player, combatSnapshot, isFirstDeathThisSession)
-    if not (ActorUtils.IsPlayer(player) and self._playerStateService and type(combatSnapshot) == "table") then
-        return {
-            eligible = false,
-        }
-    end
-
-    local claimKey, levelMaxExclusive = self:_getDailyFreeReviveConfig()
-    local utcDay = SubscriptionConfig.GetCurrentUtcDay()
-    local preDeathLevel = math.max(1, math.floor(tonumber(combatSnapshot.preDeathLevel) or GameConfig.PLAYER.BaseLevel))
-    local alreadyClaimed = self._playerStateService.HasDailyFreeReviveClaim
-        and self._playerStateService:HasDailyFreeReviveClaim(player, claimKey, utcDay) == true
-        or false
-    local eligible = isFirstDeathThisSession == true
-        and preDeathLevel < levelMaxExclusive
-        and not alreadyClaimed
-
-    return {
-        eligible = eligible,
-        claimKey = claimKey,
-        utcDay = utcDay,
-        level = preDeathLevel,
-        levelMaxExclusive = levelMaxExclusive,
-        alreadyClaimed = alreadyClaimed,
-    }
-end
-
-function RespawnService:PeekDailyFreeReviveStatus(player)
-    if not ActorUtils.IsPlayer(player) then
-        return {
-            eligible = false,
-        }
-    end
-
-    local userId = getUserId(player)
-    local state = self._playerStateService and self._playerStateService:GetState(player) or nil
-    local combatSnapshot = state and {
-        preDeathLevel = state.Level,
-    } or nil
-    return self:_buildDailyFreeReviveStatus(player, combatSnapshot, userId > 0 and self._hasDiedThisSessionByUserId[userId] ~= true)
 end
 
 function RespawnService:_setArenaRevivePending(player, options)
@@ -275,33 +286,106 @@ function RespawnService:RevivePlayer(player)
     return self:_revivePlayerNow(player)
 end
 
-function RespawnService:_schedulePlayerRevive(player, delaySeconds, deathSerial)
-    task.delay(math.max(0, tonumber(delaySeconds) or 0), function()
-        if not (player and player.Parent) then
-            return
-        end
-        if self:_getDeathSerial(player) ~= deathSerial then
-            return
-        end
+function RespawnService:_finishLobbyRevive(player, halfLevelSnapshot)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false
+    end
 
-        local defeatRecord = self:GetDefeatRecord(player)
-        if defeatRecord and defeatRecord.deathSerial == deathSerial and defeatRecord.revengePending == true then
-            return
-        end
+    self:_clearArenaRevivePending(player)
+    if self._weaponService and self._weaponService.ClearPlayerWeapons then
+        self._weaponService:ClearPlayerWeapons(player)
+    end
 
-        local state = self._playerStateService and self._playerStateService:GetState(player) or nil
-        if state and state.Alive == true and state.IsInArena == true then
-            return
-        end
-        if self._gameAnalyticsService and self:IsDefeatRecordForCurrentDeath(player, defeatRecord) then
-            self._gameAnalyticsService:TrackCustom(player, "AutoRespawned", 1, {
-                source = "defeated",
-            })
-        end
-        self:_revivePlayerNow(player, {
-            preserveDefeatRecord = defeatRecord and defeatRecord.revivePurchasePending == true or false,
+    if halfLevelSnapshot and self._playerStateService.RestoreCombatProgress then
+        local restored = self._playerStateService:RestoreCombatProgress(player, halfLevelSnapshot, {
+            restoreFullHealth = true,
+            rebuildWeapons = false,
+            restoreToLobby = true,
         })
-    end)
+        if not restored then
+            return false
+        end
+    else
+        local state = self._playerStateService:GetState(player)
+        state.Alive = true
+        state.IsInArena = false
+        state.Buffs = {}
+        state.MaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
+        state.CurrentHealth = state.MaxHealth
+        self._playerStateService:SyncCharacterState(player)
+        self._playerStateService:UpdateOverheadHealthBar(player)
+        self._playerStateService:PushState(player)
+    end
+
+    if self._arenaService and self._arenaService.TeleportPlayerToSpawnLocation then
+        return self._arenaService:TeleportPlayerToSpawnLocation(player) == true
+    end
+    return true
+end
+
+function RespawnService:_revivePlayerToLobby(player, defeatRecord)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false
+    end
+
+    local halfLevelSnapshot = buildHalfLevelRespawnSnapshot(defeatRecord and defeatRecord.combatSnapshot)
+    self:_clearDefeatRecord(player)
+
+    local humanoid = ActorUtils.GetHumanoid(player)
+    local rootPart = ActorUtils.GetRootPart(player)
+    if not (humanoid and rootPart and humanoid.Health > 0) then
+        local didLoad = pcall(function()
+            player:LoadCharacter()
+        end)
+        if didLoad then
+            task.defer(function()
+                if player and player.Parent and self:_waitForUsableCharacter(player, 3) then
+                    self:_finishLobbyRevive(player, halfLevelSnapshot)
+                end
+            end)
+        end
+        return didLoad == true
+    end
+
+    return self:_finishLobbyRevive(player, halfLevelSnapshot)
+end
+
+function RespawnService:_tryGrantFreeRespawn(player, defeatRecord)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false
+    end
+    if not self:IsCurrentDefeatRecord(player, defeatRecord) then
+        return false
+    end
+
+    local snapshot = defeatRecord.combatSnapshot
+    if type(snapshot) ~= "table" then
+        return false
+    end
+
+    local revived = self:_revivePlayerNow(player, {
+        preserveDefeatRecord = true,
+    })
+    if not revived then
+        return false
+    end
+
+    if self._playerStateService.RestoreCombatProgress then
+        local halfLevelSnapshot = buildHalfLevelRespawnSnapshot(snapshot)
+        self._playerStateService:RestoreCombatProgress(player, halfLevelSnapshot, {
+            restoreFullHealth = true,
+            rebuildWeapons = true,
+        })
+    end
+
+    if self._gameAnalyticsService then
+        self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 5, "FreeRespawnedSuccessfully", {
+            source = "defeated",
+        })
+    end
+
+    self:_clearDefeatRecord(player)
+    return true
 end
 
 function RespawnService:_captureCombatSnapshot(actor, deathSerial)
@@ -330,19 +414,14 @@ function RespawnService:_recordPlayerDefeat(player, sourceActor, deathSerial, co
     end
 
     local killerUserId = ActorUtils.IsPlayer(sourceActor) and sourceActor.UserId or nil
-    local dailyFreeReviveStatus = self:_buildDailyFreeReviveStatus(player, combatSnapshot, combatSnapshot and combatSnapshot.isFirstDeathThisSession == true)
     self._defeatRecordsByUserId[player.UserId] = {
         deathSerial = deathSerial,
         killerUserId = killerUserId,
         killerName = sourceActor and ActorUtils.GetActorName(sourceActor) or "",
         createdAt = os.clock(),
-        expiresAt = os.clock() + math.max(1, tonumber(GameConfig.RESPAWN.PlayerKillReviveCountdownSeconds) or 15),
         revivePurchasePending = false,
         combatSnapshot = combatSnapshot,
-        dailyFreeReviveEligible = dailyFreeReviveStatus.eligible == true,
-        dailyFreeReviveClaimKey = dailyFreeReviveStatus.claimKey,
-        dailyFreeReviveUtcDay = dailyFreeReviveStatus.utcDay,
-        dailyFreeReviveLevel = dailyFreeReviveStatus.level,
+        freeRespawnLevel = getHalfFreeRespawnLevel(combatSnapshot),
         revengePending = false,
         revengePromptClosed = false,
     }
@@ -360,21 +439,12 @@ function RespawnService:HandleActorDeath(actor, sourceActor)
     end
 
     local deathSerial = self:_nextDeathSerial(actor)
-    local wasFirstDeathThisSession = false
     if ActorUtils.IsPlayer(actor) then
-        local userId = getUserId(actor)
-        wasFirstDeathThisSession = userId > 0 and self._hasDiedThisSessionByUserId[userId] ~= true
-        if userId > 0 then
-            self._hasDiedThisSessionByUserId[userId] = true
-        end
         if self._playerStateService and self._playerStateService.RecordDeath then
             self._playerStateService:RecordDeath(actor)
         end
     end
     local combatSnapshot = self:_captureCombatSnapshot(actor, deathSerial)
-    if combatSnapshot then
-        combatSnapshot.isFirstDeathThisSession = wasFirstDeathThisSession == true
-    end
     self._playerStateService:ResetCombatState(actor)
     if self._weaponService then
         self._weaponService:ClearPlayerWeapons(actor)
@@ -384,13 +454,11 @@ function RespawnService:HandleActorDeath(actor, sourceActor)
     if ActorUtils.IsBot(actor) and self._botService then
         self._botService:ScheduleRespawn(actor)
     elseif ActorUtils.IsPlayer(actor) then
-        if ActorUtils.IsPlayer(sourceActor) and not ActorUtils.IsSameActor(actor, sourceActor) then
-            self:_recordPlayerDefeat(actor, sourceActor, deathSerial, combatSnapshot)
-            self:_schedulePlayerRevive(actor, GameConfig.RESPAWN.PlayerKillReviveCountdownSeconds, deathSerial)
-        else
-            self:_clearDefeatRecord(actor)
-            self:_schedulePlayerRevive(actor, GameConfig.RESPAWN.MonsterKillAutoReviveSeconds, deathSerial)
+        local defeatSourceActor = sourceActor
+        if ActorUtils.IsSameActor(actor, defeatSourceActor) then
+            defeatSourceActor = nil
         end
+        self:_recordPlayerDefeat(actor, defeatSourceActor, deathSerial, combatSnapshot)
     end
 end
 
@@ -412,20 +480,17 @@ function RespawnService:_onRequestDefeatedAction(player, action)
     end
 
     if normalizedAction == "Revive" then
+        return
+    elseif normalizedAction == "FreeRespawn" then
         if state.Alive ~= false then
             return
         end
-        self:_revivePlayerNow(player, {
-            preserveDefeatRecord = defeatRecord and defeatRecord.revivePurchasePending == true or false,
-        })
-    elseif normalizedAction == "Close" then
+        self:_tryGrantFreeRespawn(player, defeatRecord)
+    elseif normalizedAction == "Lobby" or normalizedAction == "Close" then
         if state.Alive ~= false then
             return
         end
-        if self:_tryGrantDailyFreeRevive(player, defeatRecord) then
-            return
-        end
-        self:RevivePlayer(player)
+        self:_revivePlayerToLobby(player, defeatRecord)
     elseif normalizedAction == "RevivePurchase" then
         if not self:IsCurrentDefeatRecord(player, defeatRecord) then
             return
@@ -449,22 +514,22 @@ function RespawnService:_onRequestDefeatedAction(player, action)
                 source = "defeated",
             })
         end
-        if state.Alive == false then
-            self:_schedulePlayerRevive(
-                player,
-                math.max(0, (tonumber(defeatRecord.expiresAt) or os.clock()) - os.clock()),
-                defeatRecord.deathSerial
-            )
-        else
+        if state.Alive ~= false then
             self:_clearDefeatRecord(player)
         end
     elseif normalizedAction == "Revenge" then
         if not self:IsCurrentDefeatRecord(player, defeatRecord) then
             return
         end
+        if math.floor(tonumber(defeatRecord.killerUserId) or 0) <= 0 then
+            return
+        end
         defeatRecord.revengePending = true
     elseif normalizedAction == "RevengePromptClosed" then
         if not self:IsCurrentDefeatRecord(player, defeatRecord) then
+            return
+        end
+        if math.floor(tonumber(defeatRecord.killerUserId) or 0) <= 0 then
             return
         end
         defeatRecord.revengePromptClosed = true
@@ -483,74 +548,7 @@ function RespawnService:_onRequestDefeatedAction(player, action)
         if self._revengeService and self._revengeService.CancelPendingRevenge then
             self._revengeService:CancelPendingRevenge(player)
         end
-        self:_schedulePlayerRevive(
-            player,
-            math.max(0, (tonumber(defeatRecord.expiresAt) or os.clock()) - os.clock()),
-            defeatRecord.deathSerial
-        )
     end
-end
-
-function RespawnService:_tryGrantDailyFreeRevive(player, defeatRecord)
-    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
-        return false
-    end
-    if not self:IsCurrentDefeatRecord(player, defeatRecord) then
-        return false
-    end
-    if defeatRecord.dailyFreeReviveEligible ~= true then
-        return false
-    end
-
-    local snapshot = defeatRecord.combatSnapshot
-    if type(snapshot) ~= "table" then
-        return false
-    end
-
-    local claimKey = tostring(defeatRecord.dailyFreeReviveClaimKey or "")
-    local utcDay = tostring(defeatRecord.dailyFreeReviveUtcDay or "")
-    if claimKey == "" or utcDay == "" then
-        return false
-    end
-    if self._playerStateService.HasDailyFreeReviveClaim
-        and self._playerStateService:HasDailyFreeReviveClaim(player, claimKey, utcDay) == true then
-        return false
-    end
-
-    local revived = self:_revivePlayerNow(player, {
-        preserveDefeatRecord = true,
-    })
-    if not revived then
-        return false
-    end
-
-    if not self._playerStateService.RestoreCombatProgress then
-        self:_clearDefeatRecord(player)
-        return true
-    end
-
-    local restored = self._playerStateService:RestoreCombatProgress(player, snapshot, {
-        restoreFullHealth = true,
-        rebuildWeapons = true,
-    })
-    if not restored then
-        self:_clearDefeatRecord(player)
-        return true
-    end
-
-    if not (self._playerStateService.MarkDailyFreeReviveClaim and self._playerStateService:MarkDailyFreeReviveClaim(player, claimKey, utcDay)) then
-        self:_clearDefeatRecord(player)
-        return true
-    end
-
-    if self._gameAnalyticsService then
-        self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 5, "DailyFreeRevivedSuccessfully", {
-            source = "defeated",
-        })
-    end
-
-    self:_clearDefeatRecord(player)
-    return true
 end
 
 function RespawnService:GrantDefeatedRevivePurchase(player)
@@ -620,6 +618,29 @@ function RespawnService:GrantDefeatedRevivePurchase(player)
     return true
 end
 
+function RespawnService:GetOfflineRespawnSaveSnapshot(playerOrUserId)
+    local userId = typeof(playerOrUserId) == "Instance" and getUserId(playerOrUserId) or math.floor(tonumber(playerOrUserId) or 0)
+    if userId <= 0 then
+        return nil
+    end
+
+    local cachedSnapshot = copyOfflineRespawnSaveSnapshot(self._offlineRespawnSaveSnapshotByUserId[userId])
+    if cachedSnapshot then
+        return cachedSnapshot
+    end
+
+    local player = typeof(playerOrUserId) == "Instance" and playerOrUserId or nil
+    local defeatRecord = player and self:GetDefeatRecord(player) or nil
+    return copyOfflineRespawnSaveSnapshot(buildOfflineRespawnSaveSnapshot(defeatRecord and defeatRecord.combatSnapshot))
+end
+
+function RespawnService:ClearOfflineRespawnSaveSnapshot(playerOrUserId)
+    local userId = typeof(playerOrUserId) == "Instance" and getUserId(playerOrUserId) or math.floor(tonumber(playerOrUserId) or 0)
+    if userId > 0 then
+        self._offlineRespawnSaveSnapshotByUserId[userId] = nil
+    end
+end
+
 function RespawnService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._weaponService = dependencies.WeaponService
@@ -633,7 +654,7 @@ function RespawnService:Init(dependencies)
     self._defeatRecordsByUserId = {}
     self._arenaRevivePendingByUserId = {}
     self._arenaReviveOptionsByUserId = {}
-    self._hasDiedThisSessionByUserId = {}
+    self._offlineRespawnSaveSnapshotByUserId = {}
 
     if self._requestDefeatedActionConnection then
         self._requestDefeatedActionConnection:Disconnect()
@@ -647,16 +668,17 @@ function RespawnService:Init(dependencies)
 end
 
 function RespawnService:OnPlayerRemoving(player)
+    local offlineRespawnSnapshot = self:GetOfflineRespawnSaveSnapshot(player)
+    local userId = getUserId(player)
+    if userId > 0 and offlineRespawnSnapshot then
+        self._offlineRespawnSaveSnapshotByUserId[userId] = offlineRespawnSnapshot
+    end
     self:_clearDefeatRecord(player)
     self:_clearArenaRevivePending(player)
     if self._revengeService and self._revengeService.OnPlayerRemoving then
         self._revengeService:OnPlayerRemoving(player)
     end
     self._deathSerialByActorId[getActorId(player)] = nil
-    local userId = getUserId(player)
-    if userId > 0 then
-        self._hasDiedThisSessionByUserId[userId] = nil
-    end
 end
 
 return RespawnService

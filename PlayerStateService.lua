@@ -2683,7 +2683,9 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
             local maxAge = math.max(1, tonumber(GameConfig.REBIRTH.CombatSnapshotMaxAgeSeconds) or 1800)
             local snapshotLevel = math.max(1, math.floor(tonumber(combatSnapshot.level) or 0))
             local snapshotExperience = math.max(0, math.floor(tonumber(combatSnapshot.experience) or 0))
-            if restoreEligible and savedAt > 0 and (os.time() - savedAt) <= maxAge then
+            local respawnMode = tostring(combatSnapshot.respawnMode or "")
+            local bypassMaxAge = respawnMode == "DefeatedHalfLevel"
+            if restoreEligible and savedAt > 0 and (bypassMaxAge or (os.time() - savedAt) <= maxAge) then
                 local restoredLevel = math.clamp(snapshotLevel, 1, GameConfig.PLAYER.MaxSupportedLevel)
                 state.Level = restoredLevel
                 state.Experience = math.min(snapshotExperience, GameConfig.GetNextLevelExperience(restoredLevel))
@@ -2993,6 +2995,7 @@ function PlayerStateService:RestoreCombatProgress(actor, snapshot, options)
         return false
     end
 
+    local restoreToLobby = type(options) == "table" and options.restoreToLobby == true
     local state = self:_getOrCreateState(actor)
     local previousLevel = math.max(1, math.floor(tonumber(state.Level) or GameConfig.PLAYER.BaseLevel))
     local restoredLevel = math.clamp(
@@ -3006,7 +3009,7 @@ function PlayerStateService:RestoreCombatProgress(actor, snapshot, options)
     )
 
     state.Alive = true
-    state.IsInArena = true
+    state.IsInArena = not restoreToLobby
     state.Level = restoredLevel
     state.Experience = restoredExperience
     state.KillCount = math.max(0, math.floor(tonumber(snapshot.preDeathKillCount or state.KillCount) or 0))
@@ -3023,11 +3026,15 @@ function PlayerStateService:RestoreCombatProgress(actor, snapshot, options)
     self:_syncLeaderstats(actor, state)
     self:SyncCharacterState(actor)
     self:UpdateOverheadHealthBar(actor)
-    if type(options) ~= "table" or options.rebuildWeapons ~= false then
+    if not restoreToLobby and (type(options) ~= "table" or options.rebuildWeapons ~= false) then
         if self._weaponService and self._weaponService.RebuildWeaponsForPlayer then
             self._weaponService:RebuildWeaponsForPlayer(actor)
         elseif self._weaponService and self._weaponService.RebuildWeaponsForActor then
             self._weaponService:RebuildWeaponsForActor(actor)
+        end
+    elseif restoreToLobby then
+        if self._weaponService and self._weaponService.ClearPlayerWeapons then
+            self._weaponService:ClearPlayerWeapons(actor)
         end
     end
     self:PushState(actor)

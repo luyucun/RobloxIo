@@ -44,10 +44,10 @@ TitleConfig.Titles = {
     },
     {
         Id = 1005,
-        Name = 'Arena Killer',
+        Name = 'Arena Ruler',
         Description = 'Defeat 100 players in total.',
         UnlockConditionText = 'Defeat 100 players in total.',
-        IconImage = 'rbxassetid://73072779545270',
+        IconImage = 'rbxassetid://74906521445914',
         Condition = { Type = 'TotalPlayerKills', Target = 100 },
     },
     {
