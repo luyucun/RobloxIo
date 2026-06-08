@@ -14,6 +14,7 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local TouchRegionGate = require(script.Parent:WaitForChild("TouchRegionGate"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -86,7 +87,7 @@ SkinController._isPanelOpen = false
 SkinController._wheelController = nil
 SkinController._sevenDayLoginRewardController = nil
 SkinController._skinRegionBindSerial = 0
-SkinController._lastSkinRegionOpenClock = 0
+SkinController._skinRegionGate = nil
 
 local HOVER_SCALE = 1.05
 local PRESS_SCALE = 0.92
@@ -103,7 +104,6 @@ local OPEN_SETTLE_DURATION = 0.1
 local CLOSE_TO_SCALE = 0.78
 local CLOSE_SHRINK_DURATION = 0.14
 local SKIN_REGION_WAIT_SECONDS = 30
-local SKIN_REGION_TOUCH_COOLDOWN_SECONDS = 1
 local EQUIP_REQUEST_TIMEOUT_SECONDS = 4
 local EQUIP_DUPLICATE_DEBOUNCE_SECONDS = 0.25
 local TRAIL_ROW_VERTICAL_SCALE_STEP = 0.22
@@ -709,20 +709,14 @@ function SkinController:_setPanelOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isPanelOpen = false
-            ModalUiController:Release("Skin")
+            ModalUiController:PlayPanelClose("Skin", nil, { Immediate = true })
         end
         return
     end
 
-    local uiScale = ensureUiScale(self._panel)
-    self:_cancelPanelTweens()
-    self._panelAnimationSerial += 1
-    local serial = self._panelAnimationSerial
     self._isPanelOpen = isOpen == true
 
     if self._isPanelOpen then
-        ModalUiController:Acquire("Skin", self._panel)
-        self._panel.Visible = true
         self:_renderListOnOpen()
         self:_setSkinRedPointVisible(false)
         if self._requestStateEvent then
@@ -731,61 +725,15 @@ function SkinController:_setPanelOpen(isOpen, immediate)
                 source = "Skin",
             })
         end
-        if not uiScale or immediate == true then
-            if uiScale then
-                uiScale.Scale = 1
-            end
-            return
-        end
-
-        uiScale.Scale = OPEN_FROM_SCALE
-        local overshoot = TweenService:Create(uiScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Scale = OPEN_OVERSHOOT_SCALE,
+        ModalUiController:PlayPanelOpen("Skin", self._panel, {
+            Immediate = immediate == true,
         })
-        local settle = TweenService:Create(uiScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Scale = 1,
-        })
-        self._panelTweens = { overshoot, settle }
-        task.spawn(function()
-            overshoot:Play()
-            overshoot.Completed:Wait()
-            if self._panelAnimationSerial ~= serial or not self._isPanelOpen then
-                return
-            end
-            settle:Play()
-            settle.Completed:Wait()
-            if self._panelAnimationSerial == serial and self._isPanelOpen and uiScale then
-                uiScale.Scale = 1
-            end
-            table.clear(self._panelTweens)
-        end)
         return
     end
 
-    if not uiScale or immediate == true or self._panel.Visible ~= true then
-        if uiScale then
-            uiScale.Scale = 1
-        end
-        self._panel.Visible = false
-        ModalUiController:Release("Skin")
-        return
-    end
-
-    local shrink = TweenService:Create(uiScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
+    ModalUiController:PlayPanelClose("Skin", self._panel, {
+        Immediate = immediate == true,
     })
-    self._panelTweens = { shrink }
-    task.spawn(function()
-        shrink:Play()
-        shrink.Completed:Wait()
-        if self._panelAnimationSerial ~= serial or self._isPanelOpen then
-            return
-        end
-        uiScale.Scale = 1
-        self._panel.Visible = false
-        table.clear(self._panelTweens)
-        ModalUiController:Release("Skin")
-    end)
 end
 
 function SkinController:_openSkinPanelFromEntry()
@@ -798,6 +746,10 @@ end
 function SkinController:_disconnectSkinRegion()
     self._skinRegionBindSerial += 1
     disconnectAll(self._skinRegionConnections)
+    if self._skinRegionGate then
+        self._skinRegionGate:Stop()
+        self._skinRegionGate = nil
+    end
 end
 
 function SkinController:_findSkinRegion()
@@ -819,39 +771,12 @@ function SkinController:_findSkinRegion()
     return custom:WaitForChild("SquareRegion", SKIN_REGION_WAIT_SECONDS)
 end
 
-function SkinController:_isLocalCharacterPart(part)
-    local character = self._localPlayer and self._localPlayer.Character
-    return part and character and part:IsDescendantOf(character) or false
-end
-
-function SkinController:_handleSkinRegionTouched(hit)
-    if not self:_isLocalCharacterPart(hit) then
-        return
-    end
+function SkinController:_handleSkinRegionEntered()
     if self._isPanelOpen then
         return
     end
 
-    local now = os.clock()
-    if now - (self._lastSkinRegionOpenClock or 0) < SKIN_REGION_TOUCH_COOLDOWN_SECONDS then
-        return
-    end
-    self._lastSkinRegionOpenClock = now
-
     self:_openSkinPanelFromEntry()
-end
-
-function SkinController:_bindSkinRegionPart(part, serial)
-    if not (part and part:IsA("BasePart")) then
-        return
-    end
-
-    table.insert(self._skinRegionConnections, part.Touched:Connect(function(hit)
-        if self._skinRegionBindSerial ~= serial then
-            return
-        end
-        self:_handleSkinRegionTouched(hit)
-    end))
 end
 
 function SkinController:_bindSkinRegion(region, serial)
@@ -859,17 +784,21 @@ function SkinController:_bindSkinRegion(region, serial)
         return
     end
 
-    self:_bindSkinRegionPart(region, serial)
-    for _, descendant in ipairs(region:GetDescendants()) do
-        self:_bindSkinRegionPart(descendant, serial)
+    if self._skinRegionGate then
+        self._skinRegionGate:Stop()
     end
-
-    table.insert(self._skinRegionConnections, region.DescendantAdded:Connect(function(descendant)
-        if self._skinRegionBindSerial ~= serial then
-            return
-        end
-        self:_bindSkinRegionPart(descendant, serial)
-    end))
+    self._skinRegionGate = TouchRegionGate.new({
+        LocalPlayer = self._localPlayer,
+        Region = region,
+        Label = "Skin.SquareRegion",
+        OnEnter = function()
+            if self._skinRegionBindSerial ~= serial then
+                return
+            end
+            self:_handleSkinRegionEntered()
+        end,
+    })
+    self._skinRegionGate:Start()
 end
 
 function SkinController:_connectSkinRegion()
@@ -1988,7 +1917,6 @@ function SkinController:Init(dependencies)
     self._isPanelOpen = false
     self._listRenderDirty = true
     self._lastPlayerCosmeticSignature = nil
-    self._lastSkinRegionOpenClock = 0
     self._pendingEquipRequest = nil
     self._pendingTrailEquipRequest = nil
     self._pendingTitleEquipRequest = nil

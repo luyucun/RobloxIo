@@ -448,78 +448,24 @@ function SubscriptionController:_setOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isOpen = false
-            ModalUiController:Release("SugarClub")
+            ModalUiController:PlayPanelClose("SugarClub", nil, { Immediate = true })
         end
         return
     end
 
-    local uiScale = ensureUiScale(self._panel)
-    self:_cancelPanelTweens()
-    self._panelAnimationSerial += 1
-    local animationSerial = self._panelAnimationSerial
     self._isOpen = isOpen == true
 
     if self._isOpen then
-        ModalUiController:Acquire("SugarClub", self._panel)
-        self._panel.Visible = true
         self:_requestStateSync()
-        if not uiScale or immediate == true then
-            if uiScale then
-                uiScale.Scale = 1
-            end
-            return
-        end
-
-        uiScale.Scale = OPEN_FROM_SCALE
-        local overshootTween = TweenService:Create(uiScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Scale = OPEN_OVERSHOOT_SCALE,
+        ModalUiController:PlayPanelOpen("SugarClub", self._panel, {
+            Immediate = immediate == true,
         })
-        local settleTween = TweenService:Create(uiScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Scale = 1,
-        })
-        self._panelTweens = { overshootTween, settleTween }
-        task.spawn(function()
-            overshootTween:Play()
-            overshootTween.Completed:Wait()
-            if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                return
-            end
-            settleTween:Play()
-            settleTween.Completed:Wait()
-            if self._panelAnimationSerial == animationSerial and self._isOpen and uiScale.Parent then
-                uiScale.Scale = 1
-            end
-        end)
         return
     end
 
-    if not uiScale or immediate == true or not self._panel.Visible then
-        if uiScale then
-            uiScale.Scale = 1
-        end
-        self._panel.Visible = false
-        ModalUiController:Release("SugarClub")
-        return
-    end
-
-    local shrinkTween = TweenService:Create(uiScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
+    ModalUiController:PlayPanelClose("SugarClub", self._panel, {
+        Immediate = immediate == true,
     })
-    self._panelTweens = { shrinkTween }
-    task.spawn(function()
-        shrinkTween:Play()
-        shrinkTween.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-        if uiScale.Parent then
-            uiScale.Scale = 1
-        end
-        if self._panel and self._panel.Parent then
-            self._panel.Visible = false
-        end
-        ModalUiController:Release("SugarClub")
-    end)
 end
 
 function SubscriptionController:_applyState(payload)

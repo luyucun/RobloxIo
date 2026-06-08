@@ -39,6 +39,7 @@ local SkinConfig = requireSharedModule("SkinConfig")
 local TrailConfig = requireSharedModule("TrailConfig")
 local TitleConfig = requireSharedModule("TitleConfig")
 local SubscriptionConfig = requireSharedModule("SubscriptionConfig")
+local AttributeConfig = requireSharedModule("AttributeConfig")
 
 local PlayerStateService = {}
 
@@ -136,6 +137,14 @@ end
 local function getMoveSpeedForLevel(level)
     local normalizedLevel = normalizeLevel(level)
     return math.max(16, 20 - math.floor((normalizedLevel - 1) / 80))
+end
+
+local function copyAttributeFinalStats(stats)
+    local result = {}
+    for key, value in pairs(stats or {}) do
+        result[key] = value
+    end
+    return result
 end
 
 local function normalizeTierIndex(value)
@@ -879,9 +888,14 @@ end
 function PlayerStateService:_applyLevelDerivedState(state)
     state.Level = normalizeLevel(state.Level)
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or state.Level), state.Level)
-    state.MaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
+    self:_normalizeAttributeState(state)
+    local finalStats = state.FinalStats or AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
+    local baseMaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
+    state.BaseMaxHealth = baseMaxHealth
+    state.MaxHealth = math.max(1, math.floor((baseMaxHealth * (tonumber(finalStats.MaxHealthMultiplier) or 1)) + 0.5))
     state.NextLevelExperience = GameConfig.GetNextLevelExperience(state.Level)
-    state.MoveSpeed = getMoveSpeedForLevel(state.Level)
+    state.BaseMoveSpeed = getMoveSpeedForLevel(state.Level)
+    state.MoveSpeed = state.BaseMoveSpeed
     state.Rebirth = math.max(0, math.floor(tonumber(state.Rebirth or state.RespawnCount) or 0))
     state.RespawnCount = nil
     state.RebirthScore = math.max(0, math.floor(tonumber(state.RebirthScore) or 0))
@@ -992,6 +1006,12 @@ function PlayerStateService:_createDefaultState(actor)
         WeaponUnlockRewards = normalizeWeaponUnlockRewards(nil, getMaxUnlockedTierIndexForLevel(GameConfig.PLAYER.BaseLevel)),
         ActivePotions = {},
         ActivePotion = nil,
+        SkillPoints = 0,
+        UsedSkillPoints = 0,
+        MasteryPoints = 0,
+        AttributeLevels = AttributeConfig.BuildDefaultLevels(),
+        AttributeCaps = AttributeConfig.BuildDefaultCaps(),
+        FinalStats = AttributeConfig.CalculateFinalStats(nil, nil),
         SessionStartedAt = os.time(),
         LastOnlineClock = os.clock(),
         Buffs = {},
@@ -999,6 +1019,338 @@ function PlayerStateService:_createDefaultState(actor)
     self:_applyLevelDerivedState(state)
     state.CurrentHealth = state.MaxHealth
     return state
+end
+
+function PlayerStateService:_normalizeAttributeState(state)
+    if not state then
+        return nil
+    end
+
+    state.AttributeCaps = AttributeConfig.NormalizeCaps(state.AttributeCaps)
+    state.AttributeLevels = AttributeConfig.NormalizeLevels(state.AttributeLevels, state.AttributeCaps)
+    state.SkillPoints = math.max(0, math.floor(tonumber(state.SkillPoints) or 0))
+    state.UsedSkillPoints = AttributeConfig.CountUsedPoints(state.AttributeLevels)
+    state.MasteryPoints = math.max(0, math.floor(tonumber(state.MasteryPoints) or 0))
+    state.FinalStats = AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
+    return state
+end
+
+function PlayerStateService:_resetAttributeProgress(state)
+    if not state then
+        return nil
+    end
+
+    state.SkillPoints = 0
+    state.UsedSkillPoints = 0
+    state.AttributeLevels = AttributeConfig.BuildDefaultLevels()
+    state.AttributeCaps = AttributeConfig.NormalizeCaps(state.AttributeCaps)
+    state.MasteryPoints = math.max(0, math.floor(tonumber(state.MasteryPoints) or 0))
+    state.FinalStats = AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
+    return state
+end
+
+function PlayerStateService:_awardSkillPointsForLevelGain(state, previousLevel, newLevel)
+    local levelDelta = math.max(0, math.floor(tonumber(newLevel) or 0) - math.floor(tonumber(previousLevel) or 0))
+    if levelDelta <= 0 then
+        return 0
+    end
+
+    self:_normalizeAttributeState(state)
+    local gainedPoints = levelDelta * math.max(0, math.floor(tonumber(AttributeConfig.SkillPointsPerLevel) or 0))
+    state.SkillPoints = math.max(0, math.floor(tonumber(state.SkillPoints) or 0)) + gainedPoints
+    return gainedPoints
+end
+
+function PlayerStateService:BuildAttributeSnapshot(actor)
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+    return {
+        skillPoints = state.SkillPoints,
+        usedSkillPoints = state.UsedSkillPoints,
+        masteryPoints = state.MasteryPoints,
+        attributeLevels = AttributeConfig.CopyNumberMap(state.AttributeLevels),
+        attributeCaps = AttributeConfig.CopyNumberMap(state.AttributeCaps),
+    }
+end
+
+function PlayerStateService:_applyAttributeSnapshot(state, snapshot)
+    if type(snapshot) ~= "table" then
+        return self:_resetAttributeProgress(state)
+    end
+
+    state.AttributeCaps = AttributeConfig.NormalizeCaps(snapshot.attributeCaps or snapshot.AttributeCaps or state.AttributeCaps)
+    state.AttributeLevels = AttributeConfig.NormalizeLevels(snapshot.attributeLevels or snapshot.AttributeLevels, state.AttributeCaps)
+    state.SkillPoints = math.max(0, math.floor(tonumber(snapshot.skillPoints or snapshot.SkillPoints) or 0))
+    state.MasteryPoints = math.max(0, math.floor(tonumber(snapshot.masteryPoints or snapshot.MasteryPoints or state.MasteryPoints) or 0))
+    state.UsedSkillPoints = AttributeConfig.CountUsedPoints(state.AttributeLevels)
+    state.FinalStats = AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
+    return state
+end
+
+function PlayerStateService:BuildAttributeStatePayload(actor)
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+    return {
+        skillPoints = state.SkillPoints,
+        usedSkillPoints = state.UsedSkillPoints,
+        masteryPoints = state.MasteryPoints,
+        attributeLevels = AttributeConfig.CopyNumberMap(state.AttributeLevels),
+        attributeCaps = AttributeConfig.CopyNumberMap(state.AttributeCaps),
+        finalStats = copyAttributeFinalStats(state.FinalStats),
+    }
+end
+
+function PlayerStateService:GetAttributeCap(actor, attributeKey)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    if not key then
+        return nil
+    end
+
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+    return math.max(0, math.floor(tonumber(state.AttributeCaps[key]) or 0))
+end
+
+function PlayerStateService:SetAttributeCap(actor, attributeKey, cap, context)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    if not key then
+        return false, "InvalidAttribute", "Invalid attribute"
+    end
+
+    local definition = AttributeConfig.GetDefinition(key)
+    local minCap = math.max(0, math.floor(tonumber(definition and definition.InitialCap) or 0))
+    local maxCap = AttributeConfig.GetMaxCap(key)
+    local targetCap = math.clamp(math.floor(tonumber(cap) or minCap), minCap, maxCap)
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+
+    local oldCap = math.max(0, math.floor(tonumber(state.AttributeCaps[key]) or minCap))
+    if oldCap == targetCap then
+        return true, "Unchanged", "Unchanged", targetCap
+    end
+
+    state.AttributeCaps[key] = targetCap
+    state.AttributeLevels = AttributeConfig.NormalizeLevels(state.AttributeLevels, state.AttributeCaps)
+    self:_normalizeAttributeState(state)
+    self:RecalculateDerivedStats(actor, type(context) == "table" and context.recalculateOptions or nil)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true, "Updated", "Updated", targetCap, oldCap
+end
+
+function PlayerStateService:AddAttributeCap(actor, attributeKey, amount, context)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    if not key then
+        return false, "InvalidAttribute", "Invalid attribute"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+    local currentCap = math.max(0, math.floor(tonumber(state.AttributeCaps[key]) or 0))
+    local delta = math.floor(tonumber(amount) or 0)
+    return self:SetAttributeCap(actor, key, currentCap + delta, context)
+end
+
+function PlayerStateService:ResetAttributeCaps(actor)
+    local state = self:_getOrCreateState(actor)
+    state.AttributeCaps = AttributeConfig.BuildDefaultCaps()
+    state.AttributeLevels = AttributeConfig.NormalizeLevels(state.AttributeLevels, state.AttributeCaps)
+    self:_normalizeAttributeState(state)
+    self:RecalculateDerivedStats(actor)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return AttributeConfig.CopyNumberMap(state.AttributeCaps)
+end
+
+function PlayerStateService:MaxAttributeCaps(actor)
+    local state = self:_getOrCreateState(actor)
+    state.AttributeCaps = {}
+    for _, key in ipairs(AttributeConfig.Order) do
+        state.AttributeCaps[key] = AttributeConfig.GetMaxCap(key)
+    end
+    self:_normalizeAttributeState(state)
+    self:RecalculateDerivedStats(actor)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return AttributeConfig.CopyNumberMap(state.AttributeCaps)
+end
+
+function PlayerStateService:TryUpgradeAttributeCapWithDiamonds(actor, attributeKey)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    if not key then
+        return false, "InvalidAttribute", "Invalid attribute"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+    local currentCap = math.max(0, math.floor(tonumber(state.AttributeCaps[key]) or 0))
+    if currentCap >= AttributeConfig.GetMaxCap(key) then
+        return false, "MaxLevel", "Max level reached", currentCap, state.Diamonds
+    end
+
+    if not AttributeConfig.IsCapUpgradeGemEnabled(key, currentCap) then
+        return false, "GemDisabled", "Gem purchase unavailable", currentCap, state.Diamonds
+    end
+
+    local gemCost = AttributeConfig.GetCapUpgradeGemCost(key, currentCap)
+    if not gemCost then
+        return false, "PriceUnavailable", "Price unavailable", currentCap, state.Diamonds
+    end
+
+    local spent, remainingDiamonds = self:TrySpendDiamonds(actor, gemCost, {
+        source = "attribute_cap_upgrade",
+        productGroup = "AttributeCapUpgrade",
+        itemSku = key,
+    })
+    if not spent then
+        return false, "NotEnoughGems", "Not enough gems", currentCap, remainingDiamonds, gemCost
+    end
+
+    local success = self:AddAttributeCap(actor, key, 1, {
+        source = "attribute_cap_upgrade",
+    })
+    if not success then
+        self:AddDiamonds(actor, gemCost, {
+            source = "attribute_cap_upgrade_refund",
+            productGroup = "AttributeCapUpgrade",
+            itemSku = "AttributeCapUpgradeRefund_" .. key,
+        })
+        return false, "UpgradeFailed", "Upgrade failed", currentCap, self:_getOrCreateState(actor).Diamonds, gemCost
+    end
+
+    local newCap = self:GetAttributeCap(actor, key) or currentCap
+    return true, "Upgraded", "Upgraded", newCap, self:_getOrCreateState(actor).Diamonds, gemCost
+end
+
+function PlayerStateService:GrantAttributeCapProduct(actor, attributeKey)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    if not key then
+        return false, "InvalidAttribute", "Invalid attribute"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+    local currentCap = math.max(0, math.floor(tonumber(state.AttributeCaps[key]) or 0))
+    if currentCap >= AttributeConfig.GetMaxCap(key) then
+        local definition = AttributeConfig.GetDefinition(key)
+        local refundFromCap = math.max(
+            math.max(0, math.floor(tonumber(definition and definition.InitialCap) or 0)),
+            AttributeConfig.GetMaxCap(key) - 1
+        )
+        local gemCost = AttributeConfig.GetCapUpgradeGemCost(key, refundFromCap)
+        if gemCost and gemCost > 0 then
+            self:AddDiamonds(actor, gemCost, {
+                source = "attribute_cap_product_max_refund",
+                productGroup = "AttributeCapUpgrade",
+                itemSku = "AttributeCapProductMaxRefund_" .. key,
+            })
+        end
+        return true, "MaxRefunded", "Max level reached", currentCap, self:_getOrCreateState(actor).Diamonds, gemCost or 0
+    end
+
+    local gemCost = AttributeConfig.GetCapUpgradeGemCost(key, currentCap)
+    local success = self:AddAttributeCap(actor, key, 1, {
+        source = "attribute_cap_product",
+    })
+    if not success then
+        return false, "GrantFailed", "Upgrade failed", currentCap, state.Diamonds, gemCost or 0
+    end
+
+    local newCap = self:GetAttributeCap(actor, key) or currentCap
+    return true, "Upgraded", "Upgraded", newCap, self:_getOrCreateState(actor).Diamonds, gemCost or 0
+end
+
+function PlayerStateService:GetAttributeFinalStats(actor)
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+    return state.FinalStats
+end
+
+function PlayerStateService:GetWeaponDamageMultiplier(actor)
+    local finalStats = self:GetAttributeFinalStats(actor)
+    return math.max(0, tonumber(finalStats and finalStats.WeaponDamageMultiplier) or 1)
+end
+
+function PlayerStateService:GetFinalWeaponDamage(actor, baseDamage)
+    return math.max(0, math.floor(((tonumber(baseDamage) or 0) * self:GetWeaponDamageMultiplier(actor)) + 0.5))
+end
+
+function PlayerStateService:GetWeaponOrbitSpeedMultiplier(actor)
+    local finalStats = self:GetAttributeFinalStats(actor)
+    return math.max(0.1, tonumber(finalStats and finalStats.OrbitSpeedMultiplier) or 1)
+end
+
+function PlayerStateService:GetWeaponOrbitDistanceMultiplier(actor)
+    local finalStats = self:GetAttributeFinalStats(actor)
+    return math.max(0.1, tonumber(finalStats and finalStats.OrbitDistanceMultiplier) or 1)
+end
+
+function PlayerStateService:GetHealthRegenPercentPerSecond(actor)
+    local finalStats = self:GetAttributeFinalStats(actor)
+    return math.max(0, tonumber(finalStats and finalStats.HealthRegenPercentPerSecond) or 0)
+end
+
+function PlayerStateService:GetBladeRecoverySeconds(actor)
+    local finalStats = self:GetAttributeFinalStats(actor)
+    return math.max(
+        AttributeConfig.MinBladeRecoverySeconds,
+        tonumber(finalStats and finalStats.BladeRecoverySeconds) or AttributeConfig.BaseBladeRecoverySeconds
+    )
+end
+
+function PlayerStateService:RecalculateDerivedStats(actor, options)
+    local state = self:_getOrCreateState(actor)
+    local previousCurrentHealth = math.floor(tonumber(state.CurrentHealth) or 0)
+    local previousMaxHealth = math.max(1, math.floor(tonumber(state.MaxHealth) or 1))
+    local wasFullHealth = previousCurrentHealth >= previousMaxHealth
+    self:_applyLevelDerivedState(state)
+
+    if (type(options) == "table" and options.restoreFullHealth == true) or wasFullHealth then
+        state.CurrentHealth = state.MaxHealth
+    elseif type(options) == "table" and options.preserveHealthRatio == true then
+        local ratioBaseMaxHealth = math.max(1, math.floor(tonumber(options.previousMaxHealth) or previousMaxHealth))
+        local ratio = math.clamp(previousCurrentHealth / ratioBaseMaxHealth, 0, 1)
+        state.CurrentHealth = math.clamp(math.floor((state.MaxHealth * ratio) + 0.5), 0, state.MaxHealth)
+    else
+        state.CurrentHealth = math.clamp(previousCurrentHealth, 0, state.MaxHealth)
+    end
+
+    self:SyncCharacterState(actor)
+    return state
+end
+
+function PlayerStateService:TryUpgradeAttribute(actor, attributeKey)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    if not key then
+        return false, "InvalidAttribute", "Invalid attribute"
+    end
+
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+    if not (state.Alive == true and state.IsInArena == true) then
+        return false, "NotInBattle", "Enter battle to upgrade"
+    end
+    if state.SkillPoints <= 0 then
+        return false, "NotEnoughPoints", "Not enough points"
+    end
+
+    local currentLevel = math.max(0, math.floor(tonumber(state.AttributeLevels[key]) or 0))
+    local cap = math.max(0, math.floor(tonumber(state.AttributeCaps[key]) or 0))
+    if currentLevel >= cap then
+        return false, "MaxLevel", "Max level reached"
+    end
+
+    state.AttributeLevels[key] = currentLevel + 1
+    state.SkillPoints = math.max(0, state.SkillPoints - 1)
+    self:_normalizeAttributeState(state)
+    self:RecalculateDerivedStats(actor)
+    return true, "Upgraded", "Upgraded"
 end
 
 function PlayerStateService:_getOverheadHealthBarTemplate()
@@ -1487,6 +1839,7 @@ function PlayerStateService:BuildStatePayload(actor)
     self:RefreshOnlineTime(actor, false)
     local activePotion = self:GetActivePotion(actor)
     local activePotions = self:GetActivePotions(actor)
+    local attributeState = self:BuildAttributeStatePayload(actor)
     local potionExperienceBonus = self:GetPotionExperienceBonus(actor)
     local potionMoveSpeedBonus = self:GetPotionMoveSpeedBonus(actor)
     local friendExperienceBonus = math.max(0, tonumber(state.FriendExperienceBonus) or 0)
@@ -1592,6 +1945,13 @@ function PlayerStateService:BuildStatePayload(actor)
         friendExperienceBonus = friendExperienceBonus,
         friendBonusPercent = math.floor((friendExperienceBonus * 100) + 0.5),
         friendCount = friendCount,
+        skillPoints = attributeState.skillPoints,
+        usedSkillPoints = attributeState.usedSkillPoints,
+        masteryPoints = attributeState.masteryPoints,
+        attributeLevels = attributeState.attributeLevels,
+        attributeCaps = attributeState.attributeCaps,
+        attributeFinalStats = attributeState.finalStats,
+        attributeState = attributeState,
         totalExperienceMultiplier = self:GetExperienceMultiplier(actor),
         isInArena = state.IsInArena,
         alive = state.Alive,
@@ -2448,7 +2808,8 @@ function PlayerStateService:GetExperienceMultiplier(actor)
     local potionBonus = self:GetPotionExperienceBonus(actor)
     local friendBonus = math.max(0, tonumber(state.FriendExperienceBonus) or 0)
     local subscriptionBonus = self._subscriptionService and self._subscriptionService.GetExperienceBonus and self._subscriptionService:GetExperienceBonus(actor) or 0
-    return math.max(1, 1 + rebirthBonus + extraBonus + potionBonus + friendBonus + math.max(0, tonumber(subscriptionBonus) or 0))
+    local attributeBonus = math.max(0, tonumber((self:GetAttributeFinalStats(actor) or {}).ExpGainBonus) or 0)
+    return math.max(1, 1 + rebirthBonus + extraBonus + potionBonus + friendBonus + attributeBonus + math.max(0, tonumber(subscriptionBonus) or 0))
 end
 
 function PlayerStateService:GetActivePotions(actor)
@@ -2525,7 +2886,9 @@ end
 
 function PlayerStateService:GetMoveSpeedMultiplier(actor)
     local potionMoveSpeedBonus = self:GetPotionMoveSpeedBonus(actor)
-    return math.max(0.1, 1 + potionMoveSpeedBonus)
+    local finalStats = self:GetAttributeFinalStats(actor) or {}
+    local attributeMoveSpeedBonus = math.max(0, (tonumber(finalStats.MoveSpeedMultiplier) or 1) - 1)
+    return math.max(0.1, 1 + potionMoveSpeedBonus + attributeMoveSpeedBonus)
 end
 
 function PlayerStateService:_countServerFriends(player)
@@ -2664,6 +3027,7 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.EquippedTrailId = normalizeEquippedTrailId(savedProgress.equippedTrailId or savedProgress.EquippedTrailId, state.OwnedTrails)
         state.OwnedTitles = normalizeOwnedTitles(savedProgress.ownedTitles or savedProgress.OwnedTitles)
         state.EquippedTitleId = normalizeEquippedTitleId(savedProgress.equippedTitleId or savedProgress.EquippedTitleId, state.OwnedTitles)
+        state.AttributeCaps = AttributeConfig.NormalizeCaps(savedProgress.attributeCaps or savedProgress.AttributeCaps or state.AttributeCaps)
         state.TotalDeaths = normalizeNonNegativeInteger(savedProgress.totalDeaths or savedProgress.TotalDeaths)
         state.TotalDiamondsEarned = normalizeNonNegativeInteger(savedProgress.totalDiamondsEarned or savedProgress.TotalDiamondsEarned)
         state.TotalOnlineSeconds = normalizeNonNegativeInteger(savedProgress.totalOnlineSeconds or savedProgress.TotalOnlineSeconds)
@@ -2833,6 +3197,7 @@ function PlayerStateService:_addExperience(actor, amount, requireActiveInArena)
     local didLevelUp = state.Level > previousLevel
     local previousMaxHealth = state.MaxHealth
     if didLevelUp then
+        self:_awardSkillPointsForLevelGain(state, previousLevel, state.Level)
         self:_applyLevelDerivedState(state)
         local healthGain = math.max(0, state.MaxHealth - previousMaxHealth)
         state.CurrentHealth = math.min(state.MaxHealth, state.CurrentHealth + healthGain)
@@ -2909,6 +3274,9 @@ function PlayerStateService:SetLevelForStudioCommand(actor, level)
     state.Level = targetLevel
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), targetLevel)
     state.Experience = math.min(math.max(0, math.floor(tonumber(state.Experience) or 0)), GameConfig.GetNextLevelExperience(targetLevel))
+    if targetLevel > previousLevel then
+        self:_awardSkillPointsForLevelGain(state, previousLevel, targetLevel)
+    end
     self:_applyLevelDerivedState(state)
     local maxHealthDelta = state.MaxHealth - previousMaxHealth
     state.CurrentHealth = math.clamp(math.floor(tonumber(state.CurrentHealth) or state.MaxHealth) + maxHealthDelta, 1, state.MaxHealth)
@@ -2961,6 +3329,7 @@ function PlayerStateService:ApplyLevelMultiplier(actor, multiplier)
     state.Level = targetLevel
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), targetLevel)
     state.Experience = math.min(math.max(0, math.floor(tonumber(state.Experience) or 0)), GameConfig.GetNextLevelExperience(targetLevel))
+    self:_awardSkillPointsForLevelGain(state, previousLevel, state.Level)
     self:_applyLevelDerivedState(state)
     local healthGain = math.max(0, state.MaxHealth - previousMaxHealth)
     state.CurrentHealth = math.min(state.MaxHealth, state.CurrentHealth + healthGain)
@@ -3016,6 +3385,7 @@ function PlayerStateService:RestoreCombatProgress(actor, snapshot, options)
     state.MoveSpeed = GameConfig.PLAYER.BaseMoveSpeed
     state.Buffs = {}
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), restoredLevel)
+    self:_applyAttributeSnapshot(state, snapshot.attributeSnapshot or snapshot.attributes)
     self:_applyLevelDerivedState(state)
     if type(options) == "table" and options.restoreFullHealth == false then
         state.CurrentHealth = math.clamp(math.floor(tonumber(state.CurrentHealth) or state.MaxHealth), 1, state.MaxHealth)
@@ -3061,6 +3431,7 @@ function PlayerStateService:ResetCombatState(actor)
     state.MoveSpeed = GameConfig.PLAYER.BaseMoveSpeed
     state.KillCount = 0
     state.Buffs = {}
+    self:_resetAttributeProgress(state)
     self:_applyLevelDerivedState(state)
     state.CurrentHealth = state.MaxHealth
     self:_syncLeaderstats(actor, state)

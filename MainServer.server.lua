@@ -56,6 +56,8 @@ local RemoteEventService = requireServerModule("RemoteEventService")
 local PlayerStateService = requireServerModule("PlayerStateService")
 local ArenaService = requireServerModule("ArenaService")
 local WeaponService = requireServerModule("WeaponService")
+local AttributeUpgradeService = requireServerModule("AttributeUpgradeService")
+local AttributeCapUpgradeService = requireServerModule("AttributeCapUpgradeService")
 local RespawnService = requireServerModule("RespawnService")
 local HealthService = requireServerModule("HealthService")
 local CombatService = requireServerModule("CombatService")
@@ -268,6 +270,7 @@ RebirthService:Init({
     BadgeAwardService = BadgeAwardService,
     OnlineRewardService = OnlineRewardService,
     SevenDayLoginRewardService = SevenDayLoginRewardService,
+    AttributeCapUpgradeService = AttributeCapUpgradeService,
     GameAnalyticsService = GameAnalyticsService,
 })
 PotionService:Init({
@@ -470,6 +473,17 @@ PlayerStateService:BindSystems({
     SkinService = SkinService,
     GameAnalyticsService = GameAnalyticsService,
 })
+AttributeUpgradeService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    WeaponService = WeaponService,
+    HealthService = HealthService,
+})
+AttributeCapUpgradeService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+})
 RebirthService:BindSystems({
     HealthService = HealthService,
     RespawnService = RespawnService,
@@ -481,7 +495,12 @@ RebirthService:BindSystems({
     BadgeAwardService = BadgeAwardService,
     OnlineRewardService = OnlineRewardService,
     SevenDayLoginRewardService = SevenDayLoginRewardService,
+    AttributeCapUpgradeService = AttributeCapUpgradeService,
     GameAnalyticsService = GameAnalyticsService,
+})
+AttributeCapUpgradeService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
 })
 PotionService:BindSystems({
     RebirthService = RebirthService,

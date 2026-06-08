@@ -242,85 +242,25 @@ end
 function DefeatedController:_setOpen(isOpen, immediate)
     if not self._defeatedRoot then
         self._isOpen = false
-        self:_cancelPanelTweens()
-        ModalUiController:Release(DEFEATED_MODAL_OWNER)
+        ModalUiController:PlayPanelClose(DEFEATED_MODAL_OWNER, nil, { Immediate = true })
         self:_stopCountdown()
         return
     end
 
-    self:_cancelPanelTweens()
-    local animationSerial = self:_nextPanelAnimationSerial()
     self._isOpen = isOpen == true
-    local rootScale = ensureUiScale(self._defeatedRoot)
     if self._isOpen then
-        ModalUiController:AcquireExclusive(DEFEATED_MODAL_OWNER, self._defeatedRoot)
-        self._defeatedRoot.Visible = true
-        if rootScale then
-            rootScale.Scale = OPEN_FROM_SCALE
-            local overshoot = TweenService:Create(rootScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-                Scale = OPEN_OVERSHOOT_SCALE,
-            })
-            local settle = TweenService:Create(rootScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                Scale = 1,
-            })
-            self._panelTweens = { overshoot, settle }
-            task.spawn(function()
-                overshoot:Play()
-                overshoot.Completed:Wait()
-                if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                    return
-                end
-
-                settle:Play()
-                settle.Completed:Wait()
-                if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                    return
-                end
-
-                rootScale.Scale = 1
-                table.clear(self._panelTweens)
-            end)
-        end
+        ModalUiController:PlayPanelOpen(DEFEATED_MODAL_OWNER, self._defeatedRoot, {
+            Exclusive = true,
+            Immediate = immediate == true,
+        })
         return
     end
 
     self:_stopCountdown()
     self._isRevengePurchasePending = false
-    if not rootScale or immediate == true or not self._defeatedRoot.Visible then
-        if rootScale then
-            rootScale.Scale = 1
-        end
-        self._defeatedRoot.Visible = false
-        ModalUiController:Release(DEFEATED_MODAL_OWNER)
-        return
-    end
-
-    local overshoot = TweenService:Create(rootScale, TweenInfo.new(CLOSE_OVERSHOOT_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Scale = CLOSE_OVERSHOOT_SCALE,
+    ModalUiController:PlayPanelClose(DEFEATED_MODAL_OWNER, self._defeatedRoot, {
+        Immediate = immediate == true,
     })
-    local shrink = TweenService:Create(rootScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
-    })
-    self._panelTweens = { overshoot, shrink }
-
-    task.spawn(function()
-        overshoot:Play()
-        overshoot.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-
-        shrink:Play()
-        shrink.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-
-        rootScale.Scale = 1
-        self._defeatedRoot.Visible = false
-        table.clear(self._panelTweens)
-        ModalUiController:Release(DEFEATED_MODAL_OWNER)
-    end)
 end
 
 function DefeatedController:_closeAndRequest(action)

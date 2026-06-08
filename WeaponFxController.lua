@@ -560,7 +560,8 @@ function WeaponFxController:_updateLocalWeaponState(weaponState, weaponIndex, we
     weaponState.TemplateName = templateName
     weaponState.VisualIdentity = visualIdentity
     weaponState.CurrentAngle = currentAngle or weaponState.CurrentAngle or 0
-    weaponState.OrbitSpeed = getWeaponOrbitSpeed()
+    weaponState.OrbitSpeed = tonumber(weaponData and weaponData.orbitSpeed) or getWeaponOrbitSpeed()
+    weaponState.OrbitDistance = tonumber(weaponData and weaponData.orbitDistance) or getWeaponOrbitDistance()
     weaponState.OrbitDirection = normalizeOrbitDirection((weaponData and weaponData.orbitDirection) or weaponState.OrbitDirection)
     weaponState.Damage = tonumber(weaponData and weaponData.damage) or tonumber(tierConfig and tierConfig.Damage) or weaponState.Damage or 0
     weaponState.IconImage = tostring((weaponData and weaponData.visualIconImage) or (weaponData and weaponData.iconImage) or weaponState.IconImage or (tierConfig and tierConfig.IconImage) or WeaponTierConfig.GetIconImageForTier(weaponTier))
@@ -687,7 +688,7 @@ function WeaponFxController:_hasOwnerPlayer(ownerUserId)
 end
 
 function WeaponFxController:_buildWeaponCFrame(centerPosition, weaponState)
-    local orbitDistance = getWeaponOrbitDistance()
+    local orbitDistance = tonumber(weaponState and weaponState.OrbitDistance) or getWeaponOrbitDistance()
     local offset = Vector3.new(
         math.cos(weaponState.CurrentAngle) * orbitDistance,
         GameConfig.WEAPON.OrbitHeight,
@@ -743,7 +744,8 @@ function WeaponFxController:_updateLocalWeaponTransforms(deltaTime)
         for _, weaponState in ipairs(weaponStates) do
             if weaponState.Instance and weaponState.Instance.Parent then
                 self:_setLocalWeaponStateVisible(weaponState, true)
-                weaponState.OrbitSpeed = getWeaponOrbitSpeed()
+                weaponState.OrbitSpeed = tonumber(weaponState.OrbitSpeed) or getWeaponOrbitSpeed()
+                weaponState.OrbitDistance = tonumber(weaponState.OrbitDistance) or getWeaponOrbitDistance()
                 weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
                 setWorldCFrame(weaponState.Instance, self:_buildWeaponCFrame(centerPosition, weaponState))
                 updatedCount += 1

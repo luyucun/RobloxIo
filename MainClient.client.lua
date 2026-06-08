@@ -94,6 +94,8 @@ local SpecialEventController = requireLocalModule("SpecialEventController")
 local GroupRewardController = requireLocalModule("GroupRewardController")
 local ArenaProgressController = requireLocalModule("ArenaProgressController")
 local TopStatsController = requireLocalModule("TopStatsController")
+local AttributeUpgradeController = requireLocalModule("AttributeUpgradeController")
+local AttributeCapUpgradeController = requireLocalModule("AttributeCapUpgradeController")
 local KillTipsController = requireLocalModule("KillTipsController")
 local NewWeaponUnlockController = requireLocalModule("NewWeaponUnlockController")
 local OverheadLevelController = requireLocalModule("OverheadLevelController")
@@ -140,6 +142,18 @@ initController("ClientEventController", ClientEventController, {
 initController("TopStatsController", TopStatsController, {
     LocalPlayer = localPlayer,
     RootScript = script,
+})
+
+initController("AttributeUpgradeController", AttributeUpgradeController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+    ModalUiController = ModalUiController,
+})
+
+initController("AttributeCapUpgradeController", AttributeCapUpgradeController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+    ModalUiController = ModalUiController,
 })
 
 initController("KillTipsController", KillTipsController, {

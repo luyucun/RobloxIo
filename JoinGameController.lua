@@ -148,83 +148,27 @@ function JoinGameController:_setOpen(isOpen, immediate)
     if not self._joinGameRoot then
         if isOpen ~= true then
             self._isOpen = false
-            self:_cancelPanelTweens()
-            self:_restoreModalUi()
+            ModalUiController:PlayPanelClose("JoinGame", nil, { Immediate = true })
+            self._isModalApplied = false
         end
         return
     end
 
-    self:_cancelPanelTweens()
-    local animationSerial = self:_nextPanelAnimationSerial()
     self._isOpen = isOpen == true
-    local rootScale = ensureUiScale(self._joinGameRoot)
     if self._isOpen then
-        self:_applyModalUi()
-        self._joinGameRoot.Visible = true
-        if rootScale then
-            rootScale.Scale = OPEN_FROM_SCALE
-            local overshoot = TweenService:Create(rootScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-                Scale = OPEN_OVERSHOOT_SCALE,
-            })
-            local settle = TweenService:Create(rootScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                Scale = 1,
-            })
-            self._panelTweens = { overshoot, settle }
-            task.spawn(function()
-                overshoot:Play()
-                overshoot.Completed:Wait()
-                if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                    return
-                end
-
-                settle:Play()
-                settle.Completed:Wait()
-                if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                    return
-                end
-
-                rootScale.Scale = 1
-                table.clear(self._panelTweens)
-            end)
-        end
+        self._isModalApplied = true
+        ModalUiController:PlayPanelOpen("JoinGame", self._joinGameRoot, {
+            Immediate = immediate == true,
+        })
         return
     end
 
-    if not rootScale or immediate == true or not self._joinGameRoot.Visible then
-        if rootScale then
-            rootScale.Scale = 1
-        end
-        self._joinGameRoot.Visible = false
-        self:_restoreModalUi()
-        return
-    end
-
-    local overshoot = TweenService:Create(rootScale, TweenInfo.new(CLOSE_OVERSHOOT_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Scale = CLOSE_OVERSHOOT_SCALE,
+    ModalUiController:PlayPanelClose("JoinGame", self._joinGameRoot, {
+        Immediate = immediate == true,
+        OnClosed = function()
+            self._isModalApplied = false
+        end,
     })
-    local shrink = TweenService:Create(rootScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
-    })
-    self._panelTweens = { overshoot, shrink }
-
-    task.spawn(function()
-        overshoot:Play()
-        overshoot.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-
-        shrink:Play()
-        shrink.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-
-        rootScale.Scale = 1
-        self._joinGameRoot.Visible = false
-        table.clear(self._panelTweens)
-        self:_restoreModalUi()
-    end)
 end
 
 function JoinGameController:_applyModalUi()
@@ -233,7 +177,9 @@ function JoinGameController:_applyModalUi()
     end
 
     table.clear(self._hiddenUiOriginalVisibleByNode)
-    ModalUiController:Acquire("JoinGame", self._joinGameRoot)
+    ModalUiController:PlayPanelOpen("JoinGame", self._joinGameRoot, {
+        Immediate = true,
+    })
     self._isModalApplied = true
 end
 
@@ -243,7 +189,9 @@ function JoinGameController:_restoreModalUi()
     end
 
     table.clear(self._hiddenUiOriginalVisibleByNode)
-    ModalUiController:Release("JoinGame")
+    ModalUiController:PlayPanelClose("JoinGame", self._joinGameRoot, {
+        Immediate = true,
+    })
     self._blurEffect = nil
     self._blurOriginalEnabled = nil
     self._isModalApplied = false

@@ -503,8 +503,7 @@ function OnlineRewardController:_openPanel()
         return
     end
     self:_requestState()
-    ModalUiController:Acquire(MODAL_OWNER_ID, self._panel)
-    self._panel.Visible = true
+    ModalUiController:PlayPanelOpen(MODAL_OWNER_ID, self._panel)
     self:_renderAll()
 end
 
@@ -512,8 +511,7 @@ function OnlineRewardController:_closePanel()
     if not (self._panel and self._panel:IsA("GuiObject")) then
         return
     end
-    self._panel.Visible = false
-    ModalUiController:Release(MODAL_OWNER_ID)
+    ModalUiController:PlayPanelClose(MODAL_OWNER_ID, self._panel)
 end
 
 function OnlineRewardController:_promptUnlockAll()

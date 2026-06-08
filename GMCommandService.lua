@@ -44,6 +44,7 @@ end
 local RemoteNames = requireSharedModule("RemoteNames")
 local GameConfig = requireSharedModule("GameConfig")
 local TitleConfig = requireSharedModule("TitleConfig")
+local AttributeConfig = requireSharedModule("AttributeConfig")
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -105,6 +106,28 @@ local function parsePositiveAmountCommand(message, expectedCommandName)
     end
 
     return amount
+end
+
+local function parseAttributeCapAmountCommand(message, expectedCommandName)
+    local text = tostring(message or "")
+    local trimmed = text:match("^%s*(.-)%s*$")
+    local command, attributeId, amountText = trimmed:match("^/(%S+)%s+(%S+)%s+(%S+)%s*$")
+    if not command or string.lower(command) ~= expectedCommandName then
+        return nil
+    end
+
+    local attributeKey = AttributeConfig.NormalizeKey(attributeId)
+    if not attributeKey then
+        return nil, "InvalidAttribute"
+    end
+
+    local amount = tonumber(amountText)
+    if not amount then
+        return nil, "InvalidAmount"
+    end
+
+    amount = math.floor(amount)
+    return attributeKey, amount
 end
 
 local function markStateDirty(playerStateService, player)
@@ -180,7 +203,7 @@ function GMCommandService:_handleChatCommand(player, message)
     end
 
     local commandName = parseCommandName(message)
-    if commandName == "diamond" or commandName == "kill" then
+    if commandName == "diamond" or commandName == "addgems" or commandName == "kill" then
         if not self._playerStateService then
             warn("[GMCommandService] PlayerStateService is unavailable")
             return false, "ServiceUnavailable"
@@ -192,7 +215,7 @@ function GMCommandService:_handleChatCommand(player, message)
             return false, errorCode or "InvalidAmount"
         end
 
-        if commandName == "diamond" then
+        if commandName == "diamond" or commandName == "addgems" then
             local totalDiamonds = addDiamondsForPlayer(self._playerStateService, player, amount)
             if not totalDiamonds then
                 warn("[GMCommandService] PlayerStateService cannot add diamonds")
@@ -205,6 +228,57 @@ function GMCommandService:_handleChatCommand(player, message)
         local killCount, totalPlayerKills = addKillsForPlayer(self._playerStateService, player, amount)
         print(string.format("[GMCommandService] %s added %d kills, round=%d, total=%d", player.Name, amount, killCount, totalPlayerKills))
         return true, totalPlayerKills
+    end
+
+    if commandName == "setcap" or commandName == "addcap" or commandName == "resetcaps" or commandName == "maxcaps" then
+        if not self._playerStateService then
+            warn("[GMCommandService] PlayerStateService is unavailable")
+            return false, "ServiceUnavailable"
+        end
+
+        if commandName == "setcap" then
+            local attributeKey, amountOrError = parseAttributeCapAmountCommand(message, commandName)
+            if not attributeKey then
+                warn(string.format("[GMCommandService] Invalid /setcap command from %s: %s", player.Name, tostring(message)))
+                return false, amountOrError or "InvalidAttribute"
+            end
+
+            local success, result, _, newCap = self._playerStateService:SetAttributeCap(player, attributeKey, amountOrError, {
+                source = "gm",
+            })
+            print(string.format("[GMCommandService] %s set cap %s to %d: success=%s, result=%s", player.Name, attributeKey, math.floor(tonumber(newCap) or amountOrError), tostring(success), tostring(result)))
+            return success == true, newCap
+        end
+
+        if commandName == "addcap" then
+            local attributeKey, amountOrError = parseAttributeCapAmountCommand(message, commandName)
+            if not attributeKey then
+                warn(string.format("[GMCommandService] Invalid /addcap command from %s: %s", player.Name, tostring(message)))
+                return false, amountOrError or "InvalidAttribute"
+            end
+            if amountOrError <= 0 then
+                warn(string.format("[GMCommandService] Invalid /addcap amount from %s: %s", player.Name, tostring(message)))
+                return false, "InvalidAmount"
+            end
+
+            local success, result, _, newCap = self._playerStateService:AddAttributeCap(player, attributeKey, amountOrError, {
+                source = "gm",
+            })
+            print(string.format("[GMCommandService] %s added cap %s by %d: success=%s, result=%s, cap=%d", player.Name, attributeKey, amountOrError, tostring(success), tostring(result), math.floor(tonumber(newCap) or 0)))
+            return success == true, newCap
+        end
+
+        if commandName == "resetcaps" then
+            local caps = self._playerStateService:ResetAttributeCaps(player)
+            print(string.format("[GMCommandService] %s reset all attribute caps", player.Name))
+            return true, caps
+        end
+
+        if commandName == "maxcaps" then
+            local caps = self._playerStateService:MaxAttributeCaps(player)
+            print(string.format("[GMCommandService] %s maxed all attribute caps", player.Name))
+            return true, caps
+        end
     end
 
     if commandName == "ai" then

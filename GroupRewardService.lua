@@ -8,6 +8,7 @@ Studio放置路径: ServerScriptService/Services/GroupRewardService
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local ActorUtils = require(script.Parent:WaitForChild("ActorUtils"))
@@ -44,8 +45,13 @@ GroupRewardService._requestGroupRewardEvent = nil
 GroupRewardService._groupRewardFeedbackEvent = nil
 GroupRewardService._chestModel = nil
 GroupRewardService._chestTouchedConnections = {}
+GroupRewardService._chestRangeMonitorConnection = nil
+GroupRewardService._chestRangeMonitorAccumulator = 0
+GroupRewardService._chestTouchSuppressedUntilExitByUserId = {}
 GroupRewardService._touchDebounceByUserId = {}
 GroupRewardService._claimingByUserId = {}
+
+local CHEST_RANGE_CHECK_INTERVAL = 0.2
 
 local function splitPath(path)
     local segments = {}
@@ -130,6 +136,64 @@ function GroupRewardService:_disconnectChestTouchedConnections()
     self._chestTouchedConnections = {}
 end
 
+function GroupRewardService:_disconnectChestRangeMonitor()
+    if self._chestRangeMonitorConnection then
+        self._chestRangeMonitorConnection:Disconnect()
+        self._chestRangeMonitorConnection = nil
+    end
+    self._chestRangeMonitorAccumulator = 0
+end
+
+function GroupRewardService:_isPlayerInsideChestBounds(player)
+    if not (player and player.Character and self._chestModel) then
+        return false
+    end
+
+    local rootPart = player.Character:FindFirstChild("HumanoidRootPart") or player.Character.PrimaryPart
+    if not rootPart then
+        return false
+    end
+
+    local didGetBounds, boundsCFrame, boundsSize = pcall(function()
+        return self._chestModel:GetBoundingBox()
+    end)
+    if not didGetBounds then
+        return false
+    end
+
+    local localPosition = boundsCFrame:PointToObjectSpace(rootPart.Position)
+    local halfSize = (boundsSize * 0.5) + Vector3.new(2, 4, 2)
+    return math.abs(localPosition.X) <= halfSize.X
+        and math.abs(localPosition.Y) <= halfSize.Y
+        and math.abs(localPosition.Z) <= halfSize.Z
+end
+
+function GroupRewardService:_onChestRangeHeartbeat(deltaTime)
+    self._chestRangeMonitorAccumulator += deltaTime or 0
+    if self._chestRangeMonitorAccumulator < CHEST_RANGE_CHECK_INTERVAL then
+        return
+    end
+    self._chestRangeMonitorAccumulator = 0
+
+    for userId in pairs(self._chestTouchSuppressedUntilExitByUserId or {}) do
+        local player = Players:GetPlayerByUserId(userId)
+        if not player or not self:_isPlayerInsideChestBounds(player) then
+            self._chestTouchSuppressedUntilExitByUserId[userId] = nil
+        end
+    end
+end
+
+function GroupRewardService:_connectChestRangeMonitor()
+    self:_disconnectChestRangeMonitor()
+    if not self._chestModel then
+        return
+    end
+
+    self._chestRangeMonitorConnection = RunService.Heartbeat:Connect(function(deltaTime)
+        self:_onChestRangeHeartbeat(deltaTime)
+    end)
+end
+
 function GroupRewardService:_connectChestTouched()
     self:_disconnectChestTouchedConnections()
     if not self._chestModel then
@@ -156,6 +220,9 @@ function GroupRewardService:_onChestTouched(hitPart)
     if not (player and ActorUtils.IsPlayer(player) and player.Parent) then
         return
     end
+    if self._chestTouchSuppressedUntilExitByUserId[player.UserId] then
+        return
+    end
 
     local now = os.clock()
     local debounceSeconds = math.max(0.1, tonumber(GameConfig.GROUP_REWARD and GameConfig.GROUP_REWARD.TouchDebounceSeconds) or 1)
@@ -164,6 +231,7 @@ function GroupRewardService:_onChestTouched(hitPart)
         return
     end
     self._touchDebounceByUserId[player.UserId] = now
+    self._chestTouchSuppressedUntilExitByUserId[player.UserId] = true
 
     self:_firePrompt(player)
 end
@@ -235,6 +303,7 @@ function GroupRewardService:Init(dependencies)
     self._groupRewardPromptEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("GroupRewardPrompt") or nil
     self._requestGroupRewardEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestGroupReward") or nil
     self._groupRewardFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("GroupRewardFeedback") or nil
+    self._chestTouchSuppressedUntilExitByUserId = {}
     self._touchDebounceByUserId = {}
     self._claimingByUserId = {}
 
@@ -243,6 +312,7 @@ function GroupRewardService:Init(dependencies)
         warn("[GroupRewardService] 找不到群组奖励宝箱: " .. tostring(GameConfig.GROUP_REWARD and GameConfig.GROUP_REWARD.ChestPath))
     end
     self:_connectChestTouched()
+    self:_connectChestRangeMonitor()
 
     if self._requestGroupRewardEvent then
         self._requestGroupRewardEvent.OnServerEvent:Connect(function(player)
@@ -253,6 +323,7 @@ end
 
 function GroupRewardService:OnPlayerRemoving(player)
     if player then
+        self._chestTouchSuppressedUntilExitByUserId[player.UserId] = nil
         self._touchDebounceByUserId[player.UserId] = nil
         self._claimingByUserId[player.UserId] = nil
     end

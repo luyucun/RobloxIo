@@ -14,6 +14,7 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local TouchRegionGate = require(script.Parent:WaitForChild("TouchRegionGate"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -78,7 +79,7 @@ ShopController._lastRewardSource = nil
 ShopController._starterPackClaimed = false
 ShopController._featuredSkinOwned = false
 ShopController._marketStallBindRetryQueued = false
-ShopController._marketStallTouchDebounceUntil = 0
+ShopController._marketStallGate = nil
 
 local HOVER_SCALE = 1.05
 local PRESS_SCALE = 0.92
@@ -98,7 +99,6 @@ local POPUP_SLIDE_OFFSET_SCALE = -0.22
 local POPUP_OPEN_DURATION = 0.24
 local POPUP_ITEM_STAGGER = 0.08
 local POPUP_CLOSE_DELAY = 2
-local MARKET_STALL_TOUCH_COOLDOWN = 1
 local SECRET_GRADIENT_OFFSET_RANGE = 1
 local SECRET_GRADIENT_ONE_WAY_DURATION = 2.4
 local SECRET_GRADIENT_UPDATE_INTERVAL = 0.033
@@ -521,6 +521,10 @@ end
 
 function ShopController:_disconnectMarketStallBindings()
     disconnectAll(self._marketStallConnections)
+    if self._marketStallGate then
+        self._marketStallGate:Stop()
+        self._marketStallGate = nil
+    end
 end
 
 function ShopController:_cancelPanelTweens()
@@ -646,6 +650,12 @@ function ShopController:_findMarketStall()
         return nil
     end
 
+    local machines = map2:FindFirstChild("Machines")
+    local machineStall = machines and machines:FindFirstChild("MarketStall")
+    if machineStall then
+        return machineStall
+    end
+
     local direct = map2:FindFirstChild("MarketStall")
     if direct then
         return direct
@@ -654,47 +664,11 @@ function ShopController:_findMarketStall()
     return map2:FindFirstChild("MarketStall", true)
 end
 
-function ShopController:_collectTouchParts(root)
-    local parts = {}
-    if root and root:IsA("BasePart") and root.CanTouch ~= false then
-        table.insert(parts, root)
-    end
-    if root then
-        for _, descendant in ipairs(root:GetDescendants()) do
-            if descendant:IsA("BasePart") and descendant.CanTouch ~= false then
-                table.insert(parts, descendant)
-            end
-        end
-    end
-    return parts
-end
-
-function ShopController:_isLocalCharacterPart(hit)
-    if not (hit and self._localPlayer) then
-        return false
-    end
-
-    local character = self._localPlayer.Character
-    if not character then
-        return false
-    end
-
-    return hit:IsDescendantOf(character)
-end
-
-function ShopController:_handleMarketStallTouched(hit)
-    if not self:_isLocalCharacterPart(hit) then
-        return
-    end
+function ShopController:_handleMarketStallEntered()
     if self._isOpen then
         return
     end
 
-    local now = os.clock()
-    if now < self._marketStallTouchDebounceUntil then
-        return
-    end
-    self._marketStallTouchDebounceUntil = now + MARKET_STALL_TOUCH_COOLDOWN
     self:Open()
 end
 
@@ -702,19 +676,30 @@ function ShopController:_bindMarketStall(silent)
     self:_disconnectMarketStallBindings()
 
     local stall = self:_findMarketStall()
-    local parts = self:_collectTouchParts(stall)
-    if #parts <= 0 then
+    if not stall then
         if not silent then
             self:_queueMarketStallBindRetry()
         end
         return false
     end
 
-    for _, part in ipairs(parts) do
-        table.insert(self._marketStallConnections, part.Touched:Connect(function(hit)
-            self:_handleMarketStallTouched(hit)
-        end))
+    local region = stall:FindFirstChild("SquareRegion") or stall
+    self._marketStallGate = TouchRegionGate.new({
+        LocalPlayer = self._localPlayer,
+        Region = region,
+        Label = "Shop.MarketStall",
+        OnEnter = function()
+            self:_handleMarketStallEntered()
+        end,
+    })
+    if not self._marketStallGate:Start() then
+        self._marketStallGate = nil
+        if not silent then
+            self:_queueMarketStallBindRetry()
+        end
+        return false
     end
+
     return true
 end
 
@@ -722,20 +707,14 @@ function ShopController:_setOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isOpen = false
-            ModalUiController:Release("Shop")
+            ModalUiController:PlayPanelClose("Shop", nil, { Immediate = true })
         end
         return
     end
 
-    local uiScale = ensureUiScale(self._panel)
-    self:_cancelPanelTweens()
-    self._panelAnimationSerial += 1
-    local serial = self._panelAnimationSerial
     self._isOpen = isOpen == true
 
     if self._isOpen then
-        ModalUiController:Acquire("Shop", self._panel)
-        self._panel.Visible = true
         self:_requestShopState(true, "ShopOpened")
         if not self._starterPackClaimed then
             self:_recordPurchaseContext({
@@ -772,65 +751,18 @@ function ShopController:_setOpen(isOpen, immediate)
             end
         end
         self:_startSkinSecretGradientLoop()
-        if not uiScale or immediate == true then
-            if uiScale then
-                uiScale.Scale = 1
-            end
-            return
-        end
-
-        uiScale.Scale = OPEN_FROM_SCALE
-        local overshoot = TweenService:Create(uiScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Scale = OPEN_OVERSHOOT_SCALE,
+        ModalUiController:PlayPanelOpen("Shop", self._panel, {
+            Immediate = immediate == true,
         })
-        local settle = TweenService:Create(uiScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Scale = 1,
-        })
-        self._panelTweens = { overshoot, settle }
-        task.spawn(function()
-            overshoot:Play()
-            overshoot.Completed:Wait()
-            if self._panelAnimationSerial ~= serial or not self._isOpen then
-                return
-            end
-            settle:Play()
-            settle.Completed:Wait()
-            if self._panelAnimationSerial == serial and self._isOpen and uiScale.Parent then
-                uiScale.Scale = 1
-            end
-        end)
         return
     end
 
-    if not uiScale or immediate == true or self._panel.Visible ~= true then
-        if uiScale then
-            uiScale.Scale = 1
-        end
-        self:_stopSkinSecretGradientLoop()
-        self._panel.Visible = false
-        ModalUiController:Release("Shop")
-        return
-    end
-
-    local shrink = TweenService:Create(uiScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
-    })
-    self._panelTweens = { shrink }
-    task.spawn(function()
-        shrink:Play()
-        shrink.Completed:Wait()
-        if self._panelAnimationSerial ~= serial or self._isOpen then
-            return
-        end
-        if uiScale.Parent then
-            uiScale.Scale = 1
-        end
-        if self._panel and self._panel.Parent then
+    ModalUiController:PlayPanelClose("Shop", self._panel, {
+        Immediate = immediate == true,
+        OnClosed = function()
             self:_stopSkinSecretGradientLoop()
-            self._panel.Visible = false
-        end
-        ModalUiController:Release("Shop")
-    end)
+        end,
+    })
 end
 
 function ShopController:_recordPurchaseContext(payload)
@@ -1306,7 +1238,7 @@ function ShopController:_queueMarketStallBindRetry()
             task.wait(0.5)
         until os.clock() >= deadline
         self._marketStallBindRetryQueued = false
-        warn("[ShopController] Could not bind Workspace.Map2.MarketStall touch entry.")
+        warn("[ShopController] Could not bind Workspace.Map2.Machines.MarketStall touch entry.")
     end)
 end
 

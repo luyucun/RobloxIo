@@ -375,21 +375,24 @@ function SevenDayLoginRewardController:_openPanel()
     if not self._root then
         return
     end
-    self._root.Visible = true
-    ModalUiController:Acquire(MODAL_OWNER_ID, self._root)
+    ModalUiController:PlayPanelOpen(MODAL_OWNER_ID, self._root)
     self:_requestStateSync("Open", true)
 end
 
 function SevenDayLoginRewardController:_closePanel()
-    local firstPanel = self._panels and self._panels[FIRST_PANEL_KEY] or nil
-    local repeatPanel = self._panels and self._panels[REPEAT_PANEL_KEY] or nil
-    if firstPanel and firstPanel:IsA("GuiObject") then
-        firstPanel.Visible = false
-    end
-    if repeatPanel and repeatPanel:IsA("GuiObject") then
-        repeatPanel.Visible = false
-    end
-    ModalUiController:Release(MODAL_OWNER_ID)
+    local closingRoot = self._root
+    ModalUiController:PlayPanelClose(MODAL_OWNER_ID, closingRoot, {
+        OnClosed = function()
+            local firstPanel = self._panels and self._panels[FIRST_PANEL_KEY] or nil
+            local repeatPanel = self._panels and self._panels[REPEAT_PANEL_KEY] or nil
+            if firstPanel and firstPanel:IsA("GuiObject") then
+                firstPanel.Visible = false
+            end
+            if repeatPanel and repeatPanel:IsA("GuiObject") then
+                repeatPanel.Visible = false
+            end
+        end,
+    })
 end
 
 function SevenDayLoginRewardController:OpenSevenDayLoginReward()
@@ -575,8 +578,9 @@ function SevenDayLoginRewardController:_applyState(payload)
             return
         end
         if wasOpen and self._root then
-            self._root.Visible = true
-            ModalUiController:Acquire(MODAL_OWNER_ID, self._root)
+            ModalUiController:PlayPanelOpen(MODAL_OWNER_ID, self._root, {
+                Immediate = true,
+            })
         end
         self:_setUnlockAllPrice(self._state.productId)
         self:_renderAll()

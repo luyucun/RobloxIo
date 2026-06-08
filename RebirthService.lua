@@ -41,6 +41,7 @@ local SkinConfig = requireSharedModule("SkinConfig")
 local TrailConfig = requireSharedModule("TrailConfig")
 local TitleConfig = requireSharedModule("TitleConfig")
 local SevenDayLoginRewardConfig = requireSharedModule("SevenDayLoginRewardConfig")
+local AttributeConfig = requireSharedModule("AttributeConfig")
 
 local RebirthService = {}
 
@@ -56,6 +57,7 @@ RebirthService._wheelService = nil
 RebirthService._skinService = nil
 RebirthService._onlineRewardService = nil
 RebirthService._sevenDayLoginRewardService = nil
+RebirthService._attributeCapUpgradeService = nil
 RebirthService._badgeAwardService = nil
 RebirthService._gameAnalyticsService = nil
 RebirthService._dataStore = nil
@@ -183,6 +185,7 @@ local function normalizeSavedData(data)
             sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(nil),
             ownedTitles = {},
             equippedTitleId = nil,
+            attributeCaps = AttributeConfig.BuildDefaultCaps(),
             totalDeaths = 0,
             totalDiamondsEarned = 0,
             totalOnlineSeconds = 0,
@@ -337,6 +340,8 @@ local function normalizeSavedData(data)
         equippedTitleId = nil
     end
 
+    local attributeCaps = AttributeConfig.NormalizeCaps(data.attributeCaps or data.AttributeCaps)
+
     local function normalizeWeaponUnlockRewards(rewards)
         if type(rewards) ~= "table" then
             return nil
@@ -455,6 +460,7 @@ local function normalizeSavedData(data)
         equippedTrailId = equippedTrailId,
         ownedTitles = ownedTitles,
         equippedTitleId = equippedTitleId,
+        attributeCaps = attributeCaps,
         totalDeaths = asNonNegativeInteger(data.totalDeaths or data.TotalDeaths),
         totalDiamondsEarned = asNonNegativeInteger(data.totalDiamondsEarned or data.TotalDiamondsEarned),
         totalOnlineSeconds = asNonNegativeInteger(data.totalOnlineSeconds or data.TotalOnlineSeconds),
@@ -653,6 +659,7 @@ function RebirthService:_buildSavePayload(player, options)
         equippedTrailId = state.EquippedTrailId,
         ownedTitles = state.OwnedTitles or {},
         equippedTitleId = state.EquippedTitleId,
+        attributeCaps = AttributeConfig.CopyNumberMap(state.AttributeCaps),
         totalDeaths = math.max(0, math.floor(tonumber(state.TotalDeaths) or 0)),
         totalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)),
         totalOnlineSeconds = math.max(0, math.floor(tonumber(state.TotalOnlineSeconds) or 0)),
@@ -697,6 +704,7 @@ function RebirthService:_savePlayer(player, options)
                 equippedTrailId = payload.equippedTrailId,
                 ownedTitles = payload.ownedTitles,
                 equippedTitleId = payload.equippedTitleId,
+                attributeCaps = payload.attributeCaps,
                 totalDeaths = payload.totalDeaths,
                 totalDiamondsEarned = payload.totalDiamondsEarned,
                 totalOnlineSeconds = payload.totalOnlineSeconds,
@@ -726,6 +734,7 @@ function RebirthService:GetSavedProgressSnapshot(playerOrUserId)
         return buildProgressSnapshot(state.Rebirth, state.RebirthScore, state.HighestLevelReached or state.Level, {
             ownedTitles = state.OwnedTitles or {},
             equippedTitleId = state.EquippedTitleId,
+            attributeCaps = AttributeConfig.CopyNumberMap(state.AttributeCaps),
             totalDeaths = state.TotalDeaths,
             totalDiamondsEarned = state.TotalDiamondsEarned,
             totalOnlineSeconds = state.TotalOnlineSeconds,
@@ -926,6 +935,13 @@ function RebirthService:_processReceipt(receiptInfo)
         end
     end
 
+    if self._attributeCapUpgradeService and self._attributeCapUpgradeService.ProcessReceipt then
+        local handled, decision = self._attributeCapUpgradeService:ProcessReceipt(receiptInfo)
+        if handled == true then
+            return decision or Enum.ProductPurchaseDecision.NotProcessedYet
+        end
+    end
+
     local wheelPurchase = WheelConfig.GetPurchaseByProductId(productId)
     if wheelPurchase then
         local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
@@ -1043,6 +1059,7 @@ function RebirthService:BindSystems(dependencies)
     self._skinService = dependencies and dependencies.SkinService or self._skinService
     self._onlineRewardService = dependencies and dependencies.OnlineRewardService or self._onlineRewardService
     self._sevenDayLoginRewardService = dependencies and dependencies.SevenDayLoginRewardService or self._sevenDayLoginRewardService
+    self._attributeCapUpgradeService = dependencies and dependencies.AttributeCapUpgradeService or self._attributeCapUpgradeService
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
 end
 
@@ -1059,6 +1076,7 @@ function RebirthService:Init(dependencies)
     self._skinService = dependencies.SkinService or self._skinService
     self._onlineRewardService = dependencies.OnlineRewardService or self._onlineRewardService
     self._sevenDayLoginRewardService = dependencies.SevenDayLoginRewardService or self._sevenDayLoginRewardService
+    self._attributeCapUpgradeService = dependencies.AttributeCapUpgradeService or self._attributeCapUpgradeService
     self._badgeAwardService = dependencies.BadgeAwardService or self._badgeAwardService
     self._gameAnalyticsService = dependencies.GameAnalyticsService or self._gameAnalyticsService
     self._dirtyByUserId = {}

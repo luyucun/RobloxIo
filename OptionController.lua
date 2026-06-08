@@ -364,80 +364,26 @@ function OptionController:_setOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isOpen = false
-            ModalUiController:Release("Option")
+            ModalUiController:PlayPanelClose("Option", nil, { Immediate = true })
         end
         return
     end
 
-    local uiScale = ensureUiScale(self._panel)
-    self:_cancelPanelTweens()
-    self._panelAnimationSerial += 1
-    local serial = self._panelAnimationSerial
     self._isOpen = isOpen == true
 
     if self._isOpen then
-        ModalUiController:Acquire("Option", self._panel)
-        self._panel.Visible = true
         if self._requestStateSyncEvent then
             self._requestStateSyncEvent:FireServer()
         end
-        if not uiScale or immediate == true then
-            if uiScale then
-                uiScale.Scale = 1
-            end
-            return
-        end
-
-        uiScale.Scale = OPEN_FROM_SCALE
-        local overshoot = TweenService:Create(uiScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Scale = OPEN_OVERSHOOT_SCALE,
+        ModalUiController:PlayPanelOpen("Option", self._panel, {
+            Immediate = immediate == true,
         })
-        local settle = TweenService:Create(uiScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Scale = 1,
-        })
-        self._panelTweens = { overshoot, settle }
-        task.spawn(function()
-            overshoot:Play()
-            overshoot.Completed:Wait()
-            if self._panelAnimationSerial ~= serial or not self._isOpen then
-                return
-            end
-            settle:Play()
-            settle.Completed:Wait()
-            if self._panelAnimationSerial == serial and self._isOpen and uiScale.Parent then
-                uiScale.Scale = 1
-            end
-        end)
         return
     end
 
-    if not uiScale or immediate == true or self._panel.Visible ~= true then
-        if uiScale then
-            uiScale.Scale = 1
-        end
-        self._panel.Visible = false
-        ModalUiController:Release("Option")
-        return
-    end
-
-    local shrink = TweenService:Create(uiScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
+    ModalUiController:PlayPanelClose("Option", self._panel, {
+        Immediate = immediate == true,
     })
-    self._panelTweens = { shrink }
-    task.spawn(function()
-        shrink:Play()
-        shrink.Completed:Wait()
-        if self._panelAnimationSerial ~= serial or self._isOpen then
-            return
-        end
-        if uiScale.Parent then
-            uiScale.Scale = 1
-        end
-        if self._panel and self._panel.Parent then
-            self._panel.Visible = false
-        end
-        ModalUiController:Release("Option")
-    end)
 end
 
 function OptionController:_bindUi(silent)

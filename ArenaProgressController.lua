@@ -54,6 +54,7 @@ local UI_BIND_RETRY_COUNT = 80
 local UI_BIND_RETRY_INTERVAL_SECONDS = 0.25
 local AVATAR_RETRY_SECONDS = 30
 local AVATAR_RENDER_DEBOUNCE_SECONDS = 0.25
+local ARENA_PROGRESS_ENABLED = false
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -172,6 +173,12 @@ function ArenaProgressController:_applyVisibilityFromState()
         return
     end
 
+    if ARENA_PROGRESS_ENABLED ~= true then
+        ModalUiController:SetRestoredVisible(self._progressRoot, false)
+        self._progressRoot.Visible = false
+        return
+    end
+
     local shouldShow = self._latestPlayerState
         and self._latestPlayerState.isInArena == true
         and self._latestPlayerState.alive == true
@@ -206,6 +213,13 @@ end
 function ArenaProgressController:_render(payload)
     self._latestPayload = payload
     if not (self._progressRoot and self._template) then
+        return
+    end
+
+    if ARENA_PROGRESS_ENABLED ~= true then
+        self._template.Visible = false
+        self:_clearGenerated()
+        self:_applyVisibilityFromState()
         return
     end
 

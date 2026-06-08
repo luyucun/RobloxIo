@@ -399,11 +399,16 @@ function RespawnService:_captureCombatSnapshot(actor, deathSerial)
         1,
         GameConfig.PLAYER.MaxSupportedLevel
     )
+    local attributeSnapshot = self._playerStateService
+        and self._playerStateService.BuildAttributeSnapshot
+        and self._playerStateService:BuildAttributeSnapshot(actor)
+        or nil
     return {
         deathSerial = deathSerial,
         preDeathLevel = preDeathLevel,
         preDeathExperience = math.max(0, math.floor(tonumber(state.Experience) or GameConfig.PLAYER.BaseExperience)),
         preDeathKillCount = math.max(0, math.floor(tonumber(state.KillCount) or 0)),
+        attributeSnapshot = attributeSnapshot,
         capturedAt = os.clock(),
     }
 end

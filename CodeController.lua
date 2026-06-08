@@ -147,78 +147,22 @@ function CodeController:_setOpen(isOpen, immediate)
     if not self._panel then
         if isOpen ~= true then
             self._isOpen = false
-            self:_cancelPanelTweens()
-            ModalUiController:Release("CodeRedeem")
+            ModalUiController:PlayPanelClose("CodeRedeem", nil, { Immediate = true })
         end
         return
     end
 
-    self:_cancelPanelTweens()
-    local animationSerial = self:_nextPanelAnimationSerial()
     self._isOpen = isOpen == true
-    local rootScale = ensureUiScale(self._panel)
     if self._isOpen then
-        ModalUiController:Acquire("CodeRedeem", self._panel)
-        self._panel.Visible = true
-        if rootScale then
-            rootScale.Scale = PANEL_OPEN_FROM_SCALE
-            local overshoot = TweenService:Create(rootScale, TweenInfo.new(PANEL_OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-                Scale = PANEL_OPEN_OVERSHOOT_SCALE,
-            })
-            local settle = TweenService:Create(rootScale, TweenInfo.new(PANEL_OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                Scale = 1,
-            })
-            self._panelTweens = { overshoot, settle }
-            task.spawn(function()
-                overshoot:Play()
-                overshoot.Completed:Wait()
-                if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                    return
-                end
-                settle:Play()
-                settle.Completed:Wait()
-                if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                    return
-                end
-                rootScale.Scale = 1
-                table.clear(self._panelTweens)
-            end)
-        end
+        ModalUiController:PlayPanelOpen("CodeRedeem", self._panel, {
+            Immediate = immediate == true,
+        })
         return
     end
 
-    if not rootScale or immediate == true or not self._panel.Visible then
-        if rootScale then
-            rootScale.Scale = 1
-        end
-        self._panel.Visible = false
-        ModalUiController:Release("CodeRedeem")
-        return
-    end
-
-    local overshoot = TweenService:Create(rootScale, TweenInfo.new(PANEL_CLOSE_OVERSHOOT_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Scale = 1.04,
+    ModalUiController:PlayPanelClose("CodeRedeem", self._panel, {
+        Immediate = immediate == true,
     })
-    local shrink = TweenService:Create(rootScale, TweenInfo.new(PANEL_CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = PANEL_CLOSE_TO_SCALE,
-    })
-    self._panelTweens = { overshoot, shrink }
-    task.spawn(function()
-        overshoot:Play()
-        overshoot.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-        shrink:Play()
-        shrink.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-        rootScale.Scale = 1
-        self._panel.Visible = false
-        table.clear(self._panelTweens)
-        ModalUiController:Release("CodeRedeem")
-    end)
 end
 
 local function playTween(binding, key, target, tweenInfo, goal)

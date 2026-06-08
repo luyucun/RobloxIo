@@ -58,7 +58,7 @@ WeaponService._weaponTransformFrameIndex = 0
 WeaponService._perfStats = nil
 WeaponService._nextPerfLogClock = 0
 
-local WEAPON_RESTORE_INTERVAL_SECONDS = 5
+local WEAPON_RESTORE_INTERVAL_SECONDS = 12
 
 local function isPerformanceDebugEnabled()
     return GameConfig.PERFORMANCE and GameConfig.PERFORMANCE.DebugEnabled == true
@@ -391,7 +391,8 @@ function WeaponService:_buildWeaponPayload(weaponStates)
             visualTemplateName = weaponState.VisualTemplateName,
             visualIconImage = weaponState.VisualIconImage,
             orbitIndex = weaponState.OrbitIndex,
-            orbitSpeed = getWeaponOrbitSpeed(),
+            orbitSpeed = weaponState.OrbitSpeed or getWeaponOrbitSpeed(),
+            orbitDistance = weaponState.OrbitDistance or getWeaponOrbitDistance(),
             orbitDirection = weaponState.OrbitDirection or 1,
             auraRadius = weaponState.AuraRadius or 0,
         })
@@ -477,6 +478,36 @@ end
 
 function WeaponService:GetWeaponStateFromPart(part)
     return self._weaponByPart[part]
+end
+
+function WeaponService:_getFinalWeaponDamage(actor, baseDamage)
+    if self._playerStateService and self._playerStateService.GetFinalWeaponDamage then
+        return self._playerStateService:GetFinalWeaponDamage(actor, baseDamage)
+    end
+    return math.max(0, math.floor((tonumber(baseDamage) or 0) + 0.5))
+end
+
+function WeaponService:_getFinalOrbitSpeed(actor)
+    local baseSpeed = getWeaponOrbitSpeed()
+    if self._playerStateService and self._playerStateService.GetWeaponOrbitSpeedMultiplier then
+        return baseSpeed * self._playerStateService:GetWeaponOrbitSpeedMultiplier(actor)
+    end
+    return baseSpeed
+end
+
+function WeaponService:_getFinalOrbitDistance(actor)
+    local baseDistance = getWeaponOrbitDistance()
+    if self._playerStateService and self._playerStateService.GetWeaponOrbitDistanceMultiplier then
+        return baseDistance * self._playerStateService:GetWeaponOrbitDistanceMultiplier(actor)
+    end
+    return baseDistance
+end
+
+function WeaponService:_getWeaponRestoreInterval(actor)
+    if self._playerStateService and self._playerStateService.GetBladeRecoverySeconds then
+        return self._playerStateService:GetBladeRecoverySeconds(actor)
+    end
+    return WEAPON_RESTORE_INTERVAL_SECONDS
 end
 
 function WeaponService:_configureRuntimeInstance(runtimeInstance)
@@ -786,12 +817,14 @@ function WeaponService:_createWeaponState(actor, tier, weaponIndex, totalCount, 
     weaponState.OwnerUserId = ownerUserId
     weaponState.Tier = tier
     weaponState.TierIndex = tierConfig.TierIndex or WeaponTierConfig.GetTierIndex(tier)
-    weaponState.BaseDamage = tierConfig.Damage
+    weaponState.TierBaseDamage = tierConfig.Damage
+    weaponState.BaseDamage = self:_getFinalWeaponDamage(actor, tierConfig.Damage)
     weaponState.IconImage = tierConfig.IconImage or WeaponTierConfig.GetIconImageForTier(tier)
     weaponState.VisualSkinId = equippedSkin and equippedSkin.Id or nil
     weaponState.VisualTemplateName = visualTemplateName
     weaponState.VisualIconImage = equippedSkin and equippedSkin.IconImage or weaponState.IconImage
-    weaponState.OrbitSpeed = getWeaponOrbitSpeed()
+    weaponState.OrbitSpeed = self:_getFinalOrbitSpeed(actor)
+    weaponState.OrbitDistance = self:_getFinalOrbitDistance(actor)
     weaponState.OrbitDirection = previousState and previousState.OrbitDirection or 1
     weaponState.CurrentAngle = forcedAngle or (previousState and previousState.CurrentAngle) or ((weaponIndex - 1) * angleStep)
     weaponState.OrbitIndex = weaponIndex
@@ -835,7 +868,7 @@ function WeaponService:_calculateOrbitCenter(rootPart)
 end
 
 function WeaponService:_buildWeaponCFrame(centerPosition, weaponState)
-    local orbitDistance = getWeaponOrbitDistance()
+    local orbitDistance = tonumber(weaponState and weaponState.OrbitDistance) or getWeaponOrbitDistance()
     local offset = Vector3.new(
         math.cos(weaponState.CurrentAngle) * orbitDistance,
         GameConfig.WEAPON.OrbitHeight,
@@ -1018,7 +1051,8 @@ function WeaponService:_updateWeaponTransforms(deltaTime)
                 end
                 for _, weaponState in ipairs(weaponStates) do
                     if weaponState.Alive and weaponState.RuntimeInstance and weaponState.RuntimeInstance.Parent then
-                        weaponState.OrbitSpeed = getWeaponOrbitSpeed()
+                        weaponState.OrbitSpeed = self:_getFinalOrbitSpeed(actor)
+                        weaponState.OrbitDistance = self:_getFinalOrbitDistance(actor)
                         weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
                         if shouldUpdateTransform then
                             self:_setRuntimeCFrame(weaponState.RuntimeInstance, self:_buildWeaponCFrame(centerPosition, weaponState))
@@ -1070,7 +1104,7 @@ function WeaponService:_updateWeaponRestoration(_deltaTime)
             self:_rebuildWeaponsForActorToCount(actor, math.min(currentCount + 1, desiredCount))
             local refreshedState = self._weaponRestorationByCombatUserId[combatUserId]
             if refreshedState then
-                refreshedState.NextRestoreAt = now + WEAPON_RESTORE_INTERVAL_SECONDS
+                refreshedState.NextRestoreAt = now + self:_getWeaponRestoreInterval(actor)
             end
         end
     end
@@ -1147,11 +1181,17 @@ function WeaponService:_refreshWeaponRestoration(actor, currentCount, desiredCou
     end
 
     local restorationState = self._weaponRestorationByCombatUserId[combatUserId]
+    local restoreInterval = self:_getWeaponRestoreInterval(actor)
     if not restorationState then
         restorationState = {
-            NextRestoreAt = os.clock() + WEAPON_RESTORE_INTERVAL_SECONDS,
+            NextRestoreAt = os.clock() + restoreInterval,
         }
         self._weaponRestorationByCombatUserId[combatUserId] = restorationState
+    else
+        local remainingSeconds = math.max(0, (tonumber(restorationState.NextRestoreAt) or os.clock()) - os.clock())
+        if remainingSeconds > restoreInterval then
+            restorationState.NextRestoreAt = os.clock() + restoreInterval
+        end
     end
     restorationState.TargetCount = math.max(0, math.floor(tonumber(desiredCount) or 0))
 end

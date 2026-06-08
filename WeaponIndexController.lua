@@ -325,96 +325,29 @@ function WeaponIndexController:_setPanelOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isPanelOpen = false
-            ModalUiController:Release("WeaponIndex")
+            ModalUiController:PlayPanelClose("WeaponIndex", nil, { Immediate = true })
         end
         return
     end
 
-    local uiScale = ensureUiScale(self._panel)
-    self:_cancelPanelTweens()
-    local animationSerial = self:_nextPanelAnimationSerial()
     self._isPanelOpen = isOpen == true
 
     if self._isPanelOpen then
-        ModalUiController:Acquire("WeaponIndex", self._panel)
         if not next(self._generatedRowsByTier) then
             self:_buildWeaponRows()
             self:_bindCanvasResize()
         else
             self:_updateWeaponRows()
         end
-        self._panel.Visible = true
-
-        if not uiScale or immediate == true then
-            if uiScale then
-                uiScale.Scale = 1
-            end
-            return
-        end
-
-        uiScale.Scale = OPEN_FROM_SCALE
-        local overshootTween = TweenService:Create(uiScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Scale = OPEN_OVERSHOOT_SCALE,
+        ModalUiController:PlayPanelOpen("WeaponIndex", self._panel, {
+            Immediate = immediate == true,
         })
-        local settleTween = TweenService:Create(uiScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Scale = 1,
-        })
-        self._panelTweens = { overshootTween, settleTween }
-
-        task.spawn(function()
-            overshootTween:Play()
-            overshootTween.Completed:Wait()
-            if self._panelAnimationSerial ~= animationSerial or not self._isPanelOpen then
-                return
-            end
-
-            settleTween:Play()
-            settleTween.Completed:Wait()
-            if self._panelAnimationSerial ~= animationSerial or not self._isPanelOpen then
-                return
-            end
-
-            uiScale.Scale = 1
-            table.clear(self._panelTweens)
-        end)
         return
     end
 
-    if not uiScale or immediate == true or not self._panel.Visible then
-        if uiScale then
-            uiScale.Scale = 1
-        end
-        self._panel.Visible = false
-        ModalUiController:Release("WeaponIndex")
-        return
-    end
-
-    local overshootTween = TweenService:Create(uiScale, TweenInfo.new(CLOSE_OVERSHOOT_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Scale = CLOSE_OVERSHOOT_SCALE,
+    ModalUiController:PlayPanelClose("WeaponIndex", self._panel, {
+        Immediate = immediate == true,
     })
-    local shrinkTween = TweenService:Create(uiScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
-    })
-    self._panelTweens = { overshootTween, shrinkTween }
-
-    task.spawn(function()
-        overshootTween:Play()
-        overshootTween.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isPanelOpen then
-            return
-        end
-
-        shrinkTween:Play()
-        shrinkTween.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isPanelOpen then
-            return
-        end
-
-        uiScale.Scale = 1
-        self._panel.Visible = false
-        table.clear(self._panelTweens)
-        ModalUiController:Release("WeaponIndex")
-    end)
 end
 
 function WeaponIndexController:_applyButtonState(binding)
@@ -604,8 +537,9 @@ function WeaponIndexController:_bindUi(silent)
 
     self:_disconnectButtonBindings()
     if self._isPanelOpen then
-        ModalUiController:Acquire("WeaponIndex", self._panel)
-        self._panel.Visible = true
+        ModalUiController:PlayPanelOpen("WeaponIndex", self._panel, {
+            Immediate = true,
+        })
     else
         self:_setPanelOpen(false, true)
     end

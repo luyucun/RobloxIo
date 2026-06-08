@@ -17,6 +17,8 @@ ArenaProgressService._broadcastQueued = false
 ArenaProgressService._lastBroadcastClock = 0
 ArenaProgressService._minBroadcastIntervalSeconds = 0.1
 
+local ARENA_PROGRESS_ENABLED = false
+
 local function normalizeLevel(value)
     return math.max(1, math.floor(tonumber(value) or 1))
 end
@@ -60,6 +62,9 @@ function ArenaProgressService:_buildPayload()
 end
 
 function ArenaProgressService:_broadcast()
+    if ARENA_PROGRESS_ENABLED ~= true then
+        return
+    end
     if not self._arenaProgressSyncEvent then
         return
     end
@@ -78,6 +83,12 @@ function ArenaProgressService:BroadcastNow()
 end
 
 function ArenaProgressService:MarkDirty()
+    if ARENA_PROGRESS_ENABLED ~= true then
+        self._dirty = false
+        self._broadcastQueued = false
+        return
+    end
+
     self._dirty = true
     if self._broadcastQueued then
         return
@@ -100,6 +111,9 @@ end
 
 function ArenaProgressService:OnPlayerAdded(player)
     self:MarkDirty()
+    if ARENA_PROGRESS_ENABLED ~= true then
+        return
+    end
     if self._arenaProgressSyncEvent and player and player.Parent then
         self._arenaProgressSyncEvent:FireClient(player, self:_buildPayload())
     end

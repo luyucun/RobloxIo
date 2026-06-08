@@ -293,84 +293,23 @@ function GroupRewardController:_setOpen(isOpen, immediate)
     if not self._panel then
         if isOpen ~= true then
             self._isOpen = false
-            self:_cancelPanelTweens()
-            ModalUiController:Release("GroupReward")
+            ModalUiController:PlayPanelClose("GroupReward", nil, { Immediate = true })
         end
         return
     end
 
-    self:_cancelPanelTweens()
-    local animationSerial = self:_nextPanelAnimationSerial()
     self._isOpen = isOpen == true
-    local rootScale = ensureUiScale(self._panel)
     if self._isOpen then
         self:_applyClaimState()
-        ModalUiController:Acquire("GroupReward", self._panel)
-        self._panel.Visible = true
-        if rootScale then
-            rootScale.Scale = OPEN_FROM_SCALE
-            local overshoot = TweenService:Create(rootScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-                Scale = OPEN_OVERSHOOT_SCALE,
-            })
-            local settle = TweenService:Create(rootScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                Scale = 1,
-            })
-            self._panelTweens = { overshoot, settle }
-            task.spawn(function()
-                overshoot:Play()
-                overshoot.Completed:Wait()
-                if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                    return
-                end
-
-                settle:Play()
-                settle.Completed:Wait()
-                if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                    return
-                end
-
-                rootScale.Scale = 1
-                table.clear(self._panelTweens)
-            end)
-        end
+        ModalUiController:PlayPanelOpen("GroupReward", self._panel, {
+            Immediate = immediate == true,
+        })
         return
     end
 
-    if not rootScale or immediate == true or not self._panel.Visible then
-        if rootScale then
-            rootScale.Scale = 1
-        end
-        self._panel.Visible = false
-        ModalUiController:Release("GroupReward")
-        return
-    end
-
-    local overshoot = TweenService:Create(rootScale, TweenInfo.new(CLOSE_OVERSHOOT_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Scale = CLOSE_OVERSHOOT_SCALE,
+    ModalUiController:PlayPanelClose("GroupReward", self._panel, {
+        Immediate = immediate == true,
     })
-    local shrink = TweenService:Create(rootScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
-    })
-    self._panelTweens = { overshoot, shrink }
-
-    task.spawn(function()
-        overshoot:Play()
-        overshoot.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-
-        shrink:Play()
-        shrink.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-
-        rootScale.Scale = 1
-        self._panel.Visible = false
-        table.clear(self._panelTweens)
-        ModalUiController:Release("GroupReward")
-    end)
 end
 
 function GroupRewardController:_requestClaim()

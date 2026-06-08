@@ -84,6 +84,10 @@ function RemoteEventService:Init()
     local eventDefinitions = {
         { Key = "PlayerStateSync", Parent = systemEvents, Name = RemoteNames.System.PlayerStateSync },
         { Key = "RequestPlayerStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestPlayerStateSync },
+        { Key = "RequestAttributeUpgrade", Parent = systemEvents, Name = RemoteNames.System.RequestAttributeUpgrade },
+        { Key = "AttributeUpgradeFeedback", Parent = systemEvents, Name = RemoteNames.System.AttributeUpgradeFeedback },
+        { Key = "RequestAttributeCapUpgrade", Parent = systemEvents, Name = RemoteNames.System.RequestAttributeCapUpgrade },
+        { Key = "AttributeCapUpgradeFeedback", Parent = systemEvents, Name = RemoteNames.System.AttributeCapUpgradeFeedback },
         { Key = "ArenaTransitionFeedback", Parent = systemEvents, Name = RemoteNames.System.ArenaTransitionFeedback },
         { Key = "DeathFeedback", Parent = systemEvents, Name = RemoteNames.System.DeathFeedback },
         { Key = "KillInfoFeedback", Parent = systemEvents, Name = RemoteNames.System.KillInfoFeedback },

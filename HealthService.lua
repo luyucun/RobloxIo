@@ -708,7 +708,16 @@ function HealthService:_tryRegeneratePlayer(player, now, config)
         return false
     end
 
-    local healAmount = math.max(1, math.floor((maxHealth * config.MaxHealthPercentPerTick) + 0.5))
+    local regenPercentPerSecond = 0
+    if self._playerStateService.GetHealthRegenPercentPerSecond then
+        regenPercentPerSecond = self._playerStateService:GetHealthRegenPercentPerSecond(player)
+    end
+    if regenPercentPerSecond <= 0 then
+        self:_removeRecoverEffect(player)
+        return false
+    end
+
+    local healAmount = math.max(1, math.floor((maxHealth * regenPercentPerSecond * config.TickSeconds) + 0.5))
     state.CurrentHealth = math.min(maxHealth, currentHealth + healAmount)
     self:_ensureRecoverEffect(player)
     self._playerStateService:SyncHumanoidHealth(player)
@@ -917,7 +926,13 @@ function HealthService:ResetPlayerHealth(actor)
         self:_ensureShieldEffect(actor)
     end
     local state = self._playerStateService:GetState(actor)
-    state.MaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
+    if self._playerStateService.RecalculateDerivedStats then
+        state = self._playerStateService:RecalculateDerivedStats(actor, {
+            restoreFullHealth = true,
+        }) or state
+    else
+        state.MaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
+    end
     state.CurrentHealth = state.MaxHealth
     self._playerStateService:SyncHumanoidHealth(actor)
     self:_updateShieldOverheadUi(actor)

@@ -10,8 +10,10 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local TouchRegionGate = require(script.Parent:WaitForChild("TouchRegionGate"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -54,6 +56,9 @@ WheelController._wheelClaimGeneratedItem = nil
 WheelController._infoText = nil
 WheelController._freeCountdownText = nil
 WheelController._remainingText = nil
+WheelController._machineSpinText = nil
+WheelController._machineCountdownText = nil
+WheelController._wheelRegionGate = nil
 WheelController._warningFrame = nil
 WheelController._warningText = nil
 WheelController._requestStateEvent = nil
@@ -107,6 +112,7 @@ local WHEEL_CLAIM_SETTLE_DURATION = 0.1
 local WHEEL_CLAIM_MODAL_OWNER = "WheelClaim"
 local WHEEL_SEGMENT_SOUND_FIRST_THRESHOLD_DEGREES = 30
 local WHEEL_SEGMENT_SOUND_INTERVAL_DEGREES = 60
+local WHEEL_REGION_WAIT_SECONDS = 30
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -333,6 +339,77 @@ function WheelController:_disconnectButtonBindings()
     table.clear(self._buttonBindings)
 end
 
+function WheelController:_disconnectWheelRegion()
+    if self._wheelRegionGate then
+        self._wheelRegionGate:Stop()
+        self._wheelRegionGate = nil
+    end
+end
+
+function WheelController:_findWheelModel()
+    local map2 = Workspace:WaitForChild("Map2", WHEEL_REGION_WAIT_SECONDS)
+    if not map2 then
+        return nil
+    end
+
+    local machines = map2:WaitForChild("Machines", WHEEL_REGION_WAIT_SECONDS)
+    if not machines then
+        return nil
+    end
+
+    return machines:WaitForChild("Wheel", WHEEL_REGION_WAIT_SECONDS)
+end
+
+function WheelController:_bindMachineBillboards(wheelModel)
+    local luckyWheel = wheelModel and wheelModel:FindFirstChild("LuckyWheel")
+    local freeSpin = luckyWheel and luckyWheel:FindFirstChild("FreeSpin")
+    local freeSpinBillboard = freeSpin and freeSpin:FindFirstChild("BillboardGui")
+    local timePart = luckyWheel and luckyWheel:FindFirstChild("Time")
+    local timeBillboard = timePart and timePart:FindFirstChild("BillboardGui")
+
+    self._machineSpinText = freeSpinBillboard and freeSpinBillboard:FindFirstChild("Text")
+    self._machineCountdownText = timeBillboard and timeBillboard:FindFirstChild("Time")
+end
+
+function WheelController:_handleWheelRegionEntered()
+    if self._isOpen then
+        return
+    end
+
+    self:Open()
+end
+
+function WheelController:_connectWheelRegion()
+    self:_disconnectWheelRegion()
+
+    task.spawn(function()
+        local wheelModel = self:_findWheelModel()
+        if not wheelModel then
+            warn("[WheelController] Could not find Workspace.Map2.Machines.Wheel.")
+            return
+        end
+
+        self:_bindMachineBillboards(wheelModel)
+        self:_refreshTexts()
+
+        local region = wheelModel:WaitForChild("SquareRegion", WHEEL_REGION_WAIT_SECONDS)
+        if not region then
+            warn("[WheelController] Could not find Workspace.Map2.Machines.Wheel.SquareRegion.")
+            return
+        end
+
+        self._wheelRegionGate = TouchRegionGate.new({
+            LocalPlayer = self._localPlayer,
+            Region = region,
+            Label = "Wheel.SquareRegion",
+            OnEnter = function()
+                self:_handleWheelRegionEntered()
+            end,
+        })
+        self._wheelRegionGate:Start()
+    end)
+end
+
 function WheelController:_ensureWheelEntryClickButton()
     if not (self._wheelEntry and self._wheelEntry:IsA("GuiObject")) then
         return nil
@@ -526,7 +603,7 @@ function WheelController:_setOpen(isOpen, immediate)
     if not (self._panel and self._panel:IsA("GuiObject")) then
         if isOpen ~= true then
             self._isOpen = false
-            ModalUiController:Release("Wheel")
+            ModalUiController:PlayPanelClose("Wheel", nil, { Immediate = true })
         end
         return
     end
@@ -535,80 +612,24 @@ function WheelController:_setOpen(isOpen, immediate)
         return
     end
 
-    local uiScale = ensureUiScale(self._panel)
-    self:_cancelPanelTweens()
-    self._panelAnimationSerial += 1
-    local animationSerial = self._panelAnimationSerial
     self._isOpen = isOpen == true
 
     if self._isOpen then
-        ModalUiController:Acquire("Wheel", self._panel)
-        self._panel.Visible = true
         if self._requestStateEvent then
             self._requestStateEvent:FireServer({
                 intent = "WheelOpened",
                 source = "Wheel",
             })
         end
-        if not uiScale or immediate == true then
-            if uiScale then
-                uiScale.Scale = 1
-            end
-            return
-        end
-
-        uiScale.Scale = OPEN_FROM_SCALE
-        local overshootTween = TweenService:Create(uiScale, TweenInfo.new(OPEN_OVERSHOOT_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Scale = OPEN_OVERSHOOT_SCALE,
+        ModalUiController:PlayPanelOpen("Wheel", self._panel, {
+            Immediate = immediate == true,
         })
-        local settleTween = TweenService:Create(uiScale, TweenInfo.new(OPEN_SETTLE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Scale = 1,
-        })
-        self._panelTweens = { overshootTween, settleTween }
-        task.spawn(function()
-            overshootTween:Play()
-            overshootTween.Completed:Wait()
-            if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                return
-            end
-
-            settleTween:Play()
-            settleTween.Completed:Wait()
-            if self._panelAnimationSerial ~= animationSerial or not self._isOpen then
-                return
-            end
-
-            uiScale.Scale = 1
-            table.clear(self._panelTweens)
-        end)
         return
     end
 
-    if not uiScale or immediate == true or not self._panel.Visible then
-        if uiScale then
-            uiScale.Scale = 1
-        end
-        self._panel.Visible = false
-        ModalUiController:Release("Wheel")
-        return
-    end
-
-    local shrinkTween = TweenService:Create(uiScale, TweenInfo.new(CLOSE_SHRINK_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Scale = CLOSE_TO_SCALE,
+    ModalUiController:PlayPanelClose("Wheel", self._panel, {
+        Immediate = immediate == true,
     })
-    self._panelTweens = { shrinkTween }
-    task.spawn(function()
-        shrinkTween:Play()
-        shrinkTween.Completed:Wait()
-        if self._panelAnimationSerial ~= animationSerial or self._isOpen then
-            return
-        end
-
-        uiScale.Scale = 1
-        self._panel.Visible = false
-        table.clear(self._panelTweens)
-        ModalUiController:Release("Wheel")
-    end)
 end
 
 function WheelController:_getRemainingCountdown()
@@ -643,6 +664,8 @@ function WheelController:_refreshTexts()
     end
     setText(self._freeCountdownText, countdownText)
     setText(self._remainingText, tostring(spins))
+    setText(self._machineSpinText, "Spin:" .. tostring(spins))
+    setText(self._machineCountdownText, "Free Spin In:" .. countdownText)
 end
 
 function WheelController:_showWarning(message)
@@ -1093,12 +1116,14 @@ function WheelController:Init(dependencies)
     self._suppressSpinResult = false
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
+    self:_disconnectWheelRegion()
     self:_hideWheelClaim()
 
     self:_connectRemotes()
     if not self:_bindUi(true) then
         self:_queueBindRetry()
     end
+    self:_connectWheelRegion()
 
     local playerGui = self._localPlayer and self._localPlayer:FindFirstChild("PlayerGui")
     if playerGui then
