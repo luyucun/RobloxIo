@@ -8,12 +8,12 @@ Source: IO_BaseBalanceDraft.xlsx / Monster base info draft sheet
 
 local MonsterCatalog = {}
 
-local NORMAL_MONSTER_TYPE_NAME = "普通小怪"
+local NORMAL_MONSTER_TYPE_NAME = "Normal Monster"
 
 local DEFINITIONS = {
     ["1001"] = {
         Id = "1001",
-        TypeName = "普通小怪",
+        TypeName = "Normal Monster",
         IsNormal = true,
         TemplateName = "Monster001",
         ModelPath = "ReplicatedStorage/Model/Monster/Monster001",
@@ -35,7 +35,7 @@ local DEFINITIONS = {
     },
     ["1002"] = {
         Id = "1002",
-        TypeName = "普通小怪",
+        TypeName = "Normal Monster",
         IsNormal = true,
         TemplateName = "Monster002",
         ModelPath = "ReplicatedStorage/Model/Monster/Monster002",
@@ -57,7 +57,7 @@ local DEFINITIONS = {
     },
     ["1003"] = {
         Id = "1003",
-        TypeName = "普通小怪",
+        TypeName = "Normal Monster",
         IsNormal = true,
         TemplateName = "Monster003",
         ModelPath = "ReplicatedStorage/Model/Monster/Monster003",
@@ -79,7 +79,7 @@ local DEFINITIONS = {
     },
     ["1004"] = {
         Id = "1004",
-        TypeName = "普通小怪",
+        TypeName = "Normal Monster",
         IsNormal = true,
         TemplateName = "Monster004",
         ModelPath = "ReplicatedStorage/Model/Monster/Monster004",
@@ -101,7 +101,7 @@ local DEFINITIONS = {
     },
     ["1005"] = {
         Id = "1005",
-        TypeName = "普通小怪",
+        TypeName = "Normal Monster",
         IsNormal = true,
         TemplateName = "Monster005",
         ModelPath = "ReplicatedStorage/Model/Monster/Monster005",
@@ -123,7 +123,7 @@ local DEFINITIONS = {
     },
     ["1006"] = {
         Id = "1006",
-        TypeName = "普通小怪",
+        TypeName = "Normal Monster",
         IsNormal = true,
         TemplateName = "Monster006",
         ModelPath = "ReplicatedStorage/Model/Monster/Monster006",
@@ -145,7 +145,7 @@ local DEFINITIONS = {
     },
     ["1007"] = {
         Id = "1007",
-        TypeName = "普通小怪",
+        TypeName = "Normal Monster",
         IsNormal = true,
         TemplateName = "Monster007",
         ModelPath = "ReplicatedStorage/Model/Monster/Monster007",
@@ -167,7 +167,7 @@ local DEFINITIONS = {
     },
     ["1008"] = {
         Id = "1008",
-        TypeName = "普通小怪",
+        TypeName = "Normal Monster",
         IsNormal = true,
         TemplateName = "Monster008",
         ModelPath = "ReplicatedStorage/Model/Monster/Monster008",
@@ -189,7 +189,7 @@ local DEFINITIONS = {
     },
     ["2001"] = {
         Id = "2001",
-        TypeName = "首领",
+        TypeName = "Boss",
         IsBoss = true,
         TemplateName = "Boss001",
         ModelPath = "ReplicatedStorage/Model/Monster/Boss001",
@@ -210,7 +210,7 @@ local DEFINITIONS = {
     },
     ["2002"] = {
         Id = "2002",
-        TypeName = "首领",
+        TypeName = "Boss",
         IsBoss = true,
         TemplateName = "Boss002",
         ModelPath = "ReplicatedStorage/Model/Monster/Boss002",
@@ -231,7 +231,7 @@ local DEFINITIONS = {
     },
     ["2003"] = {
         Id = "2003",
-        TypeName = "首领",
+        TypeName = "Boss",
         IsBoss = true,
         TemplateName = "Boss003",
         ModelPath = "ReplicatedStorage/Model/Monster/Boss003",
@@ -252,7 +252,7 @@ local DEFINITIONS = {
     },
     ["2004"] = {
         Id = "2004",
-        TypeName = "首领",
+        TypeName = "Boss",
         IsBoss = true,
         TemplateName = "Boss004",
         ModelPath = "ReplicatedStorage/Model/Monster/Boss004",

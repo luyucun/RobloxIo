@@ -418,7 +418,7 @@ end
 function MonsterService:_configureRuntimeInstance(instance, monsterId, isBoss, monsterDefinition)
     local definitionId = monsterDefinition and monsterDefinition.Id or nil
     local templateName = monsterDefinition and monsterDefinition.TemplateName or nil
-    local typeName = monsterDefinition and monsterDefinition.TypeName or (isBoss and "首领" or "普通小怪")
+    local typeName = monsterDefinition and monsterDefinition.TypeName or (isBoss and "Boss" or "Normal Monster")
     local baseParts = getBaseParts(instance)
     local primaryPart = nil
     if instance:IsA("Model") and #baseParts > 0 then
@@ -483,7 +483,7 @@ function MonsterService:SpawnMonster(position, overrideConfig)
         Id = monsterId,
         MonsterDefinitionId = monsterDefinition and monsterDefinition.Id or nil,
         MonsterTemplateName = templateName,
-        MonsterType = monsterDefinition and monsterDefinition.TypeName or (monsterConfig.IsBoss and "首领" or "普通小怪"),
+        MonsterType = monsterDefinition and monsterDefinition.TypeName or (monsterConfig.IsBoss and "Boss" or "Normal Monster"),
         RuntimeInstance = runtimeInstance,
         GroundY = spawnPosition.Y,
         Level = monsterConfig.Level or GameConfig.MONSTER.Level,

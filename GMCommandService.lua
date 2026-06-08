@@ -230,7 +230,7 @@ function GMCommandService:_handleChatCommand(player, message)
         return true, totalPlayerKills
     end
 
-    if commandName == "setcap" or commandName == "addcap" or commandName == "resetcaps" or commandName == "maxcaps" then
+    if commandName == "setcap" or commandName == "addcap" or commandName == "setcaps" or commandName == "setallcaps" or commandName == "allcaps" or commandName == "resetcaps" or commandName == "maxcaps" then
         if not self._playerStateService then
             warn("[GMCommandService] PlayerStateService is unavailable")
             return false, "ServiceUnavailable"
@@ -266,6 +266,25 @@ function GMCommandService:_handleChatCommand(player, message)
             })
             print(string.format("[GMCommandService] %s added cap %s by %d: success=%s, result=%s, cap=%d", player.Name, attributeKey, amountOrError, tostring(success), tostring(result), math.floor(tonumber(newCap) or 0)))
             return success == true, newCap
+        end
+
+        if commandName == "setcaps" or commandName == "setallcaps" or commandName == "allcaps" then
+            if not self._playerStateService.SetAllAttributeCaps then
+                warn("[GMCommandService] PlayerStateService cannot set all attribute caps")
+                return false, "ServiceUnavailable"
+            end
+
+            local amount, errorCode = parsePositiveAmountCommand(message, commandName)
+            if not amount then
+                warn(string.format("[GMCommandService] Invalid /%s command from %s: %s", commandName, player.Name, tostring(message)))
+                return false, errorCode or "InvalidAmount"
+            end
+
+            local success, result, _, caps = self._playerStateService:SetAllAttributeCaps(player, amount, {
+                source = "gm",
+            })
+            print(string.format("[GMCommandService] %s set all attribute caps to %d: success=%s, result=%s", player.Name, amount, tostring(success), tostring(result)))
+            return success == true, caps
         end
 
         if commandName == "resetcaps" then

@@ -52,10 +52,13 @@ AttributeUpgradeController._isPanelOpen = false
 AttributeUpgradeController._outsideCloseInputConnection = nil
 AttributeUpgradeController._cardsByKey = {}
 AttributeUpgradeController._requestEvent = nil
+AttributeUpgradeController._holdRepeatTokens = {}
 
 local UI_BIND_RETRY_COUNT = 80
 local UI_BIND_RETRY_INTERVAL_SECONDS = 0.25
 local PENDING_TIMEOUT_SECONDS = 1.5
+local HOLD_REPEAT_START_DELAY_SECONDS = 0.35
+local HOLD_REPEAT_INTERVAL_SECONDS = 0.1
 local MODAL_OWNER_ID = "AttributeUpgrade"
 local HUD_TRANSITION_SECONDS = 0.22
 local HUD_ENTRY_OPEN_X_SCALE = 0.5
@@ -82,6 +85,11 @@ local function disconnectAll(connections)
         end
     end
     table.clear(connections)
+end
+
+local function isPrimaryPointerInput(inputObject)
+    local inputType = inputObject and inputObject.UserInputType
+    return inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch
 end
 
 local function findDescendant(root, path)
@@ -549,6 +557,7 @@ end
 
 function AttributeUpgradeController:_closePanel()
     self._isPanelOpen = false
+    self:_stopAllUpgradeHolds()
     self:_disconnectOutsideCloseInput()
     self:_setLevelHudUpgradeMode(false)
     if self._modalUiController and self._modalUiController.Release then
@@ -612,15 +621,13 @@ function AttributeUpgradeController:_openPanel()
     return true
 end
 
-function AttributeUpgradeController:_requestUpgrade(attributeKey)
+function AttributeUpgradeController:_getUpgradeAvailability(attributeKey)
     local key = AttributeConfig.NormalizeKey(attributeKey)
     if not key then
-        self:_showMessage("Invalid attribute")
-        return
+        return false, "InvalidAttribute", "Invalid attribute"
     end
     if not self:_isBattleReady() then
-        self:_showMessage("Enter battle to upgrade")
-        return
+        return false, "NotInBattle", "Enter battle to upgrade", key
     end
 
     local attributeState = extractAttributeState(self._latestPayload)
@@ -628,19 +635,28 @@ function AttributeUpgradeController:_requestUpgrade(attributeKey)
     local levels = AttributeConfig.NormalizeLevels(attributeState.attributeLevels, attributeState.attributeCaps)
     local caps = AttributeConfig.NormalizeCaps(attributeState.attributeCaps)
     if skillPoints <= 0 then
-        self:_showMessage("Not enough points")
-        return
+        return false, "NotEnoughPoints", "Not enough points", key
     end
     if (levels[key] or 0) >= (caps[key] or 0) then
-        self:_showMessage("Max level reached")
-        return
+        return false, "MaxLevel", "Max level reached", key
     end
     if self._pendingByKey[key] == true then
-        return
+        return false, "Pending", "", key
     end
     if not self._requestEvent then
-        self:_showMessage("Upgrade is unavailable")
-        return
+        return false, "Unavailable", "Upgrade is unavailable", key
+    end
+
+    return true, "Ready", "", key
+end
+
+function AttributeUpgradeController:_requestUpgrade(attributeKey, options)
+    local canUpgrade, reason, message, key = self:_getUpgradeAvailability(attributeKey)
+    if not canUpgrade then
+        if reason ~= "Pending" and not (type(options) == "table" and options.silent == true) and message ~= "" then
+            self:_showMessage(message)
+        end
+        return false, reason
     end
 
     self._pendingByKey[key] = true
@@ -654,6 +670,48 @@ function AttributeUpgradeController:_requestUpgrade(attributeKey)
         self._pendingByKey[key] = nil
         self:_showMessage("Please try again")
         self:_applyState(self._latestPayload)
+    end)
+
+    return true, "Requested"
+end
+
+function AttributeUpgradeController:_stopUpgradeHold(attributeKey)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    if key then
+        self._holdRepeatTokens[key] = nil
+    end
+end
+
+function AttributeUpgradeController:_stopAllUpgradeHolds()
+    table.clear(self._holdRepeatTokens)
+end
+
+function AttributeUpgradeController:_startUpgradeHold(attributeKey)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    if not key then
+        self:_requestUpgrade(attributeKey)
+        return
+    end
+
+    local token = {}
+    self._holdRepeatTokens[key] = token
+    local requested, reason = self:_requestUpgrade(key)
+    if not requested and reason ~= "Pending" then
+        self:_stopUpgradeHold(key)
+        return
+    end
+
+    task.delay(HOLD_REPEAT_START_DELAY_SECONDS, function()
+        while self._holdRepeatTokens[key] == token and self:_isPanelCurrentlyOpen() do
+            local repeatRequested, repeatReason = self:_requestUpgrade(key, {
+                silent = true,
+            })
+            if not repeatRequested and repeatReason ~= "Pending" then
+                self:_stopUpgradeHold(key)
+                break
+            end
+            task.wait(HOLD_REPEAT_INTERVAL_SECONDS)
+        end
     end)
 end
 
@@ -671,8 +729,29 @@ function AttributeUpgradeController:_bindCard(statsGrid, attributeKey)
             HoverScale = 1.08,
             PressScale = 0.88,
         })
-        table.insert(self._uiConnections, addButton.Activated:Connect(function()
+        table.insert(self._uiConnections, addButton.Activated:Connect(function(inputObject)
+            if isPrimaryPointerInput(inputObject) then
+                return
+            end
             self:_requestUpgrade(attributeKey)
+        end))
+        table.insert(self._uiConnections, addButton.InputBegan:Connect(function(inputObject)
+            if isPrimaryPointerInput(inputObject) then
+                self:_startUpgradeHold(attributeKey)
+            end
+        end))
+        table.insert(self._uiConnections, addButton.InputEnded:Connect(function(inputObject)
+            if isPrimaryPointerInput(inputObject) then
+                self:_stopUpgradeHold(attributeKey)
+            end
+        end))
+        table.insert(self._uiConnections, UserInputService.InputEnded:Connect(function(inputObject)
+            if isPrimaryPointerInput(inputObject) then
+                self:_stopUpgradeHold(attributeKey)
+            end
+        end))
+        table.insert(self._uiConnections, addButton.MouseLeave:Connect(function()
+            self:_stopUpgradeHold(attributeKey)
         end))
     end
 
@@ -748,6 +827,7 @@ function AttributeUpgradeController:_bindUi(silent)
     local previousHud = self._hud
     local previousHudDefaultState = self._hudDefaultState
     self:_cancelHudTransitionTweens()
+    self:_stopAllUpgradeHolds()
     disconnectAll(self._uiConnections)
     self._boundMain = main
     self._hud = main:FindFirstChild("LevelUpgradeHud")
@@ -914,6 +994,7 @@ function AttributeUpgradeController:Init(dependencies)
     self._modalUiController = dependencies and dependencies.ModalUiController or nil
     self._latestPayload = nil
     self._pendingByKey = {}
+    self._holdRepeatTokens = {}
     self._boundMain = nil
     disconnectAll(self._connections)
     disconnectAll(self._uiConnections)

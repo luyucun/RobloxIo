@@ -1153,6 +1153,38 @@ function PlayerStateService:AddAttributeCap(actor, attributeKey, amount, context
     return self:SetAttributeCap(actor, key, currentCap + delta, context)
 end
 
+function PlayerStateService:SetAllAttributeCaps(actor, cap, context)
+    local state = self:_getOrCreateState(actor)
+    self:_normalizeAttributeState(state)
+
+    local requestedCap = math.floor(tonumber(cap) or 0)
+    local changed = false
+    for _, key in ipairs(AttributeConfig.Order) do
+        local definition = AttributeConfig.GetDefinition(key)
+        local minCap = math.max(0, math.floor(tonumber(definition and definition.InitialCap) or 0))
+        local maxCap = AttributeConfig.GetMaxCap(key)
+        local targetCap = math.clamp(requestedCap, minCap, maxCap)
+        local oldCap = math.max(0, math.floor(tonumber(state.AttributeCaps[key]) or minCap))
+        if oldCap ~= targetCap then
+            state.AttributeCaps[key] = targetCap
+            changed = true
+        end
+    end
+
+    if not changed then
+        return true, "Unchanged", "Unchanged", AttributeConfig.CopyNumberMap(state.AttributeCaps)
+    end
+
+    state.AttributeLevels = AttributeConfig.NormalizeLevels(state.AttributeLevels, state.AttributeCaps)
+    self:_normalizeAttributeState(state)
+    self:RecalculateDerivedStats(actor, type(context) == "table" and context.recalculateOptions or nil)
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    return true, "Updated", "Updated", AttributeConfig.CopyNumberMap(state.AttributeCaps)
+end
+
 function PlayerStateService:ResetAttributeCaps(actor)
     local state = self:_getOrCreateState(actor)
     state.AttributeCaps = AttributeConfig.BuildDefaultCaps()

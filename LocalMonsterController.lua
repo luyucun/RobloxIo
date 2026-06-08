@@ -1096,7 +1096,7 @@ function LocalMonsterController:_spawnMonster()
     self._nextMonsterId += 1
     local monsterDefinitionId = monsterDefinition and monsterDefinition.Id or GameConfig.MONSTER.MonsterDefinitionId
     local monsterTemplateName = monsterDefinition and monsterDefinition.TemplateName or GameConfig.MONSTER.TemplateName
-    local monsterTypeName = monsterDefinition and monsterDefinition.TypeName or "普通小怪"
+    local monsterTypeName = monsterDefinition and monsterDefinition.TypeName or "Normal Monster"
     local forceSafeZoneRespawn = self:_shouldForceSafeZoneRespawn()
     local spawnPoint = forceSafeZoneRespawn and self:_samplePointInsideSafeZone() or self:_samplePointInsideBattle()
     if not spawnPoint then

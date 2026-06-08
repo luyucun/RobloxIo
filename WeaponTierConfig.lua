@@ -85,7 +85,7 @@ local function buildTemplateName(tierIndex)
 end
 
 local function buildFallbackDisplayName(tierIndex)
-    return string.format("%d级武器", tierIndex)
+    return string.format("Tier %d Weapon", tierIndex)
 end
 
 local function resolveIconImage(tierIndex)

@@ -326,6 +326,29 @@ function AttributeCapUpgradeController:_bindRow(statsList, attributeKey)
     }
 end
 
+function AttributeCapUpgradeController:_bindEntryButton(main)
+    local capsEntry = findDescendant(main, "Left.Caps")
+    local textButton = capsEntry and capsEntry:FindFirstChild("TextButton")
+    if textButton and textButton:IsA("GuiButton") then
+        table.insert(self._uiConnections, textButton.Activated:Connect(function()
+            self:Open()
+        end))
+        return true
+    end
+
+    if capsEntry and capsEntry:IsA("GuiObject") then
+        capsEntry.Active = true
+        table.insert(self._uiConnections, capsEntry.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                self:Open()
+            end
+        end))
+        return true
+    end
+
+    return false
+end
+
 function AttributeCapUpgradeController:_bindUi(silent)
     local playerGui = self:_getPlayerGui()
     local main = playerGui and playerGui:FindFirstChild("Main")
@@ -353,6 +376,10 @@ function AttributeCapUpgradeController:_bindUi(silent)
     end
 
     self._panel.Visible = false
+    if not self:_bindEntryButton(main) and not silent then
+        warn("[AttributeCapUpgradeController] Main.Left.Caps entry is unavailable")
+    end
+
     self._gemValue = findDescendant(self._panel, "Window.GemSummaryBar.GemValue")
     local buyWithRobuxButton = findDescendant(self._panel, "Window.GemSummaryBar.BuyWithRobuxButton")
     if buyWithRobuxButton and buyWithRobuxButton:IsA("GuiButton") then
