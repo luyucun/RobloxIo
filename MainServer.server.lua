@@ -571,7 +571,7 @@ GameAnalyticsService:BindSystems({
 
 local function onPlayerAdded(player)
     if #Players:GetPlayers() > GameConfig.SERVER.MaxPlayers then
-        player:Kick(string.format("当前服务器最多允许 %d 名玩家。", GameConfig.SERVER.MaxPlayers))
+        player:Kick(string.format("This server allows a maximum of %d players.", GameConfig.SERVER.MaxPlayers))
         return
     end
 

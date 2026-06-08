@@ -25,6 +25,9 @@ ModalUiController._dormantRootStatesByRoot = {}
 ModalUiController._dormantRootConnectionsByRoot = {}
 ModalUiController._dormantRootPrepared = false
 ModalUiController._panelMotionStatesByPanel = setmetatable({}, { __mode = "k" })
+ModalUiController._buttonMotionCleanupsByButton = setmetatable({}, { __mode = "k" })
+ModalUiController._mainEntryMotionBindingsByButton = setmetatable({}, { __mode = "k" })
+ModalUiController._mainEntryMotionSerial = 0
 
 local DEFAULT_PANEL_MOTION = {
     OpenFromScale = 0.9,
@@ -42,9 +45,15 @@ local DEFAULT_BUTTON_MOTION = {
     PressScale = 0.92,
     HoverRotation = 0,
     PressRotation = 0,
-    HoverDuration = 0.12,
+    HoverDuration = 0.1,
     PressDuration = 0.06,
-    ReleaseDuration = 0.16,
+    ReleaseDuration = 0.12,
+    HoverOvershootMultiplier = 1.035,
+    HoverRotationOvershootMultiplier = 1.18,
+    HoverSettleDuration = 0.08,
+    ReleaseUndershootScale = 0.975,
+    ReleaseRotationOvershootRatio = 0.16,
+    ReleaseSettleDuration = 0.11,
 }
 
 local DIM_OVERLAY_NAME = "__ModalDimOverlay"
@@ -162,6 +171,70 @@ local function getButtonMotionNumber(options, key)
     return value
 end
 
+local function shouldEnableButtonMotionOption(options, key)
+    return type(options) == "table" and options[key] == true
+end
+
+local function collectSiblingTextScaleTargets(button, options)
+    local targets = {}
+    local seen = {}
+
+    local function addTarget(target)
+        if not (target and target:IsA("TextLabel") and target ~= button and not seen[target]) then
+            return
+        end
+        seen[target] = true
+        table.insert(targets, target)
+    end
+
+    if type(options) == "table" and type(options.TextScaleTargets) == "table" then
+        for _, target in ipairs(options.TextScaleTargets) do
+            addTarget(target)
+        end
+    end
+
+    if not shouldEnableButtonMotionOption(options, "IncludeSiblingTextScale") then
+        return targets
+    end
+
+    local parent = button and button.Parent
+    if not parent then
+        return targets
+    end
+
+    for _, sibling in ipairs(parent:GetChildren()) do
+        addTarget(sibling)
+    end
+
+    return targets
+end
+
+local function findFirstGuiButton(root)
+    if not root then
+        return nil
+    end
+    if root:IsA("GuiButton") then
+        return root
+    end
+
+    local directButton = root:FindFirstChildWhichIsA("GuiButton")
+    if directButton then
+        return directButton
+    end
+
+    return root:FindFirstChildWhichIsA("GuiButton", true)
+end
+
+local function findRotationTargetForEntry(root, button)
+    if root then
+        local icon = root:FindFirstChild("Icon", true)
+        if icon and icon:IsA("GuiObject") then
+            return icon
+        end
+    end
+    return button
+end
+
 local function runMotionCallback(callback)
     if type(callback) ~= "function" then
         return
@@ -207,6 +280,16 @@ function ModalUiController:_hasOwners()
     return next(self._owners) ~= nil
 end
 
+function ModalUiController:_shouldApplyBlur()
+    for _, ownerState in pairs(self._owners) do
+        if not (ownerState and ownerState.SkipBlur == true) then
+            return true
+        end
+    end
+
+    return false
+end
+
 function ModalUiController:_preparePanelMotion(panel)
     local state = self._panelMotionStatesByPanel[panel]
     if not state then
@@ -234,6 +317,16 @@ function ModalUiController:_isActivePanelChild(child)
     end
 
     for _, ownerState in pairs(self._owners) do
+        for excludedNode in pairs(ownerState.SuppressExclusions or {}) do
+            if excludedNode and excludedNode.Parent then
+                if child == excludedNode or child:IsAncestorOf(excludedNode) or excludedNode:IsAncestorOf(child) then
+                    return true
+                end
+            else
+                ownerState.SuppressExclusions[excludedNode] = nil
+            end
+        end
+
         local panel = ownerState and ownerState.Panel
         if panel and panel.Parent then
             if child == panel or child:IsAncestorOf(panel) or panel:IsAncestorOf(child) then
@@ -369,6 +462,21 @@ function ModalUiController:_clearHiddenVisibleWatchers()
         disconnectConnection(connection)
         self._hiddenVisibleConnectionsByNode[guiObject] = nil
     end
+end
+
+function ModalUiController:_restoreSuppressedGuiObject(guiObject)
+    if not (guiObject and guiObject.Parent and guiObject:IsA("GuiObject")) then
+        return
+    end
+
+    local originalVisible = self._hiddenOriginalVisibleByNode[guiObject]
+    if originalVisible ~= nil then
+        guiObject.Visible = originalVisible == true
+        self._hiddenOriginalVisibleByNode[guiObject] = nil
+    end
+
+    disconnectConnection(self._hiddenVisibleConnectionsByNode[guiObject])
+    self._hiddenVisibleConnectionsByNode[guiObject] = nil
 end
 
 function ModalUiController:_suppressGuiObject(guiObject)
@@ -538,8 +646,122 @@ function ModalUiController:RegisterDefaultDormantRoots(localPlayer)
     return true
 end
 
+function ModalUiController:_bindMainEntryMotion(button, options)
+    if not (button and button:IsA("GuiButton")) then
+        return false
+    end
+
+    local previousCleanup = self._mainEntryMotionBindingsByButton[button]
+    if previousCleanup then
+        previousCleanup()
+        self._mainEntryMotionBindingsByButton[button] = nil
+    end
+
+    local cleanup = self:BindButtonMotion(button, options)
+    if not cleanup then
+        return false
+    end
+
+    self._mainEntryMotionBindingsByButton[button] = cleanup
+    return true
+end
+
+function ModalUiController:_bindEntryRootMotion(root, options)
+    if not (root and root:IsA("GuiObject")) then
+        return false
+    end
+
+    local button = findFirstGuiButton(root)
+    if not button then
+        return false
+    end
+
+    local motionOptions = type(options) == "table" and table.clone(options) or {}
+    if not (motionOptions.ScaleTarget and motionOptions.ScaleTarget:IsA("GuiObject")) then
+        motionOptions.ScaleTarget = root
+    end
+    if not (motionOptions.RotationTarget and motionOptions.RotationTarget:IsA("GuiObject")) then
+        motionOptions.RotationTarget = findRotationTargetForEntry(root, button)
+    end
+    if motionOptions.HoverScale == nil then
+        motionOptions.HoverScale = 1.1
+    end
+    if motionOptions.PressScale == nil then
+        motionOptions.PressScale = 0.9
+    end
+    if motionOptions.HoverRotation == nil then
+        motionOptions.HoverRotation = 20
+    end
+    motionOptions.IncludeSiblingTextScale = motionOptions.IncludeSiblingTextScale ~= false
+
+    return self:_bindMainEntryMotion(button, motionOptions)
+end
+
+function ModalUiController:BindMainEntryMotions(localPlayer)
+    self._mainEntryMotionSerial += 1
+    local serial = self._mainEntryMotionSerial
+
+    task.spawn(function()
+        for _ = 1, 80 do
+            if self._mainEntryMotionSerial ~= serial then
+                return
+            end
+
+            local mainGui = findMainGui(localPlayer or Players.LocalPlayer)
+            if mainGui then
+                for _ = 1, 8 do
+                    if self._mainEntryMotionSerial ~= serial then
+                        return
+                    end
+
+                    local leftRoot = mainGui:FindFirstChild("Left")
+                    if leftRoot then
+                        for _, entryRoot in ipairs(leftRoot:GetChildren()) do
+                            self:_bindEntryRootMotion(entryRoot)
+                        end
+                    end
+
+                    local rightRoot = mainGui:FindFirstChild("Right")
+                    if rightRoot then
+                        for _, entryRoot in ipairs(rightRoot:GetChildren()) do
+                            self:_bindEntryRootMotion(entryRoot)
+                        end
+                    end
+
+                    local topRightRoot = mainGui:FindFirstChild("TopRightGui")
+                    if topRightRoot then
+                        for _, entryRoot in ipairs(topRightRoot:GetChildren()) do
+                            self:_bindEntryRootMotion(entryRoot, {
+                                HoverScale = 1.08,
+                                PressScale = 0.9,
+                                HoverRotation = 14,
+                            })
+                        end
+                    end
+
+                    local levelUpgradeHud = mainGui:FindFirstChild("LevelUpgradeHud")
+                    local upgradeEntry = levelUpgradeHud and levelUpgradeHud:FindFirstChild("UpgradeEntry", true)
+                    if upgradeEntry then
+                        self:_bindEntryRootMotion(upgradeEntry, {
+                            HoverScale = 1.06,
+                            PressScale = 0.9,
+                            HoverRotation = 10,
+                        })
+                    end
+
+                    task.wait(0.35)
+                end
+
+                return
+            end
+            task.wait(0.25)
+        end
+    end)
+end
+
 function ModalUiController:Init(dependencies)
     local localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    self:BindMainEntryMotions(localPlayer)
     if self:RegisterDefaultDormantRoots(localPlayer) then
         return
     end
@@ -559,13 +781,21 @@ function ModalUiController:_applySuppression()
         return
     end
 
-    self:_applyBlur()
+    if self:_shouldApplyBlur() then
+        self:_applyBlur()
+    else
+        self:_restoreBlur()
+    end
     self:_applyDimOverlay()
     self:_ensureChildWatcher()
 
     for _, child in ipairs(self._mainGui:GetChildren()) do
-        if child:IsA("GuiObject") and not self:_isActivePanelChild(child) then
-            self:_suppressGuiObject(child)
+        if child:IsA("GuiObject") then
+            if self:_isActivePanelChild(child) then
+                self:_restoreSuppressedGuiObject(child)
+            else
+                self:_suppressGuiObject(child)
+            end
         end
     end
 end
@@ -584,7 +814,29 @@ function ModalUiController:_restoreSuppression()
     self._mainGui = nil
 end
 
-function ModalUiController:Acquire(ownerId, panel)
+local function buildSuppressionExclusions(exclusions)
+    local target = {}
+    if typeof(exclusions) == "Instance" then
+        if exclusions:IsA("GuiObject") then
+            target[exclusions] = true
+        end
+        return target
+    end
+
+    if type(exclusions) ~= "table" then
+        return target
+    end
+
+    for _, node in ipairs(exclusions) do
+        if node and typeof(node) == "Instance" and node:IsA("GuiObject") then
+            target[node] = true
+        end
+    end
+
+    return target
+end
+
+function ModalUiController:Acquire(ownerId, panel, options)
     if not (panel and panel:IsA("GuiObject")) then
         return false
     end
@@ -598,12 +850,14 @@ function ModalUiController:Acquire(ownerId, panel)
     self._mainGui = mainGui
     self._owners[ownerKey] = {
         Panel = panel,
+        SuppressExclusions = buildSuppressionExclusions(type(options) == "table" and options.SuppressExclusions or nil),
+        SkipBlur = type(options) == "table" and options.SkipBlur == true or false,
     }
     self:_applySuppression()
     return true
 end
 
-function ModalUiController:AcquireExclusive(ownerId, panel)
+function ModalUiController:AcquireExclusive(ownerId, panel, options)
     if not (panel and panel:IsA("GuiObject")) then
         return false
     end
@@ -625,6 +879,8 @@ function ModalUiController:AcquireExclusive(ownerId, panel)
     self._mainGui = mainGui
     self._owners[ownerKey] = {
         Panel = panel,
+        SuppressExclusions = buildSuppressionExclusions(type(options) == "table" and options.SuppressExclusions or nil),
+        SkipBlur = type(options) == "table" and options.SkipBlur == true or false,
     }
     self:_applySuppression()
     return true
@@ -653,9 +909,9 @@ function ModalUiController:PlayPanelOpen(ownerId, panel, options)
 
     if motionOptions.Acquire ~= false then
         if motionOptions.Exclusive == true then
-            self:AcquireExclusive(ownerId, panel)
+            self:AcquireExclusive(ownerId, panel, motionOptions)
         else
-            self:Acquire(ownerId, panel)
+            self:Acquire(ownerId, panel, motionOptions)
         end
     end
 
@@ -790,6 +1046,11 @@ function ModalUiController:BindButtonMotion(button, options)
         return nil
     end
 
+    local previousCleanup = self._buttonMotionCleanupsByButton[button]
+    if previousCleanup then
+        previousCleanup()
+    end
+
     local motionOptions = type(options) == "table" and options or {}
     local scaleTarget = motionOptions.ScaleTarget
     if not (scaleTarget and scaleTarget:IsA("GuiObject")) then
@@ -806,9 +1067,28 @@ function ModalUiController:BindButtonMotion(button, options)
         return nil
     end
 
+    local scaleEntries = {
+        {
+            UiScale = uiScale,
+            BaseScale = uiScale.Scale,
+        },
+    }
+    if scaleTarget == button then
+        for _, textTarget in ipairs(collectSiblingTextScaleTargets(button, motionOptions)) do
+            local textScale = ensureUiScale(textTarget)
+            if textScale then
+                table.insert(scaleEntries, {
+                    UiScale = textScale,
+                    BaseScale = textScale.Scale,
+                })
+            end
+        end
+    end
+
     local binding = {
         Button = button,
         UiScale = uiScale,
+        ScaleEntries = scaleEntries,
         RotationTarget = rotationTarget,
         BaseScale = uiScale.Scale,
         BaseRotation = rotationTarget and rotationTarget.Rotation or 0,
@@ -817,6 +1097,7 @@ function ModalUiController:BindButtonMotion(button, options)
         Tweens = {},
         Connections = {},
         Alive = true,
+        Serial = 0,
     }
 
     local function cancelTween(key)
@@ -827,9 +1108,19 @@ function ModalUiController:BindButtonMotion(button, options)
         end
     end
 
+    local function cancelAllTweens()
+        local keys = {}
+        for key in pairs(binding.Tweens) do
+            table.insert(keys, key)
+        end
+        for _, key in ipairs(keys) do
+            cancelTween(key)
+        end
+    end
+
     local function playTween(key, target, tweenInfo, goal)
         if not (target and target.Parent) then
-            return
+            return nil
         end
         cancelTween(key)
         local tween = TweenService:Create(target, tweenInfo, goal)
@@ -840,10 +1131,105 @@ function ModalUiController:BindButtonMotion(button, options)
             end
         end)
         tween:Play()
+        return tween
     end
 
     local function isMotionEnabled()
         return button.Parent ~= nil and button.Visible ~= false and button.Active ~= false
+    end
+
+    local function playScaleTweens(phaseKey, scaleMultiplier, tweenInfo)
+        local waitTween = nil
+        for index, entry in ipairs(binding.ScaleEntries) do
+            local entryScale = entry.UiScale
+            if entryScale and entryScale.Parent then
+                local tween = playTween("Scale" .. phaseKey .. "_" .. tostring(index), entryScale, tweenInfo, {
+                    Scale = entry.BaseScale * scaleMultiplier,
+                })
+                waitTween = waitTween or tween
+            end
+        end
+        return waitTween
+    end
+
+    local function playRotationTween(phaseKey, targetRotation, tweenInfo)
+        if not rotationTarget then
+            return nil
+        end
+        return playTween("Rotation" .. phaseKey, rotationTarget, tweenInfo, {
+            Rotation = targetRotation,
+        })
+    end
+
+    local function snapToFinal(scaleMultiplier, targetRotation)
+        for _, entry in ipairs(binding.ScaleEntries) do
+            local entryScale = entry.UiScale
+            if entryScale and entryScale.Parent then
+                entryScale.Scale = entry.BaseScale * scaleMultiplier
+            end
+        end
+        if rotationTarget and rotationTarget.Parent then
+            rotationTarget.Rotation = targetRotation
+        end
+    end
+
+    local function runSingleStep(scaleMultiplier, targetRotation, duration, easingStyle, easingDirection)
+        binding.Serial += 1
+        local serial = binding.Serial
+        cancelAllTweens()
+        local tweenInfo = TweenInfo.new(duration, easingStyle, easingDirection)
+        local waitTween = playScaleTweens("Single", scaleMultiplier, tweenInfo)
+        local rotationTween = playRotationTween("Single", targetRotation, tweenInfo)
+        waitTween = waitTween or rotationTween
+        if not waitTween then
+            snapToFinal(scaleMultiplier, targetRotation)
+            return
+        end
+
+        task.spawn(function()
+            waitTween.Completed:Wait()
+            if binding.Serial ~= serial or not binding.Alive or not button.Parent then
+                return
+            end
+            snapToFinal(scaleMultiplier, targetRotation)
+        end)
+    end
+
+    local function runTwoStep(firstScaleMultiplier, firstRotation, firstDuration, firstEasingStyle, firstEasingDirection, finalScaleMultiplier, finalRotation, finalDuration, finalEasingStyle, finalEasingDirection)
+        binding.Serial += 1
+        local serial = binding.Serial
+        cancelAllTweens()
+
+        local firstTweenInfo = TweenInfo.new(firstDuration, firstEasingStyle, firstEasingDirection)
+        local firstTween = playScaleTweens("A", firstScaleMultiplier, firstTweenInfo)
+        local firstRotationTween = playRotationTween("A", firstRotation, firstTweenInfo)
+        firstTween = firstTween or firstRotationTween
+
+        task.spawn(function()
+            if firstTween then
+                firstTween.Completed:Wait()
+            else
+                task.wait(firstDuration)
+            end
+            if binding.Serial ~= serial or not binding.Alive or not button.Parent then
+                return
+            end
+
+            local finalTweenInfo = TweenInfo.new(finalDuration, finalEasingStyle, finalEasingDirection)
+            local finalTween = playScaleTweens("B", finalScaleMultiplier, finalTweenInfo)
+            local finalRotationTween = playRotationTween("B", finalRotation, finalTweenInfo)
+            finalTween = finalTween or finalRotationTween
+            if finalTween then
+                finalTween.Completed:Wait()
+            else
+                task.wait(finalDuration)
+            end
+            if binding.Serial ~= serial or not binding.Alive or not button.Parent then
+                return
+            end
+
+            snapToFinal(finalScaleMultiplier, finalRotation)
+        end)
     end
 
     local function applyState()
@@ -858,30 +1244,54 @@ function ModalUiController:BindButtonMotion(button, options)
 
         local targetScale = binding.BaseScale
         local targetRotation = binding.BaseRotation
-        local duration = getButtonMotionNumber(motionOptions, "ReleaseDuration")
-        local easingStyle = Enum.EasingStyle.Back
-        local easingDirection = Enum.EasingDirection.Out
+        local targetMultiplier = 1
 
         if binding.IsPressed then
-            targetScale = binding.BaseScale * getButtonMotionNumber(motionOptions, "PressScale")
+            targetMultiplier = getButtonMotionNumber(motionOptions, "PressScale")
+            targetScale = binding.BaseScale * targetMultiplier
             targetRotation = binding.BaseRotation + getButtonMotionNumber(motionOptions, "PressRotation")
-            duration = getButtonMotionNumber(motionOptions, "PressDuration")
-            easingStyle = Enum.EasingStyle.Quad
+            runSingleStep(
+                targetMultiplier,
+                targetRotation,
+                getButtonMotionNumber(motionOptions, "PressDuration"),
+                Enum.EasingStyle.Quad,
+                Enum.EasingDirection.Out
+            )
         elseif binding.IsHovered then
-            targetScale = binding.BaseScale * getButtonMotionNumber(motionOptions, "HoverScale")
-            targetRotation = binding.BaseRotation + getButtonMotionNumber(motionOptions, "HoverRotation")
-            duration = getButtonMotionNumber(motionOptions, "HoverDuration")
-            easingStyle = Enum.EasingStyle.Quad
-        end
-
-        playTween("Scale", uiScale, TweenInfo.new(duration, easingStyle, easingDirection), {
-            Scale = targetScale,
-        })
-
-        if rotationTarget then
-            playTween("Rotation", rotationTarget, TweenInfo.new(duration, easingStyle, easingDirection), {
-                Rotation = targetRotation,
-            })
+            targetMultiplier = getButtonMotionNumber(motionOptions, "HoverScale")
+            targetScale = binding.BaseScale * targetMultiplier
+            local hoverRotation = getButtonMotionNumber(motionOptions, "HoverRotation")
+            targetRotation = binding.BaseRotation + hoverRotation
+            local overshootMultiplier = targetMultiplier * getButtonMotionNumber(motionOptions, "HoverOvershootMultiplier")
+            local overshootRotation = binding.BaseRotation + hoverRotation * getButtonMotionNumber(motionOptions, "HoverRotationOvershootMultiplier")
+            runTwoStep(
+                overshootMultiplier,
+                overshootRotation,
+                getButtonMotionNumber(motionOptions, "HoverDuration"),
+                Enum.EasingStyle.Back,
+                Enum.EasingDirection.Out,
+                targetMultiplier,
+                targetRotation,
+                getButtonMotionNumber(motionOptions, "HoverSettleDuration"),
+                Enum.EasingStyle.Quad,
+                Enum.EasingDirection.Out
+            )
+        else
+            local hoverRotation = getButtonMotionNumber(motionOptions, "HoverRotation")
+            local releaseRotationRatio = getButtonMotionNumber(motionOptions, "ReleaseRotationOvershootRatio")
+            local undershootRotation = binding.BaseRotation - hoverRotation * releaseRotationRatio
+            runTwoStep(
+                getButtonMotionNumber(motionOptions, "ReleaseUndershootScale"),
+                undershootRotation,
+                getButtonMotionNumber(motionOptions, "ReleaseDuration"),
+                Enum.EasingStyle.Quad,
+                Enum.EasingDirection.Out,
+                1,
+                binding.BaseRotation,
+                getButtonMotionNumber(motionOptions, "ReleaseSettleDuration"),
+                Enum.EasingStyle.Back,
+                Enum.EasingDirection.Out
+            )
         end
     end
 
@@ -939,22 +1349,54 @@ function ModalUiController:BindButtonMotion(button, options)
     table.insert(binding.Connections, button:GetPropertyChangedSignal("Active"):Connect(applyState))
     table.insert(binding.Connections, button:GetPropertyChangedSignal("Visible"):Connect(applyState))
 
-    return function()
+    local cleanup
+    cleanup = function()
         binding.Alive = false
         for _, connection in ipairs(binding.Connections) do
             disconnectConnection(connection)
         end
         table.clear(binding.Connections)
-        for key in pairs(binding.Tweens) do
-            cancelTween(key)
-        end
-        if uiScale and uiScale.Parent then
-            uiScale.Scale = binding.BaseScale
+        cancelAllTweens()
+        for _, entry in ipairs(binding.ScaleEntries) do
+            local entryScale = entry.UiScale
+            if entryScale and entryScale.Parent then
+                entryScale.Scale = entry.BaseScale
+            end
         end
         if rotationTarget and rotationTarget.Parent then
             rotationTarget.Rotation = binding.BaseRotation
         end
+        if ModalUiController._buttonMotionCleanupsByButton[button] == cleanup then
+            ModalUiController._buttonMotionCleanupsByButton[button] = nil
+        end
+        if ModalUiController._mainEntryMotionBindingsByButton[button] == cleanup then
+            ModalUiController._mainEntryMotionBindingsByButton[button] = nil
+        end
     end
+
+    self._buttonMotionCleanupsByButton[button] = cleanup
+    return cleanup
+end
+
+function ModalUiController:BindButtonMotionConnection(button, options)
+    local cleanup = self:BindButtonMotion(button, options)
+    if not cleanup then
+        return nil
+    end
+
+    local connection = {
+        Connected = true,
+    }
+
+    function connection:Disconnect()
+        if self.Connected ~= true then
+            return
+        end
+        self.Connected = false
+        cleanup()
+    end
+
+    return connection
 end
 
 function ModalUiController:IsAnyOpen()
@@ -965,6 +1407,22 @@ function ModalUiController:SetRestoredVisible(guiObject, visible)
     if guiObject and self._hiddenOriginalVisibleByNode[guiObject] ~= nil then
         self._hiddenOriginalVisibleByNode[guiObject] = visible == true
     end
+end
+
+function ModalUiController:ExcludeFromSuppression(ownerId, guiObject)
+    if not (guiObject and guiObject:IsA("GuiObject")) then
+        return false
+    end
+
+    local ownerState = self._owners[normalizeOwnerId(ownerId)]
+    if not ownerState then
+        return false
+    end
+
+    ownerState.SuppressExclusions = ownerState.SuppressExclusions or {}
+    ownerState.SuppressExclusions[guiObject] = true
+    self:_restoreSuppressedGuiObject(guiObject)
+    return true
 end
 
 return ModalUiController

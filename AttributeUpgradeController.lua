@@ -7,6 +7,7 @@ Purpose: Bind the static in-battle attribute upgrade UI to PlayerStateSync and s
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local function requireSharedModule(moduleName)
@@ -40,6 +41,15 @@ AttributeUpgradeController._pendingByKey = {}
 AttributeUpgradeController._boundMain = nil
 AttributeUpgradeController._hud = nil
 AttributeUpgradeController._panel = nil
+AttributeUpgradeController._experienceGroup = nil
+AttributeUpgradeController._upgradeEntry = nil
+AttributeUpgradeController._experienceGroupScale = nil
+AttributeUpgradeController._hudDefaultState = nil
+AttributeUpgradeController._hudTransitionTweens = {}
+AttributeUpgradeController._hudTransitionConnections = {}
+AttributeUpgradeController._hudTransitionToken = 0
+AttributeUpgradeController._isPanelOpen = false
+AttributeUpgradeController._outsideCloseInputConnection = nil
 AttributeUpgradeController._cardsByKey = {}
 AttributeUpgradeController._requestEvent = nil
 
@@ -47,6 +57,11 @@ local UI_BIND_RETRY_COUNT = 80
 local UI_BIND_RETRY_INTERVAL_SECONDS = 0.25
 local PENDING_TIMEOUT_SECONDS = 1.5
 local MODAL_OWNER_ID = "AttributeUpgrade"
+local HUD_TRANSITION_SECONDS = 0.22
+local HUD_ENTRY_OPEN_X_SCALE = 0.5
+local HUD_EXPERIENCE_HIDDEN_SCALE = 0.94
+local HUD_HIDE_TWEEN_INFO = TweenInfo.new(HUD_TRANSITION_SECONDS, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out)
+local HUD_RESTORE_TWEEN_INFO = TweenInfo.new(HUD_TRANSITION_SECONDS, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
 local ENABLED_BUTTON_COLOR = Color3.fromRGB(73, 207, 93)
 local DISABLED_BUTTON_COLOR = Color3.fromRGB(100, 105, 112)
@@ -54,6 +69,9 @@ local ENABLED_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
 local DISABLED_TEXT_COLOR = Color3.fromRGB(205, 210, 220)
 local ACTIVE_PROGRESS_COLOR = Color3.fromRGB(255, 213, 82)
 local INACTIVE_PROGRESS_COLOR = Color3.fromRGB(69, 73, 86)
+local PROGRESS_SEGMENT_PREFIX = "Segment"
+local PROGRESS_DEFAULT_PADDING_SCALE = 0.025
+local PROGRESS_MAX_PADDING_COVERAGE = 0.35
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections or {}) do
@@ -75,6 +93,110 @@ local function findDescendant(root, path)
         end
     end
     return current
+end
+
+local function ensureUiScale(guiObject, name)
+    if not (guiObject and guiObject:IsA("GuiObject")) then
+        return nil
+    end
+
+    local existing = guiObject:FindFirstChild(name)
+    if existing and existing:IsA("UIScale") then
+        return existing
+    end
+
+    local uiScale = guiObject:FindFirstChildOfClass("UIScale")
+    if uiScale then
+        return uiScale
+    end
+
+    uiScale = Instance.new("UIScale")
+    uiScale.Name = name
+    uiScale.Scale = 1
+    uiScale.Parent = guiObject
+    return uiScale
+end
+
+local function captureTransparencyProperties(instance)
+    local properties = {}
+    if instance:IsA("GuiObject") then
+        properties.BackgroundTransparency = instance.BackgroundTransparency
+    end
+    if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
+        properties.TextTransparency = instance.TextTransparency
+        properties.TextStrokeTransparency = instance.TextStrokeTransparency
+    end
+    if instance:IsA("ImageLabel") or instance:IsA("ImageButton") then
+        properties.ImageTransparency = instance.ImageTransparency
+    end
+    if instance:IsA("UIStroke") then
+        properties.Transparency = instance.Transparency
+    end
+
+    return next(properties) and properties or nil
+end
+
+local function collectTransparencySnapshots(root)
+    local snapshots = {}
+    local function addSnapshot(instance)
+        local properties = captureTransparencyProperties(instance)
+        if properties then
+            table.insert(snapshots, {
+                Instance = instance,
+                Properties = properties,
+            })
+        end
+    end
+
+    if root then
+        addSnapshot(root)
+        for _, descendant in ipairs(root:GetDescendants()) do
+            addSnapshot(descendant)
+        end
+    end
+
+    return snapshots
+end
+
+local function applyProperties(instance, properties)
+    if not (instance and instance.Parent and properties) then
+        return
+    end
+    for property, value in pairs(properties) do
+        pcall(function()
+            instance[property] = value
+        end)
+    end
+end
+
+local function buildHiddenTransparencyProperties(properties)
+    local hidden = {}
+    for property in pairs(properties or {}) do
+        hidden[property] = 1
+    end
+    return hidden
+end
+
+local function getInputScreenPoint(inputObject)
+    local position = inputObject and inputObject.Position
+    if not position then
+        return nil
+    end
+
+    return Vector2.new(position.X, position.Y)
+end
+
+local function isScreenPointInsideGuiObject(guiObject, screenPoint)
+    if not (guiObject and guiObject.Parent and guiObject:IsA("GuiObject") and screenPoint) then
+        return false
+    end
+
+    local absolutePosition = guiObject.AbsolutePosition
+    local absoluteSize = guiObject.AbsoluteSize
+    return screenPoint.X >= absolutePosition.X
+        and screenPoint.X <= absolutePosition.X + absoluteSize.X
+        and screenPoint.Y >= absolutePosition.Y
+        and screenPoint.Y <= absolutePosition.Y + absoluteSize.Y
 end
 
 local function setText(node, text)
@@ -99,6 +221,114 @@ local function setButtonEnabled(button, label, enabled)
     local gradient = button and button:FindFirstChild("ButtonGreen")
     if gradient and gradient:IsA("UIGradient") then
         gradient.Enabled = enabled == true
+    end
+end
+
+local function collectProgressSegments(progress)
+    local segments = {}
+    if not progress then
+        return segments
+    end
+
+    for _, child in ipairs(progress:GetChildren()) do
+        local segmentIndex = string.match(child.Name, "^" .. PROGRESS_SEGMENT_PREFIX .. "(%d+)$")
+        if segmentIndex and child:IsA("GuiObject") then
+            table.insert(segments, {
+                Index = tonumber(segmentIndex) or math.huge,
+                LayoutOrder = child.LayoutOrder,
+                Segment = child,
+            })
+        end
+    end
+
+    table.sort(segments, function(left, right)
+        if left.Index ~= right.Index then
+            return left.Index < right.Index
+        end
+        return left.LayoutOrder < right.LayoutOrder
+    end)
+
+    local orderedSegments = {}
+    for _, segmentData in ipairs(segments) do
+        table.insert(orderedSegments, segmentData.Segment)
+    end
+    return orderedSegments
+end
+
+local function findProgressSegmentTemplate(progress, segments)
+    local template = progress and progress:FindFirstChild(PROGRESS_SEGMENT_PREFIX .. "1")
+    if template and template:IsA("GuiObject") then
+        return template
+    end
+    return segments and segments[1] or nil
+end
+
+local function getProgressBasePaddingScale(layout)
+    if not layout then
+        return PROGRESS_DEFAULT_PADDING_SCALE
+    end
+
+    local storedPaddingScale = layout:GetAttribute("AttributeUpgradeBasePaddingScale")
+    if type(storedPaddingScale) == "number" and storedPaddingScale >= 0 then
+        return storedPaddingScale
+    end
+
+    local paddingScale = layout.Padding.Scale
+    if paddingScale <= 0 then
+        paddingScale = PROGRESS_DEFAULT_PADDING_SCALE
+    end
+    layout:SetAttribute("AttributeUpgradeBasePaddingScale", paddingScale)
+    return paddingScale
+end
+
+function AttributeUpgradeController:_syncProgressSegments(progress, cap, level)
+    if not (progress and progress:IsA("GuiObject")) then
+        return
+    end
+
+    local segmentCount = math.max(1, math.floor(tonumber(cap) or 1))
+    local filledCount = math.clamp(math.floor(tonumber(level) or 0), 0, segmentCount)
+    local segments = collectProgressSegments(progress)
+    local template = findProgressSegmentTemplate(progress, segments)
+    if not template then
+        return
+    end
+
+    for index = #segments + 1, segmentCount do
+        local clone = template:Clone()
+        clone.Name = PROGRESS_SEGMENT_PREFIX .. index
+        clone.Parent = progress
+        table.insert(segments, clone)
+    end
+
+    for index = #segments, segmentCount + 1, -1 do
+        local segment = segments[index]
+        table.remove(segments, index)
+        if segment and segment.Parent then
+            segment:Destroy()
+        end
+    end
+
+    local layout = progress:FindFirstChildOfClass("UIListLayout")
+    local basePaddingScale = getProgressBasePaddingScale(layout)
+    local paddingScale = 0
+    if segmentCount > 1 then
+        paddingScale = math.min(basePaddingScale, PROGRESS_MAX_PADDING_COVERAGE / (segmentCount - 1))
+    end
+    local segmentWidthScale = math.max(0, (1 - paddingScale * (segmentCount - 1)) / segmentCount)
+
+    if layout then
+        layout.Padding = UDim.new(paddingScale, 0)
+    end
+
+    local height = template.Size.Y
+    for index, segment in ipairs(segments) do
+        segment.Name = PROGRESS_SEGMENT_PREFIX .. index
+        segment.LayoutOrder = index
+        segment.Visible = true
+        segment.Size = UDim2.new(segmentWidthScale, 0, height.Scale, height.Offset)
+        segment.BackgroundColor3 = index <= filledCount and ACTIVE_PROGRESS_COLOR or INACTIVE_PROGRESS_COLOR
+        segment.BackgroundTransparency = index <= filledCount and 0 or 0.25
     end
 end
 
@@ -150,7 +380,177 @@ function AttributeUpgradeController:_showMessage(message, duration)
     end
 end
 
+function AttributeUpgradeController:_isPanelCurrentlyOpen()
+    return self._isPanelOpen == true or (self._panel and self._panel.Visible == true)
+end
+
+function AttributeUpgradeController:_disconnectOutsideCloseInput()
+    if self._outsideCloseInputConnection and self._outsideCloseInputConnection.Connected then
+        self._outsideCloseInputConnection:Disconnect()
+    end
+    self._outsideCloseInputConnection = nil
+end
+
+function AttributeUpgradeController:_connectOutsideCloseInput()
+    self:_disconnectOutsideCloseInput()
+
+    self._outsideCloseInputConnection = UserInputService.InputBegan:Connect(function(inputObject, gameProcessedEvent)
+        if gameProcessedEvent or not self:_isPanelCurrentlyOpen() then
+            return
+        end
+
+        local inputType = inputObject.UserInputType
+        if inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch then
+            return
+        end
+
+        local screenPoint = getInputScreenPoint(inputObject)
+        if isScreenPointInsideGuiObject(self._panel, screenPoint) or isScreenPointInsideGuiObject(self._upgradeEntry, screenPoint) then
+            return
+        end
+
+        self:_closePanel()
+    end)
+end
+
+function AttributeUpgradeController:_cancelHudTransitionTweens()
+    self._hudTransitionToken += 1
+    for _, tween in ipairs(self._hudTransitionTweens or {}) do
+        if tween then
+            tween:Cancel()
+        end
+    end
+    table.clear(self._hudTransitionTweens)
+    disconnectAll(self._hudTransitionConnections)
+end
+
+function AttributeUpgradeController:_captureLevelHudDefaults()
+    if not (self._hud and self._hud.Parent) then
+        self._hudDefaultState = nil
+        return
+    end
+
+    self._experienceGroup = self._hud:FindFirstChild("ExperienceGroup")
+    self._upgradeEntry = self._hud:FindFirstChild("UpgradeEntry")
+    self._experienceGroupScale = ensureUiScale(self._experienceGroup, "AttributeUpgradeExperienceMotionScale")
+
+    self._hudDefaultState = {
+        ExperienceGroupVisible = self._experienceGroup and self._experienceGroup.Visible == true or false,
+        ExperienceGroupScale = self._experienceGroupScale and self._experienceGroupScale.Scale or 1,
+        ExperienceGroupTransparency = collectTransparencySnapshots(self._experienceGroup),
+        UpgradeEntryPosition = self._upgradeEntry and self._upgradeEntry:IsA("GuiObject") and self._upgradeEntry.Position or nil,
+    }
+end
+
+function AttributeUpgradeController:_setLevelHudUpgradeMode(enabled, immediate)
+    if not self._hudDefaultState then
+        self:_captureLevelHudDefaults()
+    end
+
+    local defaults = self._hudDefaultState
+    if not defaults then
+        return
+    end
+
+    self:_cancelHudTransitionTweens()
+    local token = self._hudTransitionToken
+    local tweens = self._hudTransitionTweens
+
+    local experienceGroup = self._experienceGroup
+    local experienceScale = self._experienceGroupScale
+    local upgradeEntry = self._upgradeEntry
+    local targetEntryPosition = defaults.UpgradeEntryPosition
+    if enabled and targetEntryPosition then
+        targetEntryPosition = UDim2.new(
+            HUD_ENTRY_OPEN_X_SCALE,
+            targetEntryPosition.X.Offset,
+            targetEntryPosition.Y.Scale,
+            targetEntryPosition.Y.Offset
+        )
+    end
+
+    if immediate then
+        if experienceGroup and experienceGroup.Parent then
+            experienceGroup.Visible = not enabled and defaults.ExperienceGroupVisible or false
+            if experienceScale then
+                experienceScale.Scale = enabled and HUD_EXPERIENCE_HIDDEN_SCALE or defaults.ExperienceGroupScale
+            end
+            for _, snapshot in ipairs(defaults.ExperienceGroupTransparency or {}) do
+                applyProperties(snapshot.Instance, enabled and buildHiddenTransparencyProperties(snapshot.Properties) or snapshot.Properties)
+            end
+        end
+        if upgradeEntry and targetEntryPosition then
+            upgradeEntry.Position = targetEntryPosition
+        end
+        return
+    end
+
+    if experienceGroup and experienceGroup.Parent then
+        if enabled then
+            experienceGroup.Visible = true
+        elseif defaults.ExperienceGroupVisible then
+            experienceGroup.Visible = true
+            for _, snapshot in ipairs(defaults.ExperienceGroupTransparency or {}) do
+                applyProperties(snapshot.Instance, buildHiddenTransparencyProperties(snapshot.Properties))
+            end
+            if experienceScale then
+                experienceScale.Scale = HUD_EXPERIENCE_HIDDEN_SCALE
+            end
+        end
+
+        if experienceScale then
+            table.insert(tweens, TweenService:Create(experienceScale, enabled and HUD_HIDE_TWEEN_INFO or HUD_RESTORE_TWEEN_INFO, {
+                Scale = enabled and HUD_EXPERIENCE_HIDDEN_SCALE or defaults.ExperienceGroupScale,
+            }))
+        end
+
+        for _, snapshot in ipairs(defaults.ExperienceGroupTransparency or {}) do
+            if snapshot.Instance and snapshot.Instance.Parent then
+                table.insert(tweens, TweenService:Create(
+                    snapshot.Instance,
+                    enabled and HUD_HIDE_TWEEN_INFO or HUD_RESTORE_TWEEN_INFO,
+                    enabled and buildHiddenTransparencyProperties(snapshot.Properties) or snapshot.Properties
+                ))
+            end
+        end
+    end
+
+    if upgradeEntry and targetEntryPosition then
+        table.insert(tweens, TweenService:Create(upgradeEntry, enabled and HUD_HIDE_TWEEN_INFO or HUD_RESTORE_TWEEN_INFO, {
+            Position = targetEntryPosition,
+        }))
+    end
+
+    local remainingTweens = #tweens
+    local function finish()
+        remainingTweens -= 1
+        if remainingTweens > 0 or self._hudTransitionToken ~= token then
+            return
+        end
+        disconnectAll(self._hudTransitionConnections)
+        if experienceGroup and experienceGroup.Parent and enabled then
+            experienceGroup.Visible = false
+        end
+        table.clear(tweens)
+    end
+
+    if remainingTweens <= 0 then
+        if experienceGroup and experienceGroup.Parent then
+            experienceGroup.Visible = enabled and false or defaults.ExperienceGroupVisible
+        end
+        return
+    end
+
+    for _, tween in ipairs(tweens) do
+        table.insert(self._hudTransitionConnections, tween.Completed:Connect(finish))
+        tween:Play()
+    end
+end
+
 function AttributeUpgradeController:_closePanel()
+    self._isPanelOpen = false
+    self:_disconnectOutsideCloseInput()
+    self:_setLevelHudUpgradeMode(false)
     if self._modalUiController and self._modalUiController.Release then
         if self._modalUiController.PlayPanelClose then
             self._modalUiController:PlayPanelClose(MODAL_OWNER_ID, self._panel)
@@ -176,20 +576,38 @@ function AttributeUpgradeController:_openPanel()
         return false
     end
     if self._panel and self._panel.Visible == true then
+        self._isPanelOpen = true
+        self:_connectOutsideCloseInput()
+        self:_setLevelHudUpgradeMode(true)
         self:_applyState(self._latestPayload)
         return true
     end
 
     if self._panel then
         if self._modalUiController and self._modalUiController.PlayPanelOpen then
-            self._modalUiController:PlayPanelOpen(MODAL_OWNER_ID, self._panel)
+            self._modalUiController:PlayPanelOpen(MODAL_OWNER_ID, self._panel, {
+                SuppressExclusions = { self._hud },
+                SkipBlur = true,
+            })
         else
             self._panel.Visible = true
             if self._modalUiController and self._modalUiController.Acquire then
-                self._modalUiController:Acquire(MODAL_OWNER_ID, self._panel)
+                self._modalUiController:Acquire(MODAL_OWNER_ID, self._panel, {
+                    SuppressExclusions = { self._hud },
+                    SkipBlur = true,
+                })
             end
         end
     end
+    if self._modalUiController and self._modalUiController.ExcludeFromSuppression then
+        self._modalUiController:ExcludeFromSuppression(MODAL_OWNER_ID, self._hud)
+    end
+    if self._hud then
+        self._hud.Visible = true
+    end
+    self._isPanelOpen = true
+    self:_connectOutsideCloseInput()
+    self:_setLevelHudUpgradeMode(true)
     self:_applyState(self._latestPayload)
     return true
 end
@@ -283,17 +701,26 @@ function AttributeUpgradeController:_connectEntryButtons()
             ScaleTarget = entryScaleTarget or button,
             HoverScale = 1.06,
             PressScale = 0.9,
+            IncludeSiblingTextScale = true,
         })
 
         if button:IsA("GuiButton") then
             table.insert(self._uiConnections, button.Activated:Connect(function()
-                self:_openPanel()
+                if self:_isPanelCurrentlyOpen() then
+                    self:_closePanel()
+                else
+                    self:_openPanel()
+                end
             end))
         elseif button:IsA("GuiObject") then
             button.Active = true
             table.insert(self._uiConnections, button.InputBegan:Connect(function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                    self:_openPanel()
+                    if self:_isPanelCurrentlyOpen() then
+                        self:_closePanel()
+                    else
+                        self:_openPanel()
+                    end
                 end
             end))
         end
@@ -318,10 +745,17 @@ function AttributeUpgradeController:_bindUi(silent)
         return true
     end
 
+    local previousHud = self._hud
+    local previousHudDefaultState = self._hudDefaultState
+    self:_cancelHudTransitionTweens()
     disconnectAll(self._uiConnections)
     self._boundMain = main
     self._hud = main:FindFirstChild("LevelUpgradeHud")
     self._panel = main:FindFirstChild("AttributeUpgrade")
+    self._experienceGroup = nil
+    self._upgradeEntry = nil
+    self._experienceGroupScale = nil
+    self._hudDefaultState = nil
     self._cardsByKey = {}
 
     if not (self._hud and self._panel) then
@@ -334,12 +768,23 @@ function AttributeUpgradeController:_bindUi(silent)
     self._experienceFill = findDescendant(self._hud, "ExperienceGroup.ExperienceBar.Fill")
     self._experienceValue = findDescendant(self._hud, "ExperienceGroup.ExperienceBar.Value")
     self._levelLabel = findDescendant(self._hud, "ExperienceGroup.LevelLabel")
-    self._badge = findDescendant(self._hud, "UpgradeEntry.Button.Badge")
-    self._badgeValue = findDescendant(self._hud, "UpgradeEntry.Button.Badge.Value")
+    if previousHud == self._hud and previousHudDefaultState then
+        self._experienceGroup = self._hud:FindFirstChild("ExperienceGroup")
+        self._upgradeEntry = self._hud:FindFirstChild("UpgradeEntry")
+        self._experienceGroupScale = ensureUiScale(self._experienceGroup, "AttributeUpgradeExperienceMotionScale")
+        self._hudDefaultState = previousHudDefaultState
+    else
+        self:_captureLevelHudDefaults()
+    end
+    self._badge = findDescendant(self._hud, "UpgradeEntry.ImageButton.Badge")
+        or findDescendant(self._hud, "UpgradeEntry.Button.Badge")
+    self._badgeValue = findDescendant(self._hud, "UpgradeEntry.ImageButton.Badge.Value")
+        or findDescendant(self._hud, "UpgradeEntry.Button.Badge.Value")
     self._pointsValue = findDescendant(self._panel, "Window.Content.PointsBar.Value")
     self._footer = findDescendant(self._panel, "Window.Content.Footer")
 
-    local closeButton = findDescendant(self._panel, "Window.Header.CloseButton")
+    local closeButton = findDescendant(self._panel, "Window.CloseButton")
+        or findDescendant(self._panel, "Window.Header.CloseButton")
     if closeButton and closeButton:IsA("GuiButton") then
         self:_bindButtonMotion(closeButton, {
             RotationTarget = closeButton,
@@ -429,27 +874,7 @@ function AttributeUpgradeController:_applyCard(attributeKey, card, attributeStat
     setText(card.AddButtonLabel, isPending and "..." or (level >= cap and "MAX" or "+"))
     setButtonEnabled(card.AddButton, card.AddButtonLabel, canUpgrade)
 
-    local progress = card.Progress
-    if progress then
-        local segments = {}
-        for index = 1, 5 do
-            local segment = progress:FindFirstChild("Segment" .. index)
-            if segment and segment:IsA("GuiObject") then
-                table.insert(segments, segment)
-            end
-        end
-        local filledSegments = 0
-        if cap > 0 and #segments > 0 then
-            filledSegments = math.clamp(math.floor((level / cap) * #segments + 0.0001), 0, #segments)
-            if level > 0 and filledSegments < 1 then
-                filledSegments = 1
-            end
-        end
-        for index, segment in ipairs(segments) do
-            segment.BackgroundColor3 = index <= filledSegments and ACTIVE_PROGRESS_COLOR or INACTIVE_PROGRESS_COLOR
-            segment.BackgroundTransparency = index <= filledSegments and 0 or 0.25
-        end
-    end
+    self:_syncProgressSegments(card.Progress, cap, level)
 end
 
 function AttributeUpgradeController:_applyState(payload)
@@ -492,6 +917,7 @@ function AttributeUpgradeController:Init(dependencies)
     self._boundMain = nil
     disconnectAll(self._connections)
     disconnectAll(self._uiConnections)
+    self:_disconnectOutsideCloseInput()
 
     local eventsRoot = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
     local systemEventsFolder = eventsRoot:WaitForChild(RemoteNames.SystemEventsFolder)

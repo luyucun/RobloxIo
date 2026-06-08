@@ -166,7 +166,7 @@ function AttributeCapUpgradeController:_showMessage(message)
     end
     local success = pcall(function()
         StarterGui:SetCore("SendNotification", {
-            Title = "Upgrade",
+            Title = "Attribute Upgrade",
             Text = text,
             Duration = 2,
         })
