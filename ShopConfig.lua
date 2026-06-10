@@ -37,11 +37,31 @@ ShopConfig.StarterPack = {
     Rewards = {
         { RewardType = "Potion", PotionId = 1002, Amount = 3 },
         { RewardType = "WheelSpins", Amount = 5 },
-        { RewardType = "Diamonds", Amount = 300 },
+        { RewardType = "Diamonds", Amount = 3000 },
     },
 }
 
 ShopConfig.FeaturedSkinId = 10002
+
+-- BEGIN GENERATED DIAMOND PRODUCT ROWS
+-- Source: IO_BaseBalanceDraft.xlsx / 钻石购买. Update via tools/SyncCodeConfigFromWorkbook.py.
+ShopConfig.DiamondProducts = {
+    { Id = 1001, ProductId = 3603578005, Diamonds = 5000 },
+    { Id = 1002, ProductId = 3603578054, Diamonds = 20000 },
+    { Id = 1003, ProductId = 3603578078, Diamonds = 60000 },
+    { Id = 1004, ProductId = 3603578122, Diamonds = 250000 },
+    { Id = 1005, ProductId = 3603578139, Diamonds = 525000 },
+    { Id = 1006, ProductId = 3603578181, Diamonds = 1500000 },
+}
+-- END GENERATED DIAMOND PRODUCT ROWS
+
+ShopConfig.DiamondProductsById = {}
+ShopConfig.DiamondProductsByProductId = {}
+
+for _, product in ipairs(ShopConfig.DiamondProducts) do
+    ShopConfig.DiamondProductsById[product.Id] = product
+    ShopConfig.DiamondProductsByProductId[product.ProductId] = product
+end
 
 ShopConfig.RewardIcons = {
     Potion1002 = {
@@ -153,6 +173,14 @@ function ShopConfig.CopyRewardsForClient(rewards)
         end
     end
     return result
+end
+
+function ShopConfig.GetDiamondProduct(id)
+    return ShopConfig.DiamondProductsById[math.floor(tonumber(id) or 0)]
+end
+
+function ShopConfig.GetDiamondProductByProductId(productId)
+    return ShopConfig.DiamondProductsByProductId[math.floor(tonumber(productId) or 0)]
 end
 
 return ShopConfig

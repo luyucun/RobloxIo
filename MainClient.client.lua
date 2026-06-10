@@ -148,12 +148,14 @@ initController("AttributeUpgradeController", AttributeUpgradeController, {
     LocalPlayer = localPlayer,
     RootScript = script,
     ModalUiController = ModalUiController,
+    AttributeCapUpgradeController = AttributeCapUpgradeController,
 })
 
 initController("AttributeCapUpgradeController", AttributeCapUpgradeController, {
     LocalPlayer = localPlayer,
     RootScript = script,
     ModalUiController = ModalUiController,
+    ShopController = ShopController,
 })
 
 initController("KillTipsController", KillTipsController, {

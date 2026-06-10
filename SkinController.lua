@@ -8,6 +8,7 @@ Purpose: V3.1 weapon skin shop, ownership, and equip UI.
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local StarterGui = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -88,6 +89,10 @@ SkinController._wheelController = nil
 SkinController._sevenDayLoginRewardController = nil
 SkinController._skinRegionBindSerial = 0
 SkinController._skinRegionGate = nil
+SkinController._showSkinRegionGates = {}
+SkinController._showSkinFloatConnection = nil
+SkinController._showSkinFloatEntries = {}
+SkinController._showSkinFloatTime = 0
 
 local HOVER_SCALE = 1.05
 local PRESS_SCALE = 0.92
@@ -110,6 +115,21 @@ local TRAIL_ROW_VERTICAL_SCALE_STEP = 0.22
 local TITLE_UNLOCK_CLOSE_DELAY = 1.5
 local TITLE_UNLOCK_SLIDE_OFFSET_SCALE = 0.08
 local TITLE_UNLOCK_OPEN_DURATION = 0.28
+local SHOW_SKIN_GAME_PASS_ID = 1830742687
+local SHOW_SKIN_ACTION_OPEN_SKIN = "OpenSkin"
+local SHOW_SKIN_ACTION_PROMPT_GAME_PASS = "PromptGamePass"
+local SHOW_SKIN_ACTION_OPEN_WHEEL = "OpenWheel"
+local SHOW_SKIN_ACTION_OPEN_SEVEN_DAY = "OpenSevenDay"
+local SHOW_SKIN_INTERACTIONS = {
+    { Name = "Skin001", Action = SHOW_SKIN_ACTION_OPEN_SKIN },
+    { Name = "Skin002", Action = SHOW_SKIN_ACTION_PROMPT_GAME_PASS },
+    { Name = "Skin003", Action = SHOW_SKIN_ACTION_OPEN_WHEEL },
+    { Name = "Skin006", Action = SHOW_SKIN_ACTION_OPEN_SEVEN_DAY },
+    { Name = "Skin007", Action = SHOW_SKIN_ACTION_OPEN_SEVEN_DAY },
+}
+local SHOW_SKIN_FLOAT_AMPLITUDE = 0.45
+local SHOW_SKIN_FLOAT_PERIOD = 4.2
+local SHOW_SKIN_FLOAT_PHASE_STEP = math.pi * 0.45
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -750,6 +770,81 @@ function SkinController:_disconnectSkinRegion()
         self._skinRegionGate:Stop()
         self._skinRegionGate = nil
     end
+    for _, gate in pairs(self._showSkinRegionGates) do
+        if gate then
+            gate:Stop()
+        end
+    end
+    table.clear(self._showSkinRegionGates)
+    self:_disconnectShowSkinFloat()
+end
+
+function SkinController:_disconnectShowSkinFloat()
+    if self._showSkinFloatConnection then
+        self._showSkinFloatConnection:Disconnect()
+        self._showSkinFloatConnection = nil
+    end
+
+    for _, entry in ipairs(self._showSkinFloatEntries) do
+        local node = entry.Node
+        local basePivot = entry.BasePivot
+        if node and node.Parent and basePivot then
+            pcall(function()
+                node:PivotTo(basePivot)
+            end)
+        end
+    end
+
+    table.clear(self._showSkinFloatEntries)
+    self._showSkinFloatTime = 0
+end
+
+function SkinController:_startShowSkinFloat(showRoot, serial)
+    if not showRoot or self._skinRegionBindSerial ~= serial then
+        return
+    end
+
+    self:_disconnectShowSkinFloat()
+    for index, interaction in ipairs(SHOW_SKIN_INTERACTIONS) do
+        local name = tostring(interaction.Name or "")
+        local node = showRoot:FindFirstChild(name)
+        if node then
+            local ok, basePivot = pcall(function()
+                return node:GetPivot()
+            end)
+            if ok and typeof(basePivot) == "CFrame" then
+                table.insert(self._showSkinFloatEntries, {
+                    Node = node,
+                    BasePivot = basePivot,
+                    Phase = (index - 1) * SHOW_SKIN_FLOAT_PHASE_STEP,
+                })
+            end
+        end
+    end
+
+    if #self._showSkinFloatEntries <= 0 then
+        return
+    end
+
+    local angularSpeed = (math.pi * 2) / SHOW_SKIN_FLOAT_PERIOD
+    self._showSkinFloatConnection = RunService.RenderStepped:Connect(function(deltaTime)
+        if self._skinRegionBindSerial ~= serial then
+            self:_disconnectShowSkinFloat()
+            return
+        end
+
+        self._showSkinFloatTime += math.max(0, tonumber(deltaTime) or 0)
+        local elapsed = self._showSkinFloatTime
+        for _, entry in ipairs(self._showSkinFloatEntries) do
+            local node = entry.Node
+            if node and node.Parent then
+                local offsetY = math.sin(elapsed * angularSpeed + entry.Phase) * SHOW_SKIN_FLOAT_AMPLITUDE
+                pcall(function()
+                    node:PivotTo(entry.BasePivot + Vector3.new(0, offsetY, 0))
+                end)
+            end
+        end
+    end)
 end
 
 function SkinController:_findSkinRegion()
@@ -779,6 +874,64 @@ function SkinController:_handleSkinRegionEntered()
     self:_openSkinPanelFromEntry()
 end
 
+function SkinController:_openWheelFromShowSkin()
+    self:_setPanelOpen(false, true)
+    if self._wheelController and self._wheelController.Open then
+        self._wheelController:Open()
+    end
+end
+
+function SkinController:_openSevenDayFromShowSkin()
+    self:_setPanelOpen(false, true)
+    if self._sevenDayLoginRewardController and self._sevenDayLoginRewardController.OpenSevenDayLoginReward then
+        self._sevenDayLoginRewardController:OpenSevenDayLoginReward()
+    end
+end
+
+function SkinController:_promptShowSkinGamePass(templateName)
+    local gamePassId = SHOW_SKIN_GAME_PASS_ID
+    local skin = nil
+    if SkinConfig.GetSkinByTemplateName then
+        skin = SkinConfig.GetSkinByTemplateName(templateName)
+        if skin and math.floor(tonumber(skin.GamePassId) or 0) > 0 then
+            gamePassId = math.floor(tonumber(skin.GamePassId) or 0)
+        end
+    end
+    if gamePassId <= 0 or not self._localPlayer then
+        return
+    end
+
+    if self._requestStateEvent and skin then
+        self._requestStateEvent:FireServer({
+            intent = "GamePassOwnershipSync",
+            source = "Show",
+            skinId = skin.Id,
+            gamePassId = gamePassId,
+        })
+    end
+
+    local ok, err = pcall(function()
+        MarketplaceService:PromptGamePassPurchase(self._localPlayer, gamePassId)
+    end)
+    if not ok then
+        warn("[SkinController] Failed to prompt show skin game pass purchase: " .. tostring(err))
+    end
+end
+
+function SkinController:_handleShowSkinRegionEntered(action, templateName)
+    if action == SHOW_SKIN_ACTION_OPEN_SKIN then
+        if not self._isPanelOpen then
+            self:_openSkinPanelFromEntry()
+        end
+    elseif action == SHOW_SKIN_ACTION_PROMPT_GAME_PASS then
+        self:_promptShowSkinGamePass(templateName)
+    elseif action == SHOW_SKIN_ACTION_OPEN_WHEEL then
+        self:_openWheelFromShowSkin()
+    elseif action == SHOW_SKIN_ACTION_OPEN_SEVEN_DAY then
+        self:_openSevenDayFromShowSkin()
+    end
+end
+
 function SkinController:_bindSkinRegion(region, serial)
     if not region or self._skinRegionBindSerial ~= serial then
         return
@@ -801,6 +954,57 @@ function SkinController:_bindSkinRegion(region, serial)
     self._skinRegionGate:Start()
 end
 
+function SkinController:_bindShowSkinRegion(region, interaction, serial)
+    if not region or self._skinRegionBindSerial ~= serial or type(interaction) ~= "table" then
+        return
+    end
+
+    local name = tostring(interaction.Name or "")
+    local existingGate = self._showSkinRegionGates[name]
+    if existingGate then
+        existingGate:Stop()
+    end
+
+    local gate = TouchRegionGate.new({
+        LocalPlayer = self._localPlayer,
+        Region = region,
+        Label = "Show." .. name,
+        OnEnter = function()
+            if self._skinRegionBindSerial ~= serial then
+                return
+            end
+            self:_handleShowSkinRegionEntered(interaction.Action, name)
+        end,
+    })
+    self._showSkinRegionGates[name] = gate
+    gate:Start()
+end
+
+function SkinController:_connectShowSkinRegions(serial)
+    task.spawn(function()
+        local map2 = Workspace:WaitForChild("Map2", SKIN_REGION_WAIT_SECONDS)
+        if self._skinRegionBindSerial ~= serial or not map2 then
+            return
+        end
+
+        local showRoot = map2:WaitForChild("Show", SKIN_REGION_WAIT_SECONDS)
+        if self._skinRegionBindSerial ~= serial or not showRoot then
+            return
+        end
+
+        self:_startShowSkinFloat(showRoot, serial)
+        for _, interaction in ipairs(SHOW_SKIN_INTERACTIONS) do
+            if self._skinRegionBindSerial ~= serial then
+                return
+            end
+
+            local name = tostring(interaction.Name or "")
+            local region = showRoot:WaitForChild(name, SKIN_REGION_WAIT_SECONDS)
+            self:_bindShowSkinRegion(region, interaction, serial)
+        end
+    end)
+end
+
 function SkinController:_connectSkinRegion()
     self:_disconnectSkinRegion()
     local serial = self._skinRegionBindSerial
@@ -812,6 +1016,8 @@ function SkinController:_connectSkinRegion()
         end
         self:_bindSkinRegion(region, serial)
     end)
+
+    self:_connectShowSkinRegions(serial)
 end
 
 function SkinController:_closeTitleUnlockPopup()

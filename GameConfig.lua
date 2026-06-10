@@ -145,7 +145,7 @@ GameConfig.WEAPON = {
 }
 
 GameConfig.WEAPON_UNLOCK = {
-    RewardDiamonds = 20,
+    RewardDiamonds = 100,
 }
 
 GameConfig.PERFORMANCE = {
@@ -324,7 +324,7 @@ GameConfig.LEADERBOARD = {
 }
 
 GameConfig.ECONOMY = {
-    PlayerKillDiamondReward = 5,
+    PlayerKillDiamondReward = 50,
 }
 
 GameConfig.DATASTORE = {

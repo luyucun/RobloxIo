@@ -77,18 +77,18 @@ TitleConfig.Titles = {
     {
         Id = 1009,
         Name = 'Gem Collector',
-        Description = 'Earn 1,000 gems in total.',
-        UnlockConditionText = 'Earn 1,000 gems in total.',
+        Description = 'Earn 30,000gems in total.',
+        UnlockConditionText = 'Earn 30,000 gems in total.',
         IconImage = 'rbxassetid://133503158361369',
-        Condition = { Type = 'TotalDiamondsEarned', Target = 1000 },
+        Condition = { Type = 'TotalDiamondsEarned', Target = 30000 },
     },
     {
         Id = 1010,
         Name = 'Diamond Lord',
-        Description = 'Earn 10,000 gems in total.',
-        UnlockConditionText = 'Earn 10,000 gems in total.',
+        Description = 'Earn 100,000 gems in total.',
+        UnlockConditionText = 'Earn 100,000 gems in total.',
         IconImage = 'rbxassetid://105736673011968',
-        Condition = { Type = 'TotalDiamondsEarned', Target = 10000 },
+        Condition = { Type = 'TotalDiamondsEarned', Target = 100000 },
     },
 }
 -- END GENERATED TITLE ROWS

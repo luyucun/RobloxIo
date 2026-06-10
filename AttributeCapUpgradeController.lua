@@ -9,6 +9,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local TouchRegionGate = require(script.Parent:WaitForChild("TouchRegionGate"))
@@ -37,6 +38,7 @@ local AttributeCapUpgradeController = {}
 
 AttributeCapUpgradeController._localPlayer = nil
 AttributeCapUpgradeController._modalUiController = nil
+AttributeCapUpgradeController._shopController = nil
 AttributeCapUpgradeController._connections = {}
 AttributeCapUpgradeController._uiConnections = {}
 AttributeCapUpgradeController._regionGate = nil
@@ -63,6 +65,16 @@ local ENABLED_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
 local DISABLED_TEXT_COLOR = Color3.fromRGB(190, 196, 205)
 local ENABLED_IMAGE_TRANSPARENCY = 0
 local DISABLED_IMAGE_TRANSPARENCY = 0.35
+local BUTTON_HOVER_SCALE = 1.05
+local BUTTON_PRESS_SCALE = 0.92
+local ENTRY_HOVER_SCALE = 1.08
+local ENTRY_PRESS_SCALE = 0.9
+local CLOSE_HOVER_SCALE = 1.08
+local CLOSE_PRESS_SCALE = 0.9
+local CLOSE_HOVER_ROTATION = 20
+local BUTTON_HOVER_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local BUTTON_PRESS_TWEEN_INFO = TweenInfo.new(0.07, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local BUTTON_RESET_TWEEN_INFO = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local rowNameByKey = {
     Damage = "DamageCap",
@@ -95,10 +107,44 @@ local function findDescendant(root, path)
     return current
 end
 
+local function findFirstDescendant(root, paths)
+    for _, path in ipairs(paths or {}) do
+        local descendant = findDescendant(root, path)
+        if descendant then
+            return descendant
+        end
+    end
+    return nil
+end
+
 local function setText(node, text)
     if node and (node:IsA("TextLabel") or node:IsA("TextButton") or node:IsA("TextBox")) then
         node.Text = tostring(text or "")
     end
+end
+
+local function ensureUiScale(guiObject)
+    if not (guiObject and guiObject:IsA("GuiObject")) then
+        return nil
+    end
+    local uiScale = guiObject:FindFirstChildOfClass("UIScale")
+    if uiScale then
+        return uiScale
+    end
+
+    uiScale = Instance.new("UIScale")
+    uiScale.Scale = 1
+    uiScale.Parent = guiObject
+    return uiScale
+end
+
+local function isPrimaryPointerInput(input)
+    return input
+        and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+end
+
+local function isButtonInteractable(button)
+    return button and button:IsA("GuiButton") and button.Active ~= false and button.Visible ~= false
 end
 
 local function formatCompactNumber(value)
@@ -136,6 +182,12 @@ local function setButtonVisual(button, priceLabel, visualEnabled, interactable)
         button.Active = interactable == true
         button.Selectable = interactable == true
         button.AutoButtonColor = visualEnabled == true and interactable == true
+    end
+    if interactable ~= true then
+        local uiScale = button and button:IsA("GuiObject") and button:FindFirstChildOfClass("UIScale") or nil
+        if uiScale then
+            uiScale.Scale = 1
+        end
     end
     if button and (button:IsA("ImageButton") or button:IsA("ImageLabel")) then
         button.ImageTransparency = visualEnabled == true and ENABLED_IMAGE_TRANSPARENCY or DISABLED_IMAGE_TRANSPARENCY
@@ -222,6 +274,13 @@ function AttributeCapUpgradeController:Close()
     return self:_setOpen(false)
 end
 
+function AttributeCapUpgradeController:_openDiamondShop()
+    self:Close()
+    if self._shopController and self._shopController.OpenDiamonds then
+        self._shopController:OpenDiamonds()
+    end
+end
+
 function AttributeCapUpgradeController:_requestGemUpgrade(attributeKey)
     local key = AttributeConfig.NormalizeKey(attributeKey)
     if not key then
@@ -240,6 +299,13 @@ function AttributeCapUpgradeController:_requestGemUpgrade(attributeKey)
     local info = AttributeConfig.GetCapUpgradeInfo(key, caps[key])
     if info and info.IsMax then
         self:_showMessage("Max level reached")
+        return
+    end
+    local gemCost = math.max(0, math.floor(tonumber(info and info.GemCost) or 0))
+    local hasStateSnapshot = type(self._latestPayload) == "table"
+    local diamonds = math.max(0, math.floor(tonumber(hasStateSnapshot and self._latestPayload.diamonds) or 0))
+    if hasStateSnapshot and gemCost > 0 and diamonds < gemCost then
+        self:_openDiamondShop()
         return
     end
 
@@ -270,9 +336,18 @@ function AttributeCapUpgradeController:_promptRobuxUpgrade(attributeKey)
         self:_showMessage("Max level reached")
         return
     end
+    if not self._requestEvent then
+        self:_showMessage("Robux purchase unavailable")
+        return
+    end
     if not (self._localPlayer and self._localPlayer.Parent) then
         return
     end
+    self._requestEvent:FireServer({
+        intent = "RobuxPurchaseIntent",
+        attributeKey = key,
+        productId = productId,
+    })
     MarketplaceService:PromptProductPurchase(self._localPlayer, productId)
 end
 
@@ -294,6 +369,119 @@ function AttributeCapUpgradeController:_fetchRobuxPrice(productId)
     end)
 end
 
+function AttributeCapUpgradeController:_bindButtonFeedback(button, options)
+    if not (button and button:IsA("GuiButton")) then
+        return
+    end
+
+    local scaleTarget = options and options.ScaleTarget or button
+    if not (scaleTarget and scaleTarget:IsA("GuiObject")) then
+        scaleTarget = button
+    end
+    local rotationTarget = options and options.RotationTarget or nil
+    if rotationTarget and not rotationTarget:IsA("GuiObject") then
+        rotationTarget = nil
+    end
+
+    local uiScale = ensureUiScale(scaleTarget)
+    local normalRotation = rotationTarget and rotationTarget.Rotation or 0
+    local hoverScale = tonumber(options and options.HoverScale) or BUTTON_HOVER_SCALE
+    local pressScale = tonumber(options and options.PressScale) or BUTTON_PRESS_SCALE
+    local hoverRotation = tonumber(options and options.HoverRotation) or 0
+    local isHovering = false
+    local isPressing = false
+    local scaleTween = nil
+    local rotationTween = nil
+
+    local function tweenScale(scale, tweenInfo)
+        if uiScale then
+            if scaleTween then
+                scaleTween:Cancel()
+                scaleTween = nil
+            end
+            scaleTween = TweenService:Create(uiScale, tweenInfo, { Scale = scale })
+            local activeTween = scaleTween
+            activeTween.Completed:Connect(function()
+                if scaleTween == activeTween then
+                    scaleTween = nil
+                end
+            end)
+            activeTween:Play()
+        end
+    end
+
+    local function tweenRotation(rotation, tweenInfo)
+        if rotationTarget then
+            if rotationTween then
+                rotationTween:Cancel()
+                rotationTween = nil
+            end
+            rotationTween = TweenService:Create(rotationTarget, tweenInfo, { Rotation = rotation })
+            local activeTween = rotationTween
+            activeTween.Completed:Connect(function()
+                if rotationTween == activeTween then
+                    rotationTween = nil
+                end
+            end)
+            activeTween:Play()
+        end
+    end
+
+    local function reset()
+        isPressing = false
+        if isButtonInteractable(button) and isHovering then
+            tweenScale(hoverScale, BUTTON_RESET_TWEEN_INFO)
+            tweenRotation(normalRotation + hoverRotation, BUTTON_RESET_TWEEN_INFO)
+        else
+            tweenScale(1, BUTTON_RESET_TWEEN_INFO)
+            tweenRotation(normalRotation, BUTTON_RESET_TWEEN_INFO)
+        end
+    end
+
+    table.insert(self._uiConnections, button.MouseEnter:Connect(function()
+        isHovering = true
+        if not isButtonInteractable(button) or isPressing then
+            return
+        end
+        tweenScale(hoverScale, BUTTON_HOVER_TWEEN_INFO)
+        tweenRotation(normalRotation + hoverRotation, BUTTON_HOVER_TWEEN_INFO)
+    end))
+
+    table.insert(self._uiConnections, button.MouseLeave:Connect(function()
+        isHovering = false
+        reset()
+    end))
+
+    table.insert(self._uiConnections, button.InputBegan:Connect(function(input)
+        if not isPrimaryPointerInput(input) or not isButtonInteractable(button) then
+            return
+        end
+        isPressing = true
+        tweenScale(pressScale, BUTTON_PRESS_TWEEN_INFO)
+        tweenRotation(normalRotation, BUTTON_PRESS_TWEEN_INFO)
+    end))
+
+    table.insert(self._uiConnections, button.InputEnded:Connect(function(input)
+        if isPrimaryPointerInput(input) then
+            reset()
+        end
+    end))
+
+    table.insert(self._uiConnections, button:GetPropertyChangedSignal("Active"):Connect(function()
+        if not isButtonInteractable(button) then
+            isHovering = false
+            reset()
+        end
+    end))
+
+    table.insert(self._uiConnections, button:GetPropertyChangedSignal("Visible"):Connect(function()
+        if not isButtonInteractable(button) then
+            isHovering = false
+            reset()
+        end
+    end))
+end
+
 function AttributeCapUpgradeController:_bindRow(statsList, attributeKey)
     local rowName = rowNameByKey[attributeKey]
     local row = rowName and statsList and statsList:FindFirstChild(rowName)
@@ -304,11 +492,13 @@ function AttributeCapUpgradeController:_bindRow(statsList, attributeKey)
     local gemButton = row:FindFirstChild("GemUpgradeButton")
     local robuxButton = row:FindFirstChild("RobuxUpgradeButton")
     if gemButton and gemButton:IsA("GuiButton") then
+        self:_bindButtonFeedback(gemButton)
         table.insert(self._uiConnections, gemButton.Activated:Connect(function()
             self:_requestGemUpgrade(attributeKey)
         end))
     end
     if robuxButton and robuxButton:IsA("GuiButton") then
+        self:_bindButtonFeedback(robuxButton)
         table.insert(self._uiConnections, robuxButton.Activated:Connect(function()
             self:_promptRobuxUpgrade(attributeKey)
         end))
@@ -330,6 +520,11 @@ function AttributeCapUpgradeController:_bindEntryButton(main)
     local capsEntry = findDescendant(main, "Left.Caps")
     local textButton = capsEntry and capsEntry:FindFirstChild("TextButton")
     if textButton and textButton:IsA("GuiButton") then
+        self:_bindButtonFeedback(textButton, {
+            ScaleTarget = capsEntry and capsEntry:IsA("GuiObject") and capsEntry or textButton,
+            HoverScale = ENTRY_HOVER_SCALE,
+            PressScale = ENTRY_PRESS_SCALE,
+        })
         table.insert(self._uiConnections, textButton.Activated:Connect(function()
             self:Open()
         end))
@@ -388,8 +583,19 @@ function AttributeCapUpgradeController:_bindUi(silent)
         buyWithRobuxButton.AutoButtonColor = false
     end
 
-    local closeButton = self._panel:FindFirstChild("CloseButton")
+    local closeButton = findFirstDescendant(self._panel, {
+        "Title.CloseButton",
+        "Window.CloseButton",
+        "Window.Header.CloseButton",
+        "CloseButton",
+    })
     if closeButton and closeButton:IsA("GuiButton") then
+        self:_bindButtonFeedback(closeButton, {
+            HoverScale = CLOSE_HOVER_SCALE,
+            PressScale = CLOSE_PRESS_SCALE,
+            RotationTarget = closeButton,
+            HoverRotation = CLOSE_HOVER_ROTATION,
+        })
         table.insert(self._uiConnections, closeButton.Activated:Connect(function()
             self:Close()
         end))
@@ -555,6 +761,7 @@ end
 function AttributeCapUpgradeController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._modalUiController = dependencies and dependencies.ModalUiController or nil
+    self._shopController = dependencies and dependencies.ShopController or nil
     self._latestPayload = nil
     self._pendingGemByKey = {}
     self._mainGui = nil

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from pathlib import Path
@@ -45,6 +46,26 @@ TITLE_HEADER_ROW = 4
 TITLE_DATA_START_ROW = 5
 TITLE_BEGIN_MARKER = "-- BEGIN GENERATED TITLE ROWS"
 TITLE_END_MARKER = "-- END GENERATED TITLE ROWS"
+
+SHOP_CONFIG_PATH = ROOT / "ShopConfig.lua"
+DIAMOND_SHOP_SHEET_NAME = "钻石购买"
+DIAMOND_SHOP_HEADER_ROW = 5
+DIAMOND_SHOP_DATA_START_ROW = 6
+DIAMOND_SHOP_BEGIN_MARKER = "-- BEGIN GENERATED DIAMOND PRODUCT ROWS"
+DIAMOND_SHOP_END_MARKER = "-- END GENERATED DIAMOND PRODUCT ROWS"
+
+ATTRIBUTE_CONFIG_PATH = ROOT / "AttributeConfig.lua"
+ATTRIBUTE_CONFIG_SHEET_NAME = "属性养成配置"
+ATTRIBUTE_PRICE_SHEET_NAME = "属性上限价格"
+ATTRIBUTE_PRODUCT_SHEET_NAME = "属性养成新的开发者商品"
+ATTRIBUTE_CONFIG_HEADER_ROW = 4
+ATTRIBUTE_CONFIG_DATA_START_ROW = 5
+ATTRIBUTE_PRICE_HEADER_ROW = 4
+ATTRIBUTE_PRICE_DATA_START_ROW = 5
+ATTRIBUTE_PRODUCT_HEADER_ROW = 12
+ATTRIBUTE_PRODUCT_DATA_START_ROW = 13
+ATTRIBUTE_CONFIG_BEGIN_MARKER = "-- BEGIN GENERATED ATTRIBUTE CONFIG ROWS"
+ATTRIBUTE_CONFIG_END_MARKER = "-- END GENERATED ATTRIBUTE CONFIG ROWS"
 
 
 def is_blank(value) -> bool:
@@ -401,6 +422,40 @@ def math_safe_int(value, default=0) -> int:
         return default
 
 
+def math_safe_float(value, default=0.0) -> float:
+    if is_blank(value):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def bool_from_cell(value, default=False) -> bool:
+    if is_blank(value):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) != 0
+    text = str(value).strip().lower()
+    return text in {"true", "yes", "y", "1", "启用", "是"}
+
+
+def build_header_map(worksheet, header_row: int) -> dict[str, int]:
+    headers = {}
+    for column_index in range(1, worksheet.max_column + 1):
+        value = worksheet.cell(header_row, column_index).value
+        if not is_blank(value):
+            headers[str(value).strip()] = column_index
+    return headers
+
+
+def cell_by_header(worksheet, row_index: int, headers: dict[str, int], header: str):
+    column_index = headers.get(header)
+    return worksheet.cell(row_index, column_index).value if column_index else None
+
+
 def parse_title_unlock_condition(value) -> tuple[dict | None, str | None]:
     if is_blank(value):
         return None, "Empty title unlock condition"
@@ -728,6 +783,221 @@ def build_title_generated_block(rows) -> str:
     return "\n".join(lines)
 
 
+def read_attribute_config_rows():
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    config_sheet = get_sheet(workbook, ATTRIBUTE_CONFIG_SHEET_NAME, len(workbook.worksheets) - 3)
+    price_sheet = get_sheet(workbook, ATTRIBUTE_PRICE_SHEET_NAME, len(workbook.worksheets) - 2)
+    product_sheet = get_sheet(workbook, ATTRIBUTE_PRODUCT_SHEET_NAME, len(workbook.worksheets) - 1)
+    config_headers = build_header_map(config_sheet, ATTRIBUTE_CONFIG_HEADER_ROW)
+    price_headers = build_header_map(price_sheet, ATTRIBUTE_PRICE_HEADER_ROW)
+    product_headers = build_header_map(product_sheet, ATTRIBUTE_PRODUCT_HEADER_ROW)
+
+    required_config_headers = [
+        "AttributeID",
+        "英文显示名",
+        "上限显示名",
+        "CardName",
+        "初始上限",
+        "最高上限",
+        "单局每级效果值",
+        "显示单位/ValueType",
+        "DeveloperProductId",
+        "钻石购买",
+        "罗布币购买",
+    ]
+    missing_config_headers = [header for header in required_config_headers if header not in config_headers]
+    if missing_config_headers:
+        raise RuntimeError("Missing attribute config headers: " + ", ".join(missing_config_headers))
+
+    required_price_headers = [
+        "AttributeID",
+        "当前上限",
+        "升级后上限",
+        "钻石消耗/规则",
+        "启用钻石购买",
+        "启用罗布币购买",
+    ]
+    missing_price_headers = [header for header in required_price_headers if header not in price_headers]
+    if missing_price_headers:
+        raise RuntimeError("Missing attribute price headers: " + ", ".join(missing_price_headers))
+
+    required_product_headers = [
+        "等级",
+        "开发者商品",
+    ]
+    missing_product_headers = [header for header in required_product_headers if header not in product_headers]
+    if missing_product_headers:
+        raise RuntimeError("Missing attribute product headers: " + ", ".join(missing_product_headers))
+
+    attributes = []
+    for row_index in range(ATTRIBUTE_CONFIG_DATA_START_ROW, config_sheet.max_row + 1):
+        attribute_id = cell_by_header(config_sheet, row_index, config_headers, "AttributeID")
+        if is_blank(attribute_id):
+            continue
+
+        attribute_key = str(attribute_id).strip()
+        attributes.append({
+            "Key": attribute_key,
+            "DisplayName": "" if is_blank(cell_by_header(config_sheet, row_index, config_headers, "英文显示名")) else str(cell_by_header(config_sheet, row_index, config_headers, "英文显示名")).strip(),
+            "CapDisplayName": "" if is_blank(cell_by_header(config_sheet, row_index, config_headers, "上限显示名")) else str(cell_by_header(config_sheet, row_index, config_headers, "上限显示名")).strip(),
+            "CardName": "" if is_blank(cell_by_header(config_sheet, row_index, config_headers, "CardName")) else str(cell_by_header(config_sheet, row_index, config_headers, "CardName")).strip(),
+            "InitialCap": math_safe_int(cell_by_header(config_sheet, row_index, config_headers, "初始上限"), 0),
+            "MaxCap": math_safe_int(cell_by_header(config_sheet, row_index, config_headers, "最高上限"), 0),
+            "PerLevelValue": math_safe_float(cell_by_header(config_sheet, row_index, config_headers, "单局每级效果值"), 0),
+            "ValueType": normalize_attribute_value_type(cell_by_header(config_sheet, row_index, config_headers, "显示单位/ValueType")),
+            "ProductId": math_safe_int(cell_by_header(config_sheet, row_index, config_headers, "DeveloperProductId"), 0),
+            "GemEnabled": bool_from_cell(cell_by_header(config_sheet, row_index, config_headers, "钻石购买"), True),
+            "RobuxEnabled": bool_from_cell(cell_by_header(config_sheet, row_index, config_headers, "罗布币购买"), True),
+        })
+
+    prices_by_key = {row["Key"]: [] for row in attributes}
+    for row_index in range(ATTRIBUTE_PRICE_DATA_START_ROW, price_sheet.max_row + 1):
+        attribute_id = cell_by_header(price_sheet, row_index, price_headers, "AttributeID")
+        if is_blank(attribute_id):
+            continue
+        attribute_key = str(attribute_id).strip()
+        current_cap = cell_by_header(price_sheet, row_index, price_headers, "当前上限")
+        next_cap = cell_by_header(price_sheet, row_index, price_headers, "升级后上限")
+        gem_cost = cell_by_header(price_sheet, row_index, price_headers, "钻石消耗/规则")
+        if not isinstance(current_cap, (int, float)) or not isinstance(next_cap, (int, float)) or not isinstance(gem_cost, (int, float)):
+            continue
+        prices_by_key.setdefault(attribute_key, []).append({
+            "FromCap": math_safe_int(current_cap, 0),
+            "ToCap": math_safe_int(next_cap, 0),
+            "GemCost": math_safe_int(gem_cost, 0),
+            "GemEnabled": bool_from_cell(cell_by_header(price_sheet, row_index, price_headers, "启用钻石购买"), True),
+            "RobuxEnabled": bool_from_cell(cell_by_header(price_sheet, row_index, price_headers, "启用罗布币购买"), True),
+        })
+
+    for price_rows in prices_by_key.values():
+        price_rows.sort(key=lambda row: (row["FromCap"], row["ToCap"]))
+
+    level_products = []
+    for row_index in range(ATTRIBUTE_PRODUCT_DATA_START_ROW, product_sheet.max_row + 1):
+        level = cell_by_header(product_sheet, row_index, product_headers, "等级")
+        product_id = cell_by_header(product_sheet, row_index, product_headers, "开发者商品")
+        if not isinstance(level, (int, float)) or not isinstance(product_id, (int, float)):
+            continue
+        resolved_level = math_safe_int(level, 0)
+        resolved_product_id = math_safe_int(product_id, 0)
+        if resolved_level <= 0 or resolved_product_id <= 0:
+            continue
+        level_products.append({
+            "Level": resolved_level,
+            "ProductId": resolved_product_id,
+        })
+    level_products.sort(key=lambda row: row["Level"])
+
+    return attributes, prices_by_key, level_products
+
+
+def normalize_attribute_value_type(value) -> str:
+    text = "" if is_blank(value) else str(value).strip()
+    if text == "%":
+        return "Percent"
+    return text or "Percent"
+
+
+def lua_number(value) -> str:
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return ("%0.12g" % number)
+
+
+def build_attribute_config_generated_block(attributes: list[dict], prices_by_key: dict[str, list[dict]], level_products: list[dict]) -> str:
+    lines = [
+        ATTRIBUTE_CONFIG_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 属性养成配置 + 属性上限价格. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "AttributeConfig.Order = {",
+    ]
+    for row in attributes:
+        lines.append(f"    {lua_value(row['Key'])},")
+    lines.extend(["}", "", "AttributeConfig.Attributes = {"])
+    for row in attributes:
+        lines.extend([
+            f"    {row['Key']} = {{",
+            f"        DisplayName = {lua_value(row['DisplayName'])},",
+            f"        CapDisplayName = {lua_value(row['CapDisplayName'])},",
+            f"        CardName = {lua_value(row['CardName'])},",
+            f"        InitialCap = {row['InitialCap']},",
+            f"        MaxCap = {row['MaxCap']},",
+            f"        PerLevelValue = {lua_number(row['PerLevelValue'])},",
+            f"        ValueType = {lua_value(row['ValueType'])},",
+            "    },",
+        ])
+    lines.extend(["}", "", "AttributeConfig.CapUpgradeProducts = {}", "", "AttributeConfig.CapUpgradeLevelProducts = {"])
+    for row in level_products:
+        lines.append(f"    [{row['Level']}] = {row['ProductId']},")
+    lines.extend(["}", "", "AttributeConfig.CapUpgradePrices = {"])
+    for row in attributes:
+        key = row["Key"]
+        lines.append(f"    {key} = {{")
+        for price in prices_by_key.get(key, []):
+            lines.append(
+                "        { FromCap = %d, ToCap = %d, GemCost = %d, GemEnabled = %s, RobuxEnabled = %s },"
+                % (
+                    price["FromCap"],
+                    price["ToCap"],
+                    price["GemCost"],
+                    "true" if price["GemEnabled"] else "false",
+                    "true" if price["RobuxEnabled"] else "false",
+                )
+            )
+        lines.append("    },")
+    lines.extend(["}", ATTRIBUTE_CONFIG_END_MARKER])
+    return "\n".join(lines)
+
+
+def read_diamond_shop_rows() -> list[dict]:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, DIAMOND_SHOP_SHEET_NAME, len(workbook.worksheets) - 1)
+    headers = build_header_map(worksheet, DIAMOND_SHOP_HEADER_ROW)
+
+    required_headers = ["id", "开发者商品id", "钻石数"]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing diamond shop headers: " + ", ".join(missing_headers))
+
+    rows = []
+    for row_index in range(DIAMOND_SHOP_DATA_START_ROW, worksheet.max_row + 1):
+        diamond_id = cell_by_header(worksheet, row_index, headers, "id")
+        product_id = cell_by_header(worksheet, row_index, headers, "开发者商品id")
+        diamonds = cell_by_header(worksheet, row_index, headers, "钻石数")
+        if all(is_blank(value) for value in (diamond_id, product_id, diamonds)):
+            continue
+
+        resolved_id = math_safe_int(diamond_id, 0)
+        resolved_product_id = math_safe_int(product_id, 0)
+        resolved_diamonds = math_safe_int(diamonds, 0)
+        if resolved_id <= 0 or resolved_product_id <= 0 or resolved_diamonds <= 0:
+            raise RuntimeError(f"Invalid diamond shop row {row_index}")
+
+        rows.append({
+            "Id": resolved_id,
+            "ProductId": resolved_product_id,
+            "Diamonds": resolved_diamonds,
+        })
+
+    rows.sort(key=lambda row: row["Id"])
+    return rows
+
+
+def build_diamond_shop_generated_block(rows: list[dict]) -> str:
+    lines = [
+        DIAMOND_SHOP_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 钻石购买. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "ShopConfig.DiamondProducts = {",
+    ]
+    for row in rows:
+        lines.append(
+            "    { Id = %d, ProductId = %d, Diamonds = %d },"
+            % (row["Id"], row["ProductId"], row["Diamonds"])
+        )
+    lines.extend(["}", DIAMOND_SHOP_END_MARKER])
+    return "\n".join(lines)
+
+
 def replace_generated_block(source: str, generated_block: str, begin_marker: str, end_marker: str, config_path: Path) -> str:
     pattern = re.compile(re.escape(begin_marker) + r".*?" + re.escape(end_marker), re.S)
     if not pattern.search(source):
@@ -735,7 +1005,104 @@ def replace_generated_block(source: str, generated_block: str, begin_marker: str
     return pattern.sub(generated_block, source, count=1)
 
 
+def sync_attribute_config() -> dict:
+    attribute_rows, attribute_price_rows, attribute_level_product_rows = read_attribute_config_rows()
+    attribute_source = ATTRIBUTE_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_attribute_source = replace_generated_block(
+        attribute_source,
+        build_attribute_config_generated_block(attribute_rows, attribute_price_rows, attribute_level_product_rows),
+        ATTRIBUTE_CONFIG_BEGIN_MARKER,
+        ATTRIBUTE_CONFIG_END_MARKER,
+        ATTRIBUTE_CONFIG_PATH,
+    )
+    ATTRIBUTE_CONFIG_PATH.write_text(updated_attribute_source, encoding="utf-8", newline="\n")
+    return {
+        "attributeRows": len(attribute_rows),
+        "attributePriceRows": sum(len(rows) for rows in attribute_price_rows.values()),
+        "attributeProductRows": len(attribute_level_product_rows),
+    }
+
+
+def sync_diamond_shop_config() -> dict:
+    diamond_rows = read_diamond_shop_rows()
+    shop_source = SHOP_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_shop_source = replace_generated_block(
+        shop_source,
+        build_diamond_shop_generated_block(diamond_rows),
+        DIAMOND_SHOP_BEGIN_MARKER,
+        DIAMOND_SHOP_END_MARKER,
+        SHOP_CONFIG_PATH,
+    )
+    SHOP_CONFIG_PATH.write_text(updated_shop_source, encoding="utf-8", newline="\n")
+    return {
+        "diamondShopRows": len(diamond_rows),
+    }
+
+
+def sync_seven_day_login_reward_config() -> dict:
+    first_cycle_rows, repeat_cycle_rows, skin_metadata, seven_day_warnings = read_seven_day_login_reward_rows()
+    seven_day_source = SEVEN_DAY_LOGIN_REWARD_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_seven_day_source = replace_generated_block(
+        seven_day_source,
+        build_seven_day_login_reward_generated_block(first_cycle_rows, repeat_cycle_rows, skin_metadata),
+        SEVEN_DAY_LOGIN_REWARD_BEGIN_MARKER,
+        SEVEN_DAY_LOGIN_REWARD_END_MARKER,
+        SEVEN_DAY_LOGIN_REWARD_CONFIG_PATH,
+    )
+    SEVEN_DAY_LOGIN_REWARD_CONFIG_PATH.write_text(updated_seven_day_source, encoding="utf-8", newline="\n")
+    return {
+        "sevenDayFirstCycleRows": len(first_cycle_rows),
+        "sevenDayRepeatCycleRows": len(repeat_cycle_rows),
+        "warnings": seven_day_warnings,
+    }
+
+
+def sync_title_config() -> dict:
+    title_rows, title_warnings = read_title_rows()
+    title_source = TITLE_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_title_source = replace_generated_block(
+        title_source,
+        build_title_generated_block(title_rows),
+        TITLE_BEGIN_MARKER,
+        TITLE_END_MARKER,
+        TITLE_CONFIG_PATH,
+    )
+    TITLE_CONFIG_PATH.write_text(updated_title_source, encoding="utf-8", newline="\n")
+    return {
+        "titleRows": len(title_rows),
+        "warnings": title_warnings,
+    }
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Sync Lua config files from IO_BaseBalanceDraft.xlsx.")
+    parser.add_argument("--attribute-only", action="store_true", help="Only sync AttributeConfig.lua from attribute progression sheets.")
+    parser.add_argument("--diamond-shop-only", action="store_true", help="Only sync ShopConfig.lua diamond products from the diamond purchase sheet.")
+    parser.add_argument("--seven-day-only", action="store_true", help="Only sync SevenDayLoginRewardConfig.lua from the seven-day login reward sheet.")
+    parser.add_argument("--title-only", action="store_true", help="Only sync TitleConfig.lua from the title sheet.")
+    args = parser.parse_args()
+
+    if args.diamond_shop_only:
+        print(json.dumps({
+            **sync_diamond_shop_config(),
+            "warnings": [],
+        }, ensure_ascii=False))
+        return
+    if args.seven_day_only:
+        print(json.dumps(sync_seven_day_login_reward_config(), ensure_ascii=False))
+        return
+    if args.title_only:
+        print(json.dumps(sync_title_config(), ensure_ascii=False))
+        return
+
+    attribute_result = sync_attribute_config()
+    if args.attribute_only:
+        print(json.dumps({
+            **attribute_result,
+            "warnings": [],
+        }, ensure_ascii=False))
+        return
+
     rows, warnings = read_code_rows()
     source = CONFIG_PATH.read_text(encoding="utf-8")
     updated_source = replace_generated_block(source, build_generated_block(rows), BEGIN_MARKER, END_MARKER, CONFIG_PATH)
@@ -752,16 +1119,7 @@ def main() -> None:
     )
     ONLINE_REWARD_CONFIG_PATH.write_text(updated_online_source, encoding="utf-8", newline="\n")
 
-    first_cycle_rows, repeat_cycle_rows, skin_metadata, seven_day_warnings = read_seven_day_login_reward_rows()
-    seven_day_source = SEVEN_DAY_LOGIN_REWARD_CONFIG_PATH.read_text(encoding="utf-8")
-    updated_seven_day_source = replace_generated_block(
-        seven_day_source,
-        build_seven_day_login_reward_generated_block(first_cycle_rows, repeat_cycle_rows, skin_metadata),
-        SEVEN_DAY_LOGIN_REWARD_BEGIN_MARKER,
-        SEVEN_DAY_LOGIN_REWARD_END_MARKER,
-        SEVEN_DAY_LOGIN_REWARD_CONFIG_PATH,
-    )
-    SEVEN_DAY_LOGIN_REWARD_CONFIG_PATH.write_text(updated_seven_day_source, encoding="utf-8", newline="\n")
+    seven_day_result = sync_seven_day_login_reward_config()
 
     skin_rows = read_skin_rows()
     skin_source = SKIN_CONFIG_PATH.read_text(encoding="utf-8")
@@ -785,25 +1143,19 @@ def main() -> None:
     )
     TRAIL_CONFIG_PATH.write_text(updated_trail_source, encoding="utf-8", newline="\n")
 
-    title_rows, title_warnings = read_title_rows()
-    title_source = TITLE_CONFIG_PATH.read_text(encoding="utf-8")
-    updated_title_source = replace_generated_block(
-        title_source,
-        build_title_generated_block(title_rows),
-        TITLE_BEGIN_MARKER,
-        TITLE_END_MARKER,
-        TITLE_CONFIG_PATH,
-    )
-    TITLE_CONFIG_PATH.write_text(updated_title_source, encoding="utf-8", newline="\n")
+    title_result = sync_title_config()
+    diamond_shop_result = sync_diamond_shop_config()
     print(json.dumps({
         "codeRows": len(rows),
         "onlineRewardRows": len(online_rows),
-        "sevenDayFirstCycleRows": len(first_cycle_rows),
-        "sevenDayRepeatCycleRows": len(repeat_cycle_rows),
+        "sevenDayFirstCycleRows": seven_day_result["sevenDayFirstCycleRows"],
+        "sevenDayRepeatCycleRows": seven_day_result["sevenDayRepeatCycleRows"],
         "skinRows": len(skin_rows),
         "trailRows": len(trail_rows),
-        "titleRows": len(title_rows),
-        "warnings": warnings + online_warnings + seven_day_warnings + title_warnings,
+        "titleRows": title_result["titleRows"],
+        **attribute_result,
+        **diamond_shop_result,
+        "warnings": warnings + online_warnings + seven_day_result["warnings"] + title_result["warnings"],
     }, ensure_ascii=False))
 
 

@@ -25,20 +25,20 @@ SevenDayLoginRewardConfig.Source = {
 -- Source: IO_BaseBalanceDraft.xlsx / 七日登录奖励. Update via tools/SyncCodeConfigFromWorkbook.py.
 SevenDayLoginRewardConfig.FirstCycleRewards = {
     { DayIndex = 1, RewardType = 'WheelSpins', Amount = 3, Label = 'Spin x3', Icon = 'rbxassetid://77152368516350' },
-    { DayIndex = 2, RewardType = 'Potion', PotionId = 1002, Amount = 5, Label = 'Advanced Potion x5', Icon = 'rbxassetid://106498508152369' },
+    { DayIndex = 2, RewardType = 'Diamonds', Amount = 3000, Label = 'Diamonds x3000', Icon = 'rbxassetid://89590364394067' },
     { DayIndex = 3, RewardType = 'Skin', SkinId = 10007, Amount = 1, Label = 'Watermelon Pop', Icon = 'rbxassetid://97879805462753' },
     { DayIndex = 4, RewardType = 'WheelSpins', Amount = 5, Label = 'Spin x5', Icon = 'rbxassetid://77152368516350' },
-    { DayIndex = 5, RewardType = 'Potion', PotionId = 1003, Amount = 5, Label = 'Rare Potion x5', Icon = 'rbxassetid://100154459165982' },
+    { DayIndex = 5, RewardType = 'Diamonds', Amount = 5000, Label = 'Diamonds x5000', Icon = 'rbxassetid://89590364394067' },
     { DayIndex = 6, RewardType = 'WheelSpins', Amount = 10, Label = 'Spin x10', Icon = 'rbxassetid://77152368516350' },
     { DayIndex = 7, RewardType = 'Skin', SkinId = 10006, Amount = 1, Label = 'Abyss Sword', Icon = 'rbxassetid://107965659960902' },
 }
 
 SevenDayLoginRewardConfig.RepeatCycleRewards = {
     { DayIndex = 1, RewardType = 'WheelSpins', Amount = 3, Label = 'Spin x3', Icon = 'rbxassetid://77152368516350' },
-    { DayIndex = 2, RewardType = 'Potion', PotionId = 1002, Amount = 5, Label = 'Advanced Potion x5', Icon = 'rbxassetid://106498508152369' },
+    { DayIndex = 2, RewardType = 'Diamonds', Amount = 3000, Label = 'Diamonds x3000', Icon = 'rbxassetid://89590364394067' },
     { DayIndex = 3, RewardType = 'WheelSpins', Amount = 5, Label = 'Spin x5', Icon = 'rbxassetid://77152368516350' },
     { DayIndex = 4, RewardType = 'WheelSpins', Amount = 5, Label = 'Spin x5', Icon = 'rbxassetid://77152368516350' },
-    { DayIndex = 5, RewardType = 'Potion', PotionId = 1003, Amount = 5, Label = 'Rare Potion x5', Icon = 'rbxassetid://100154459165982' },
+    { DayIndex = 5, RewardType = 'Diamonds', Amount = 5000, Label = 'Diamonds x5000', Icon = 'rbxassetid://89590364394067' },
     { DayIndex = 6, RewardType = 'WheelSpins', Amount = 10, Label = 'Spin x10', Icon = 'rbxassetid://77152368516350' },
     { DayIndex = 7, RewardType = 'Potion', PotionId = 1003, Amount = 10, Label = 'Rare Potion x10', Icon = 'rbxassetid://100154459165982' },
 }

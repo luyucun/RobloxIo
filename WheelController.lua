@@ -165,6 +165,24 @@ local function formatTime(seconds)
     return string.format("%02d:%02d", minutes, remainingSeconds)
 end
 
+local function applyRewardAmountText(item, reward)
+    if not (item and type(reward) == "table") then
+        return
+    end
+
+    local amount = tonumber(reward.amount or reward.Amount)
+    if not amount then
+        return
+    end
+
+    local amountText = "+" .. tostring(math.floor(amount))
+    for _, descendant in ipairs(item:GetDescendants()) do
+        if descendant.Name == "Num" and (descendant:IsA("TextLabel") or descendant:IsA("TextButton")) then
+            descendant.Text = amountText
+        end
+    end
+end
+
 local function playTween(binding, key, target, tweenInfo, goal)
     if not (binding and target and tweenInfo and goal) then
         return
@@ -540,6 +558,7 @@ function WheelController:_showWheelClaim(reward)
     item.Size = UDim2.new(0.5, 0, 0.5, 0)
     item.Position = UDim2.new(0.5, 0, 0.5, 0)
     item.Visible = true
+    applyRewardAmountText(item, reward)
     item.Parent = self._wheelClaim
     self._wheelClaimGeneratedItem = item
 

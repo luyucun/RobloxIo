@@ -52,6 +52,7 @@ ShopController._popupItems = {}
 ShopController._mainGui = nil
 ShopController._leftEntry = nil
 ShopController._panel = nil
+ShopController._shopScrollingFrame = nil
 ShopController._starterPackFrame = nil
 ShopController._skinBuyButtonRoot = nil
 ShopController._claimPopup = nil
@@ -102,6 +103,16 @@ local POPUP_CLOSE_DELAY = 1.5
 local SECRET_GRADIENT_OFFSET_RANGE = 1
 local SECRET_GRADIENT_ONE_WAY_DURATION = 2.4
 local SECRET_GRADIENT_UPDATE_INTERVAL = 0.033
+local DIAMOND_SCROLL_CANVAS_POSITION = Vector2.new(0, 595)
+
+local DIAMOND_PRODUCT_PATHS = {
+    "Diamond1.Content.Cash1",
+    "Diamond1.Content.Cash2",
+    "Diamond1.Content.Cash3",
+    "Diamond2.Content.Cash1",
+    "Diamond2.Content.Cash2",
+    "Diamond3",
+}
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -159,6 +170,17 @@ local function findButton(root, name)
     return nil, nil
 end
 
+local function findPath(root, path)
+    local current = root
+    for segment in string.gmatch(tostring(path or ""), "[^%.]+") do
+        if not current then
+            return nil
+        end
+        current = current:FindFirstChild(segment)
+    end
+    return current
+end
+
 local function setText(textObject, value)
     if textObject and (textObject:IsA("TextLabel") or textObject:IsA("TextButton") or textObject:IsA("TextBox")) then
         textObject.Text = tostring(value)
@@ -171,6 +193,11 @@ local function formatRobuxPrice(value)
         return nil
     end
     return tostring(math.max(0, math.floor(price + 0.5)))
+end
+
+local function formatDiamondAmount(value)
+    local amount = math.max(0, math.floor(tonumber(value) or 0))
+    return tostring(amount)
 end
 
 local function setMarketplaceRobuxPrice(textObject, itemId, infoType)
@@ -736,6 +763,18 @@ function ShopController:_setOpen(isOpen, immediate)
                 productId = purchase.ProductId,
             })
         end
+        for _, product in ipairs(ShopConfig.DiamondProducts) do
+            self:_recordPurchaseContext({
+                intent = "ProductViewed",
+                source = "Shop",
+                purchaseType = "Diamonds",
+                productGroup = "DiamondPack",
+                itemSku = tostring(product.ProductId),
+                productId = product.ProductId,
+                diamondProductId = product.Id,
+                diamonds = product.Diamonds,
+            })
+        end
         if not self._featuredSkinOwned then
             local featuredSkin = SkinConfig.GetSkin(ShopConfig.FeaturedSkinId)
             if featuredSkin then
@@ -792,6 +831,37 @@ function ShopController:_promptProduct(productId, source)
         productGroup = "WheelSpins",
         itemSku = tostring(resolvedProductId),
         productId = resolvedProductId,
+    })
+    MarketplaceService:PromptProductPurchase(self._localPlayer, resolvedProductId)
+end
+
+function ShopController:_promptDiamondProduct(product)
+    local resolvedProductId = math.floor(tonumber(product and product.ProductId) or 0)
+    if resolvedProductId <= 0 or not (self._localPlayer and self._localPlayer.Parent) then
+        return
+    end
+
+    local diamondId = math.floor(tonumber(product.Id) or 0)
+    local diamonds = math.max(0, math.floor(tonumber(product.Diamonds) or 0))
+    self:_recordPurchaseContext({
+        intent = "BuyClicked",
+        source = "Shop",
+        purchaseType = "Diamonds",
+        productGroup = "DiamondPack",
+        itemSku = tostring(resolvedProductId),
+        productId = resolvedProductId,
+        diamondProductId = diamondId,
+        diamonds = diamonds,
+    })
+    self:_recordPurchaseContext({
+        intent = "PurchasePromptRequested",
+        source = "Shop",
+        purchaseType = "Diamonds",
+        productGroup = "DiamondPack",
+        itemSku = tostring(resolvedProductId),
+        productId = resolvedProductId,
+        diamondProductId = diamondId,
+        diamonds = diamonds,
     })
     MarketplaceService:PromptProductPurchase(self._localPlayer, resolvedProductId)
 end
@@ -865,6 +935,75 @@ function ShopController:_requestSkinPurchase()
         productGroup = "GamePassSkin",
         itemSku = tostring(skin.GamePassId),
         skinId = skin.Id,
+    })
+end
+
+function ShopController:_bindDiamondProducts(scrollingFrame)
+    if not scrollingFrame then
+        return
+    end
+
+    for index, product in ipairs(ShopConfig.DiamondProducts) do
+        local path = DIAMOND_PRODUCT_PATHS[index]
+        local productFrame = path and findPath(scrollingFrame, path) or nil
+        local button = productFrame and select(1, findButton(productFrame, "BuyButton")) or nil
+        if not productFrame then
+            warn(string.format("[ShopController] Missing diamond product UI path %s", tostring(path or index)))
+            continue
+        end
+
+        setText(productFrame:FindFirstChild("Number", true), formatDiamondAmount(product.Diamonds))
+        setMarketplaceRobuxPrice(
+            productFrame:FindFirstChild("RMoney", true),
+            product.ProductId,
+            Enum.InfoType.Product
+        )
+        self:_bindButton(button, function()
+            self:_promptDiamondProduct(product)
+        end, {
+            ScaleTarget = button,
+        })
+    end
+end
+
+function ShopController:_scrollToDiamonds()
+    if not (self._shopScrollingFrame and self._shopScrollingFrame:IsA("ScrollingFrame")) then
+        return
+    end
+
+    self._shopScrollingFrame.CanvasPosition = DIAMOND_SCROLL_CANVAS_POSITION
+end
+
+function ShopController:_bindTopGemEntry(main)
+    local top = main and main:FindFirstChild("Top")
+    local gemFrame = top and top:FindFirstChild("Gem")
+    if not (gemFrame and gemFrame:IsA("GuiObject")) then
+        return
+    end
+
+    local button = gemFrame:FindFirstChild("ShopDiamondButton")
+    if not (button and button:IsA("TextButton")) then
+        button = Instance.new("TextButton")
+        button.Name = "ShopDiamondButton"
+        button.BackgroundTransparency = 1
+        button.TextTransparency = 1
+        button.Text = ""
+        button.BorderSizePixel = 0
+        button.Size = UDim2.fromScale(1, 1)
+        button.Position = UDim2.fromScale(0, 0)
+        button.ZIndex = 50
+        button.AutoButtonColor = false
+        button.Parent = gemFrame
+    end
+
+    button.Active = true
+    button.Selectable = true
+    self:_bindButton(button, function()
+        self:OpenDiamonds()
+    end, {
+        ScaleTarget = gemFrame,
+        HoverScale = 1.04,
+        PressScale = 0.94,
     })
 end
 
@@ -1095,6 +1234,7 @@ function ShopController:_bindUi(silent)
 
     local shopInfo = self._panel and self._panel:FindFirstChild("Shopinfo")
     local scrollingFrame = shopInfo and shopInfo:FindFirstChild("ScrollingFrame")
+    self._shopScrollingFrame = scrollingFrame
     self._starterPackFrame = scrollingFrame and scrollingFrame:FindFirstChild("StarterPack")
     local sugarClubFrame = scrollingFrame and scrollingFrame:FindFirstChild("SugarClub")
     local spinFrame = scrollingFrame and scrollingFrame:FindFirstChild("Spin")
@@ -1128,6 +1268,7 @@ function ShopController:_bindUi(silent)
         RotationTarget = entryRotationTarget,
         HoverRotation = HOVER_ROTATION,
     })
+    self:_bindTopGemEntry(self._mainGui)
 
     local closeButton = self._panel:FindFirstChild("CloseButton", true)
     self:_bindButton(closeButton, function()
@@ -1178,6 +1319,7 @@ function ShopController:_bindUi(silent)
             ScaleTarget = button,
         })
     end
+    self:_bindDiamondProducts(scrollingFrame)
 
     local skinInnerFrame = skinFrame and skinFrame:FindFirstChild("Frame")
     local skinButton, skinButtonRoot = nil, nil
@@ -1274,6 +1416,17 @@ function ShopController:Open()
         self:_bindUi(true)
     end
     self:_setOpen(true)
+end
+
+function ShopController:OpenDiamonds()
+    if not self._panel then
+        self:_bindUi(true)
+    end
+    self:_setOpen(true)
+    self:_scrollToDiamonds()
+    task.defer(function()
+        self:_scrollToDiamonds()
+    end)
 end
 
 function ShopController:Init(dependencies)

@@ -98,6 +98,16 @@ local function setWorldCFrame(instance, targetCFrame)
     end
 end
 
+local function getInstanceCFrame(instance)
+    if instance:IsA("Model") then
+        return instance:GetPivot()
+    end
+    if instance:IsA("BasePart") then
+        return instance.CFrame
+    end
+    return CFrame.identity
+end
+
 local function findChildOfClass(parent, childName, className)
     if not parent then
         return nil
@@ -196,6 +206,115 @@ end
 
 local function getWeaponOrbitDistance()
     return 6
+end
+
+local function normalizeWeaponScale(scale)
+    return math.max(0.1, tonumber(scale) or 1)
+end
+
+local function isAuraPart(basePart)
+    if not basePart then
+        return false
+    end
+    local auraName = GameConfig.WEAPON.AuraPartName or "Aura"
+    return basePart.Name == auraName or basePart:GetAttribute("IsWeaponAura") == true
+end
+
+local function captureWeaponPartGeometry(instance, excludeAura)
+    if not instance then
+        return {}
+    end
+
+    local pivot = getInstanceCFrame(instance)
+    local geometry = {}
+    for _, basePart in ipairs(getBaseParts(instance)) do
+        if not (excludeAura == true and isAuraPart(basePart)) then
+            table.insert(geometry, {
+                Part = basePart,
+                Size = basePart.Size,
+                LocalCFrame = pivot:ToObjectSpace(basePart.CFrame),
+            })
+        end
+    end
+
+    if excludeAura == true and #geometry <= 0 then
+        return captureWeaponPartGeometry(instance, false)
+    end
+    return geometry
+end
+
+local function getGeometryLocalXBounds(geometry, scale)
+    local normalizedScale = normalizeWeaponScale(scale)
+    local minX = math.huge
+    local maxX = -math.huge
+
+    for _, item in ipairs(geometry or {}) do
+        local localCFrame = item.LocalCFrame
+        local size = item.Size
+        if localCFrame and typeof(size) == "Vector3" then
+            local scaledSize = size * normalizedScale
+            local halfExtentX = (math.abs(localCFrame.RightVector.X) * scaledSize.X * 0.5)
+                + (math.abs(localCFrame.UpVector.X) * scaledSize.Y * 0.5)
+                + (math.abs(localCFrame.LookVector.X) * scaledSize.Z * 0.5)
+            local centerX = localCFrame.Position.X * normalizedScale
+            minX = math.min(minX, centerX - halfExtentX)
+            maxX = math.max(maxX, centerX + halfExtentX)
+        end
+    end
+
+    if minX == math.huge or maxX == -math.huge then
+        return nil, nil
+    end
+    return minX, maxX
+end
+
+local function getAnchoredOrbitDistance(weaponState)
+    local baseDistance = tonumber(weaponState and weaponState.OrbitDistance) or getWeaponOrbitDistance()
+    local anchorGeometry = weaponState and (weaponState.AnchorPartGeometries or weaponState.BasePartGeometries)
+    local baseMinX = nil
+    local scaledMinX = nil
+    baseMinX = getGeometryLocalXBounds(anchorGeometry, 1)
+    scaledMinX = getGeometryLocalXBounds(anchorGeometry, weaponState and weaponState.WeaponScale or 1)
+    if baseMinX == nil or scaledMinX == nil then
+        return baseDistance
+    end
+    return math.max(0, baseDistance + baseMinX - scaledMinX)
+end
+
+local function applyWeaponStateScale(weaponState)
+    if not (weaponState and weaponState.Instance and weaponState.Instance.Parent) then
+        return
+    end
+
+    local scale = normalizeWeaponScale(weaponState.WeaponScale)
+    weaponState.WeaponScale = scale
+    if math.abs((tonumber(weaponState.AppliedWeaponScale) or -1) - scale) <= 0.0001 then
+        return
+    end
+
+    local instance = weaponState.Instance
+    if instance:IsA("Model") then
+        local success = pcall(function()
+            instance:ScaleTo(scale)
+        end)
+        if success then
+            weaponState.AppliedWeaponScale = scale
+            return
+        end
+    end
+
+    local pivot = getInstanceCFrame(instance)
+    for _, item in ipairs(weaponState.BasePartGeometries or {}) do
+        local basePart = item.Part
+        local baseSize = item.Size
+        local localCFrame = item.LocalCFrame
+        if basePart and basePart.Parent and typeof(baseSize) == "Vector3" and localCFrame then
+            local rotationOnly = localCFrame - localCFrame.Position
+            basePart.Size = baseSize * scale
+            basePart.CFrame = pivot * CFrame.new(localCFrame.Position * scale) * rotationOnly
+        end
+    end
+    weaponState.AppliedWeaponScale = scale
 end
 
 local function isPerformanceDebugEnabled()
@@ -562,10 +681,12 @@ function WeaponFxController:_updateLocalWeaponState(weaponState, weaponIndex, we
     weaponState.CurrentAngle = currentAngle or weaponState.CurrentAngle or 0
     weaponState.OrbitSpeed = tonumber(weaponData and weaponData.orbitSpeed) or getWeaponOrbitSpeed()
     weaponState.OrbitDistance = tonumber(weaponData and weaponData.orbitDistance) or getWeaponOrbitDistance()
+    weaponState.WeaponScale = normalizeWeaponScale(weaponData and weaponData.weaponScale)
     weaponState.OrbitDirection = normalizeOrbitDirection((weaponData and weaponData.orbitDirection) or weaponState.OrbitDirection)
     weaponState.Damage = tonumber(weaponData and weaponData.damage) or tonumber(tierConfig and tierConfig.Damage) or weaponState.Damage or 0
     weaponState.IconImage = tostring((weaponData and weaponData.visualIconImage) or (weaponData and weaponData.iconImage) or weaponState.IconImage or (tierConfig and tierConfig.IconImage) or WeaponTierConfig.GetIconImageForTier(weaponTier))
     weaponState.AuraRadius = tonumber(weaponData and weaponData.auraRadius) or weaponState.AuraRadius or 0
+    applyWeaponStateScale(weaponState)
 end
 
 function WeaponFxController:_createLocalWeaponState(ownerUserId, weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle, previousDirection)
@@ -588,6 +709,8 @@ function WeaponFxController:_createLocalWeaponState(ownerUserId, weaponIndex, we
         HitPart = resolveHitPart(localWeapon),
         OrbitDirection = previousDirection,
     }
+    weaponState.BasePartGeometries = captureWeaponPartGeometry(localWeapon, false)
+    weaponState.AnchorPartGeometries = captureWeaponPartGeometry(localWeapon, true)
     self:_updateLocalWeaponState(weaponState, weaponIndex, weaponTier, templateName, visualIdentity, weaponData, tierConfig, currentAngle)
     self:_addPerfStat("LocalWeaponsCreated")
     return weaponState
@@ -688,7 +811,7 @@ function WeaponFxController:_hasOwnerPlayer(ownerUserId)
 end
 
 function WeaponFxController:_buildWeaponCFrame(centerPosition, weaponState)
-    local orbitDistance = tonumber(weaponState and weaponState.OrbitDistance) or getWeaponOrbitDistance()
+    local orbitDistance = getAnchoredOrbitDistance(weaponState)
     local offset = Vector3.new(
         math.cos(weaponState.CurrentAngle) * orbitDistance,
         GameConfig.WEAPON.OrbitHeight,
@@ -746,6 +869,8 @@ function WeaponFxController:_updateLocalWeaponTransforms(deltaTime)
                 self:_setLocalWeaponStateVisible(weaponState, true)
                 weaponState.OrbitSpeed = tonumber(weaponState.OrbitSpeed) or getWeaponOrbitSpeed()
                 weaponState.OrbitDistance = tonumber(weaponState.OrbitDistance) or getWeaponOrbitDistance()
+                weaponState.WeaponScale = normalizeWeaponScale(weaponState.WeaponScale)
+                applyWeaponStateScale(weaponState)
                 weaponState.CurrentAngle += (weaponState.OrbitSpeed * (weaponState.OrbitDirection or 1)) * deltaTime
                 setWorldCFrame(weaponState.Instance, self:_buildWeaponCFrame(centerPosition, weaponState))
                 updatedCount += 1

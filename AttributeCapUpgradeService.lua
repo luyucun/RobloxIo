@@ -35,6 +35,9 @@ AttributeCapUpgradeService._rebirthService = nil
 AttributeCapUpgradeService._requestEvent = nil
 AttributeCapUpgradeService._feedbackEvent = nil
 AttributeCapUpgradeService._requestConnection = nil
+AttributeCapUpgradeService._robuxPurchaseIntentByUserId = {}
+
+local ROBUX_PURCHASE_INTENT_TIMEOUT_SECONDS = 120
 
 local function disconnectConnection(connection)
     if connection and connection.Connected then
@@ -86,12 +89,76 @@ function AttributeCapUpgradeService:_buildFeedback(player, success, attributeKey
     return payload
 end
 
+function AttributeCapUpgradeService:_getCurrentCap(player, attributeKey)
+    if not (self._playerStateService and self._playerStateService.BuildAttributeStatePayload) then
+        return nil
+    end
+    local statePayload = self._playerStateService:BuildAttributeStatePayload(player)
+    local caps = statePayload and statePayload.attributeCaps or nil
+    return caps and caps[attributeKey] or nil, caps
+end
+
+function AttributeCapUpgradeService:_recordRobuxPurchaseIntent(player, requestedAttributeKey, requestedProductId)
+    if not (player and player.Parent) then
+        return
+    end
+
+    local attributeKey = AttributeConfig.NormalizeKey(requestedAttributeKey)
+    local productId = math.floor(tonumber(requestedProductId) or 0)
+    if not attributeKey or productId <= 0 then
+        return
+    end
+
+    local currentCap = self:_getCurrentCap(player, attributeKey)
+    local product = AttributeConfig.GetCapUpgradeProduct(attributeKey, currentCap)
+    if not (product and product.ProductId == productId) then
+        return
+    end
+
+    self._robuxPurchaseIntentByUserId[player.UserId] = {
+        attributeKey = attributeKey,
+        productId = productId,
+        createdAt = os.clock(),
+    }
+end
+
+function AttributeCapUpgradeService:_consumeRobuxPurchaseIntent(player, productId)
+    if not player then
+        return nil
+    end
+
+    local intent = self._robuxPurchaseIntentByUserId[player.UserId]
+    self._robuxPurchaseIntentByUserId[player.UserId] = nil
+    if type(intent) ~= "table" then
+        return nil
+    end
+    if os.clock() - (tonumber(intent.createdAt) or 0) > ROBUX_PURCHASE_INTENT_TIMEOUT_SECONDS then
+        return nil
+    end
+    if math.floor(tonumber(intent.productId) or 0) ~= productId then
+        return nil
+    end
+
+    local attributeKey = AttributeConfig.NormalizeKey(intent.attributeKey)
+    local currentCap = self:_getCurrentCap(player, attributeKey)
+    local product = attributeKey and AttributeConfig.GetCapUpgradeProduct(attributeKey, currentCap) or nil
+    if product and product.ProductId == productId then
+        return attributeKey
+    end
+    return nil
+end
+
 function AttributeCapUpgradeService:_handleRequest(player, requestedAttributeKey)
     if not (player and player.Parent and self._playerStateService) then
         return
     end
     if not self:_isPlayerLoaded(player) then
         self:_fireFeedback(player, self:_buildFeedback(player, false, requestedAttributeKey, "DataLoading", "Data loading"))
+        return
+    end
+
+    if type(requestedAttributeKey) == "table" and requestedAttributeKey.intent == "RobuxPurchaseIntent" then
+        self:_recordRobuxPurchaseIntent(player, requestedAttributeKey.attributeKey, requestedAttributeKey.productId)
         return
     end
 
@@ -111,8 +178,7 @@ end
 
 function AttributeCapUpgradeService:ProcessReceipt(receiptInfo)
     local productId = math.floor(tonumber(receiptInfo and receiptInfo.ProductId) or 0)
-    local attributeKey = AttributeConfig.GetAttributeByCapUpgradeProductId(productId)
-    if not attributeKey then
+    if not AttributeConfig.IsCapUpgradeProductId(productId) then
         return false, nil
     end
 
@@ -124,6 +190,15 @@ function AttributeCapUpgradeService:ProcessReceipt(receiptInfo)
         return true, Enum.ProductPurchaseDecision.NotProcessedYet
     end
     if not self._playerStateService then
+        return true, Enum.ProductPurchaseDecision.NotProcessedYet
+    end
+
+    local attributeKey = self:_consumeRobuxPurchaseIntent(player, productId)
+    if not attributeKey then
+        local statePayload = self._playerStateService.BuildAttributeStatePayload and self._playerStateService:BuildAttributeStatePayload(player) or nil
+        attributeKey = AttributeConfig.GetAttributeByCapUpgradeProductId(productId, statePayload and statePayload.attributeCaps or nil)
+    end
+    if not attributeKey then
         return true, Enum.ProductPurchaseDecision.NotProcessedYet
     end
 

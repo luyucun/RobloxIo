@@ -66,13 +66,13 @@ WheelConfig.Rewards = {
     },
     {
         Slot = 5,
-        Id = "Diamonds30",
+        Id = "Diamonds100",
         RewardType = "Diamonds",
-        Label = "Diamonds +30",
+        Label = "Diamonds +100",
         Weight = 42,
         GiftName = "Gift5",
         TargetRotation = 210,
-        Amount = 30,
+        Amount = 100,
     },
     {
         Slot = 6,

@@ -34,6 +34,7 @@ local AttributeUpgradeController = {}
 
 AttributeUpgradeController._localPlayer = nil
 AttributeUpgradeController._modalUiController = nil
+AttributeUpgradeController._attributeCapUpgradeController = nil
 AttributeUpgradeController._connections = {}
 AttributeUpgradeController._uiConnections = {}
 AttributeUpgradeController._latestPayload = nil
@@ -53,6 +54,9 @@ AttributeUpgradeController._outsideCloseInputConnection = nil
 AttributeUpgradeController._cardsByKey = {}
 AttributeUpgradeController._requestEvent = nil
 AttributeUpgradeController._holdRepeatTokens = {}
+AttributeUpgradeController._lastSkillPoints = nil
+AttributeUpgradeController._skillPointScaleTweens = {}
+AttributeUpgradeController._skillPointGhosts = {}
 
 local UI_BIND_RETRY_COUNT = 80
 local UI_BIND_RETRY_INTERVAL_SECONDS = 0.25
@@ -65,6 +69,13 @@ local HUD_ENTRY_OPEN_X_SCALE = 0.5
 local HUD_EXPERIENCE_HIDDEN_SCALE = 0.94
 local HUD_HIDE_TWEEN_INFO = TweenInfo.new(HUD_TRANSITION_SECONDS, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out)
 local HUD_RESTORE_TWEEN_INFO = TweenInfo.new(HUD_TRANSITION_SECONDS, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local SKILL_POINT_BUMP_SCALE = 1.6
+local SKILL_POINT_GHOST_SCALE = 2.0
+local SKILL_POINT_BUMP_UP_TWEEN_INFO = TweenInfo.new(0.08, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local SKILL_POINT_BUMP_DOWN_TWEEN_INFO = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local SKILL_POINT_GHOST_TWEEN_INFO = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local SKILL_POINT_REPEAT_GAP_SECONDS = 0.09
+local SKILL_POINT_MAX_PULSES = 5
 
 local ENABLED_BUTTON_COLOR = Color3.fromRGB(73, 207, 93)
 local DISABLED_BUTTON_COLOR = Color3.fromRGB(100, 105, 112)
@@ -351,6 +362,102 @@ function AttributeUpgradeController:_bindButtonMotion(button, options)
     end
 end
 
+function AttributeUpgradeController:_cleanupSkillPointMotion()
+    for _, tween in pairs(self._skillPointScaleTweens or {}) do
+        if tween then
+            tween:Cancel()
+        end
+    end
+    table.clear(self._skillPointScaleTweens)
+
+    for _, ghost in ipairs(self._skillPointGhosts or {}) do
+        if ghost and ghost.Parent then
+            ghost:Destroy()
+        end
+    end
+    table.clear(self._skillPointGhosts)
+end
+
+function AttributeUpgradeController:_playSkillPointValuePulse(label)
+    if not (label and label:IsA("GuiObject") and label.Parent) then
+        return
+    end
+
+    local uiScale = ensureUiScale(label, "AttributeUpgradeSkillPointBumpScale")
+    if not uiScale then
+        return
+    end
+
+    local existingTween = self._skillPointScaleTweens[label]
+    if existingTween then
+        existingTween:Cancel()
+        self._skillPointScaleTweens[label] = nil
+    end
+    uiScale.Scale = 1
+
+    local ghost = nil
+    if label:IsA("TextLabel") or label:IsA("TextButton") then
+        ghost = label:Clone()
+        ghost.Name = label.Name .. "SkillPointGhost"
+        ghost.AnchorPoint = label.AnchorPoint
+        ghost.Position = label.Position
+        ghost.Size = label.Size
+        ghost.Rotation = label.Rotation
+        ghost.BackgroundTransparency = 1
+        ghost.Text = label.Text
+        ghost.TextTransparency = math.min(1, math.max(0, label.TextTransparency))
+        ghost.TextStrokeTransparency = math.min(1, math.max(0, label.TextStrokeTransparency))
+        ghost.ZIndex = label.ZIndex + 1
+        ghost.Active = false
+        ghost.Selectable = false
+        ghost.Parent = label.Parent
+        local ghostScale = ensureUiScale(ghost, "AttributeUpgradeSkillPointGhostScale")
+        if ghostScale then
+            ghostScale.Scale = 1
+            local ghostTween = TweenService:Create(ghostScale, SKILL_POINT_GHOST_TWEEN_INFO, { Scale = SKILL_POINT_GHOST_SCALE })
+            ghostTween:Play()
+        end
+        table.insert(self._skillPointGhosts, ghost)
+        local fadeTween = TweenService:Create(ghost, SKILL_POINT_GHOST_TWEEN_INFO, {
+            TextTransparency = 1,
+            TextStrokeTransparency = 1,
+        })
+        fadeTween.Completed:Connect(function()
+            if ghost and ghost.Parent then
+                ghost:Destroy()
+            end
+        end)
+        fadeTween:Play()
+    end
+
+    local bumpUp = TweenService:Create(uiScale, SKILL_POINT_BUMP_UP_TWEEN_INFO, { Scale = SKILL_POINT_BUMP_SCALE })
+    self._skillPointScaleTweens[label] = bumpUp
+    bumpUp.Completed:Connect(function()
+        if self._skillPointScaleTweens[label] ~= bumpUp then
+            return
+        end
+        local settle = TweenService:Create(uiScale, SKILL_POINT_BUMP_DOWN_TWEEN_INFO, { Scale = 1 })
+        self._skillPointScaleTweens[label] = settle
+        settle.Completed:Connect(function()
+            if self._skillPointScaleTweens[label] == settle then
+                self._skillPointScaleTweens[label] = nil
+            end
+        end)
+        settle:Play()
+    end)
+    bumpUp:Play()
+end
+
+function AttributeUpgradeController:_playSkillPointGainMotion(gainedPoints)
+    local pulses = math.clamp(math.floor(tonumber(gainedPoints) or 1), 1, SKILL_POINT_MAX_PULSES)
+    for index = 1, pulses do
+        task.delay((index - 1) * SKILL_POINT_REPEAT_GAP_SECONDS, function()
+            self:_playSkillPointValuePulse(self._pointsValue)
+            self:_playSkillPointValuePulse(self._badgeValue)
+        end)
+    end
+end
+
 local function extractAttributeState(payload)
     local attributeState = type(payload and payload.attributeState) == "table" and payload.attributeState or {}
     return {
@@ -621,6 +728,25 @@ function AttributeUpgradeController:_openPanel()
     return true
 end
 
+function AttributeUpgradeController:_openCapUpgradePanel()
+    local capUpgradeController = self._attributeCapUpgradeController
+    if not (capUpgradeController and type(capUpgradeController.Open) == "function") then
+        self:_showMessage("Upgrade is unavailable")
+        return false
+    end
+
+    self:_closePanel()
+    local success, result = pcall(function()
+        return capUpgradeController:Open()
+    end)
+    if not success or result == false then
+        self:_showMessage("Upgrade is unavailable")
+        return false
+    end
+
+    return true
+end
+
 function AttributeUpgradeController:_getUpgradeAvailability(attributeKey)
     local key = AttributeConfig.NormalizeKey(attributeKey)
     if not key then
@@ -827,6 +953,7 @@ function AttributeUpgradeController:_bindUi(silent)
     local previousHud = self._hud
     local previousHudDefaultState = self._hudDefaultState
     self:_cancelHudTransitionTweens()
+    self:_cleanupSkillPointMotion()
     self:_stopAllUpgradeHolds()
     disconnectAll(self._uiConnections)
     self._boundMain = main
@@ -875,6 +1002,20 @@ function AttributeUpgradeController:_bindUi(silent)
         table.insert(self._uiConnections, closeButton.Activated:Connect(function()
             self:_closePanel()
         end))
+    end
+
+    local capsButton = findDescendant(self._panel, "Window.Caps")
+    if capsButton and capsButton:IsA("GuiButton") then
+        self:_bindButtonMotion(capsButton, {
+            HoverScale = 1.08,
+            PressScale = 0.9,
+            IncludeSiblingTextScale = true,
+        })
+        table.insert(self._uiConnections, capsButton.Activated:Connect(function()
+            self:_openCapUpgradePanel()
+        end))
+    elseif not silent then
+        warn("[AttributeUpgradeController] Window.Caps button is unavailable")
     end
 
     local labelButtonText = findDescendant(self._hud, "UpgradeEntry.LabelButton.Label")
@@ -967,8 +1108,14 @@ function AttributeUpgradeController:_applyState(payload)
     end
 
     local attributeState = extractAttributeState(payload)
+    local previousSkillPoints = self._lastSkillPoints
+    local currentSkillPoints = attributeState.skillPoints
     self:_applyHud(payload, attributeState)
-    setText(self._pointsValue, tostring(attributeState.skillPoints))
+    setText(self._pointsValue, tostring(currentSkillPoints))
+    if previousSkillPoints ~= nil and currentSkillPoints > previousSkillPoints then
+        self:_playSkillPointGainMotion(currentSkillPoints - previousSkillPoints)
+    end
+    self._lastSkillPoints = currentSkillPoints
     for _, attributeKey in ipairs(AttributeConfig.Order) do
         self:_applyCard(attributeKey, self._cardsByKey[attributeKey], attributeState)
     end
@@ -992,12 +1139,15 @@ end
 function AttributeUpgradeController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._modalUiController = dependencies and dependencies.ModalUiController or nil
+    self._attributeCapUpgradeController = dependencies and dependencies.AttributeCapUpgradeController or nil
     self._latestPayload = nil
     self._pendingByKey = {}
     self._holdRepeatTokens = {}
+    self._lastSkillPoints = nil
     self._boundMain = nil
     disconnectAll(self._connections)
     disconnectAll(self._uiConnections)
+    self:_cleanupSkillPointMotion()
     self:_disconnectOutsideCloseInput()
 
     local eventsRoot = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)

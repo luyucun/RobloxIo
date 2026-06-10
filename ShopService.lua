@@ -6,6 +6,7 @@ Purpose: V3.5 shop state, StarterPack one-time rewards, and shared reward popup 
 ]]
 
 local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local ActorUtils = require(script.Parent:WaitForChild("ActorUtils"))
@@ -448,6 +449,71 @@ function ShopService:NotifySkinPurchase(player, skinId, gamePassId)
         { RewardType = "Skin", SkinId = skin.Id, Amount = 1, Icon = skin.IconImage, Label = skin.Name },
     }, "SkinPurchase")
     return true
+end
+
+function ShopService:_grantDiamondProduct(player, product, source)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService and product) then
+        return false, "InvalidPlayer"
+    end
+    if not self:_isPlayerLoaded(player) then
+        return false, "DataLoading"
+    end
+
+    local productId = math.floor(tonumber(product.ProductId) or 0)
+    local diamonds = math.max(0, math.floor(tonumber(product.Diamonds) or 0))
+    if productId <= 0 or diamonds <= 0 then
+        return false, "InvalidProduct"
+    end
+
+    self._playerStateService:AddDiamonds(player, diamonds, {
+        source = "shop",
+        productGroup = "DiamondPack",
+        itemSku = tostring(productId),
+        productId = productId,
+    })
+    self:_markDirty(player)
+    self:SyncState(player)
+    self:_fireRewardFeedback(player, source or "Shop", {
+        { RewardType = "Diamonds", Amount = diamonds },
+    }, "DiamondPack")
+    return true, "Granted"
+end
+
+function ShopService:ProcessReceipt(receiptInfo)
+    local productId = math.floor(tonumber(receiptInfo and receiptInfo.ProductId) or 0)
+    local product = ShopConfig.GetDiamondProductByProductId(productId)
+    if not product then
+        return false, nil
+    end
+
+    local player = Players:GetPlayerByUserId(math.floor(tonumber(receiptInfo.PlayerId) or 0))
+    if not player then
+        return true, Enum.ProductPurchaseDecision.NotProcessedYet
+    end
+
+    local context = self:_consumePurchaseContext(player, function(candidate)
+        return candidate.purchaseType == "Diamonds" and candidate.productId == productId
+    end)
+    local source = context and context.source or "Shop"
+    local success = self:_grantDiamondProduct(player, product, source)
+    if success then
+        self:_trackPurchaseFunnel(player, "ShopPurchase", 5, "ProductReceiptGranted", {
+            source = source,
+            purchaseType = "Diamonds",
+            productGroup = "DiamondPack",
+            itemSku = tostring(productId),
+            productId = productId,
+        })
+        self:_trackPurchaseFunnel(player, "ShopPurchase", 6, "RewardDelivered", {
+            source = source,
+            purchaseType = "Diamonds",
+            productGroup = "DiamondPack",
+            itemSku = tostring(productId),
+            productId = productId,
+        })
+    end
+
+    return true, success and Enum.ProductPurchaseDecision.PurchaseGranted or Enum.ProductPurchaseDecision.NotProcessedYet
 end
 
 function ShopService:BindSystems(dependencies)

@@ -12,237 +12,250 @@ AttributeConfig.BaseBladeRecoverySeconds = 12
 AttributeConfig.MinBladeRecoverySeconds = 6
 AttributeConfig.CapUpgradeGrowthMultiplier = 1.5
 
+-- BEGIN GENERATED ATTRIBUTE CONFIG ROWS
+-- Source: IO_BaseBalanceDraft.xlsx / 属性养成配置 + 属性上限价格. Update via tools/SyncCodeConfigFromWorkbook.py.
 AttributeConfig.Order = {
-    "Damage",
-    "BladeSpeed",
-    "BladeRange",
-    "MoveSpeed",
-    "MaxHealth",
-    "HealthRegen",
-    "ExpGain",
-    "BladeRecovery",
+    'Damage',
+    'BladeSpeed',
+    'BladeRange',
+    'MoveSpeed',
+    'MaxHealth',
+    'HealthRegen',
+    'ExpGain',
+    'BladeRecovery',
 }
 
 AttributeConfig.Attributes = {
     Damage = {
-        DisplayName = "Weapon Damage",
-        CapDisplayName = "Damage Cap",
-        CardName = "WeaponDamage",
-        InitialCap = 8,
+        DisplayName = 'Weapon Damage',
+        CapDisplayName = 'Damage Cap',
+        CardName = 'WeaponDamage',
+        InitialCap = 10,
         MaxCap = 30,
         PerLevelValue = 0.05,
-        ValueType = "Percent",
+        ValueType = 'Percent',
     },
     BladeSpeed = {
-        DisplayName = "Blade Speed",
-        CapDisplayName = "Blade Speed Cap",
-        CardName = "BladeSpeed",
-        InitialCap = 8,
+        DisplayName = 'Blade Speed',
+        CapDisplayName = 'Blade Speed Cap',
+        CardName = 'BladeSpeed',
+        InitialCap = 10,
         MaxCap = 30,
         PerLevelValue = 0.08,
-        ValueType = "Percent",
+        ValueType = 'Percent',
     },
     BladeRange = {
-        DisplayName = "Blade Range",
-        CapDisplayName = "Blade Range Cap",
-        CardName = "BladeRange",
-        InitialCap = 8,
-        MaxCap = 30,
-        PerLevelValue = 0.1,
-        ValueType = "Percent",
+        DisplayName = 'Blade Range',
+        CapDisplayName = 'Blade Range Cap',
+        CardName = 'BladeRange',
+        InitialCap = 10,
+        MaxCap = 60,
+        PerLevelValue = 0.05,
+        ValueType = 'Percent',
     },
     MoveSpeed = {
-        DisplayName = "Move Speed",
-        CapDisplayName = "Move Speed Cap",
-        CardName = "MoveSpeed",
-        InitialCap = 8,
-        MaxCap = 30,
-        PerLevelValue = 0.06,
-        ValueType = "Percent",
+        DisplayName = 'Move Speed',
+        CapDisplayName = 'Move Speed Cap',
+        CardName = 'MoveSpeed',
+        InitialCap = 10,
+        MaxCap = 40,
+        PerLevelValue = 0.015,
+        ValueType = 'Percent',
     },
     MaxHealth = {
-        DisplayName = "Max Health",
-        CapDisplayName = "Max Health Cap",
-        CardName = "MaxHealth",
-        InitialCap = 8,
-        MaxCap = 30,
-        PerLevelValue = 0.1,
-        ValueType = "Percent",
+        DisplayName = 'Max Health',
+        CapDisplayName = 'Max Health Cap',
+        CardName = 'MaxHealth',
+        InitialCap = 10,
+        MaxCap = 60,
+        PerLevelValue = 0.05,
+        ValueType = 'Percent',
     },
     HealthRegen = {
-        DisplayName = "Health Regen",
-        CapDisplayName = "Health Regen Cap",
-        CardName = "HealthRegen",
-        InitialCap = 8,
-        MaxCap = 30,
-        PerLevelValue = 0.0025,
-        ValueType = "MaxHealthPercentPerSecond",
+        DisplayName = 'Health Regen',
+        CapDisplayName = 'Health Regen Cap',
+        CardName = 'HealthRegen',
+        InitialCap = 10,
+        MaxCap = 60,
+        PerLevelValue = 0.00125,
+        ValueType = 'MaxHealthPercentPerSecond',
     },
     ExpGain = {
-        DisplayName = "EXP Gain",
-        CapDisplayName = "EXP Gain Cap",
-        CardName = "EXPGain",
-        InitialCap = 8,
-        MaxCap = 30,
-        PerLevelValue = 0.05,
-        ValueType = "Percent",
+        DisplayName = 'EXP Gain',
+        CapDisplayName = 'EXP Gain Cap',
+        CardName = 'EXPGain',
+        InitialCap = 10,
+        MaxCap = 60,
+        PerLevelValue = 0.025,
+        ValueType = 'Percent',
     },
     BladeRecovery = {
-        DisplayName = "Blade Recovery",
-        CapDisplayName = "Blade Recovery Cap",
-        CardName = "BladeRecovery",
-        InitialCap = 8,
-        MaxCap = 30,
-        PerLevelValue = -0.2,
-        ValueType = "Seconds",
+        DisplayName = 'Blade Recovery',
+        CapDisplayName = 'Blade Recovery Cap',
+        CardName = 'BladeRecovery',
+        InitialCap = 10,
+        MaxCap = 60,
+        PerLevelValue = -0.1,
+        ValueType = 'Seconds',
     },
 }
 
-AttributeConfig.CapUpgradeProducts = {
-    Damage = {
-        ProductId = 3603254310,
-        Enabled = true,
-    },
-    BladeSpeed = {
-        ProductId = 3603254362,
-        Enabled = true,
-    },
-    BladeRange = {
-        ProductId = 3603254418,
-        Enabled = true,
-    },
-    MoveSpeed = {
-        ProductId = 3603254486,
-        Enabled = true,
-    },
-    MaxHealth = {
-        ProductId = 3603254533,
-        Enabled = true,
-    },
-    HealthRegen = {
-        ProductId = 3603254583,
-        Enabled = true,
-    },
-    ExpGain = {
-        ProductId = 3603254622,
-        Enabled = true,
-    },
-    BladeRecovery = {
-        ProductId = 3603254680,
-        Enabled = true,
-    },
+AttributeConfig.CapUpgradeProducts = {}
+
+AttributeConfig.CapUpgradeLevelProducts = {
+    [11] = 3603550266,
+    [12] = 3603550309,
+    [13] = 3603550350,
+    [14] = 3603550381,
+    [15] = 3603550436,
+    [16] = 3603550468,
+    [17] = 3603550533,
+    [18] = 3603550568,
+    [19] = 3603550625,
+    [20] = 3603550668,
+    [21] = 3603550668,
+    [22] = 3603550668,
+    [23] = 3603550668,
+    [24] = 3603550668,
+    [25] = 3603550668,
+    [26] = 3603550668,
+    [27] = 3603550668,
+    [28] = 3603550668,
+    [29] = 3603550668,
+    [30] = 3603550668,
+    [31] = 3603550668,
+    [32] = 3603550668,
+    [33] = 3603550668,
+    [34] = 3603550668,
+    [35] = 3603550668,
+    [36] = 3603550668,
+    [37] = 3603550668,
+    [38] = 3603550668,
+    [39] = 3603550668,
+    [40] = 3603550668,
+    [41] = 3603550668,
+    [42] = 3603550668,
+    [43] = 3603550668,
+    [44] = 3603550668,
+    [45] = 3603550668,
+    [46] = 3603550668,
+    [47] = 3603550668,
+    [48] = 3603550668,
+    [49] = 3603550668,
+    [50] = 3603550668,
+    [51] = 3603550668,
+    [52] = 3603550668,
+    [53] = 3603550668,
+    [54] = 3603550668,
+    [55] = 3603550668,
+    [56] = 3603550668,
+    [57] = 3603550668,
+    [58] = 3603550668,
+    [59] = 3603550668,
+    [60] = 3603550668,
 }
 
 AttributeConfig.CapUpgradePrices = {
     Damage = {
-        { FromCap = 5, ToCap = 6, GemCost = 100, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 6, ToCap = 7, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 7, ToCap = 8, GemCost = 225, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 8, ToCap = 9, GemCost = 340, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 9, ToCap = 10, GemCost = 500, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 10, ToCap = 11, GemCost = 750, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 11, ToCap = 12, GemCost = 1125, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 12, ToCap = 13, GemCost = 1688, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 13, ToCap = 14, GemCost = 2532, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 14, ToCap = 15, GemCost = 3798, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 15, ToCap = 16, GemCost = 5697, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 16, ToCap = 17, GemCost = 8546, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 17, ToCap = 18, GemCost = 12819, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 18, ToCap = 19, GemCost = 19228, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 19, ToCap = 20, GemCost = 28842, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 10, ToCap = 11, GemCost = 250, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 11, ToCap = 12, GemCost = 400, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 12, ToCap = 13, GemCost = 600, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 13, ToCap = 14, GemCost = 900, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 14, ToCap = 15, GemCost = 1350, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 15, ToCap = 16, GemCost = 2000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 16, ToCap = 17, GemCost = 3000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 17, ToCap = 18, GemCost = 4500, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 18, ToCap = 19, GemCost = 6750, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 19, ToCap = 20, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
     },
     BladeSpeed = {
-        { FromCap = 5, ToCap = 6, GemCost = 100, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 6, ToCap = 7, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 7, ToCap = 8, GemCost = 225, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 8, ToCap = 9, GemCost = 340, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 9, ToCap = 10, GemCost = 500, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 10, ToCap = 11, GemCost = 750, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 11, ToCap = 12, GemCost = 1125, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 12, ToCap = 13, GemCost = 1688, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 13, ToCap = 14, GemCost = 2532, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 14, ToCap = 15, GemCost = 3798, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 15, ToCap = 16, GemCost = 5697, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 16, ToCap = 17, GemCost = 8546, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 17, ToCap = 18, GemCost = 12819, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 18, ToCap = 19, GemCost = 19228, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 19, ToCap = 20, GemCost = 28842, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 10, ToCap = 11, GemCost = 250, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 11, ToCap = 12, GemCost = 400, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 12, ToCap = 13, GemCost = 600, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 13, ToCap = 14, GemCost = 900, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 14, ToCap = 15, GemCost = 1350, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 15, ToCap = 16, GemCost = 2000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 16, ToCap = 17, GemCost = 3000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 17, ToCap = 18, GemCost = 4500, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 18, ToCap = 19, GemCost = 6750, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 19, ToCap = 20, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
     },
     BladeRange = {
-        { FromCap = 4, ToCap = 5, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 5, ToCap = 6, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 6, ToCap = 7, GemCost = 225, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 7, ToCap = 8, GemCost = 340, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 8, ToCap = 9, GemCost = 500, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 9, ToCap = 10, GemCost = 750, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 10, ToCap = 11, GemCost = 1125, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 11, ToCap = 12, GemCost = 1688, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 10, ToCap = 11, GemCost = 250, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 11, ToCap = 12, GemCost = 400, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 12, ToCap = 13, GemCost = 600, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 13, ToCap = 14, GemCost = 900, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 14, ToCap = 15, GemCost = 1350, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 15, ToCap = 16, GemCost = 2000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 16, ToCap = 17, GemCost = 3000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 17, ToCap = 18, GemCost = 4500, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 18, ToCap = 19, GemCost = 6750, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 19, ToCap = 20, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
     },
     MoveSpeed = {
-        { FromCap = 5, ToCap = 6, GemCost = 100, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 6, ToCap = 7, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 7, ToCap = 8, GemCost = 225, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 8, ToCap = 9, GemCost = 340, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 9, ToCap = 10, GemCost = 500, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 10, ToCap = 11, GemCost = 750, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 11, ToCap = 12, GemCost = 1125, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 12, ToCap = 13, GemCost = 1688, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 13, ToCap = 14, GemCost = 2532, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 14, ToCap = 15, GemCost = 3798, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 10, ToCap = 11, GemCost = 250, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 11, ToCap = 12, GemCost = 400, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 12, ToCap = 13, GemCost = 600, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 13, ToCap = 14, GemCost = 900, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 14, ToCap = 15, GemCost = 1350, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 15, ToCap = 16, GemCost = 2000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 16, ToCap = 17, GemCost = 3000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 17, ToCap = 18, GemCost = 4500, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 18, ToCap = 19, GemCost = 6750, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 19, ToCap = 20, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
     },
     MaxHealth = {
-        { FromCap = 5, ToCap = 6, GemCost = 100, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 6, ToCap = 7, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 7, ToCap = 8, GemCost = 225, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 8, ToCap = 9, GemCost = 340, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 9, ToCap = 10, GemCost = 500, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 10, ToCap = 11, GemCost = 750, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 11, ToCap = 12, GemCost = 1125, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 12, ToCap = 13, GemCost = 1688, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 13, ToCap = 14, GemCost = 2532, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 14, ToCap = 15, GemCost = 3798, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 15, ToCap = 16, GemCost = 5697, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 16, ToCap = 17, GemCost = 8546, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 17, ToCap = 18, GemCost = 12819, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 18, ToCap = 19, GemCost = 19228, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 19, ToCap = 20, GemCost = 28842, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 10, ToCap = 11, GemCost = 250, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 11, ToCap = 12, GemCost = 400, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 12, ToCap = 13, GemCost = 600, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 13, ToCap = 14, GemCost = 900, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 14, ToCap = 15, GemCost = 1350, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 15, ToCap = 16, GemCost = 2000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 16, ToCap = 17, GemCost = 3000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 17, ToCap = 18, GemCost = 4500, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 18, ToCap = 19, GemCost = 6750, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 19, ToCap = 20, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
     },
     HealthRegen = {
-        { FromCap = 5, ToCap = 6, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 6, ToCap = 7, GemCost = 225, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 7, ToCap = 8, GemCost = 340, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 8, ToCap = 9, GemCost = 500, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 9, ToCap = 10, GemCost = 750, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 10, ToCap = 11, GemCost = 1125, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 11, ToCap = 12, GemCost = 1688, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 10, ToCap = 11, GemCost = 250, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 11, ToCap = 12, GemCost = 400, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 12, ToCap = 13, GemCost = 600, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 13, ToCap = 14, GemCost = 900, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 14, ToCap = 15, GemCost = 1350, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 15, ToCap = 16, GemCost = 2000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 16, ToCap = 17, GemCost = 3000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 17, ToCap = 18, GemCost = 4500, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 18, ToCap = 19, GemCost = 6750, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 19, ToCap = 20, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
     },
     ExpGain = {
-        { FromCap = 5, ToCap = 6, GemCost = 100, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 6, ToCap = 7, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 7, ToCap = 8, GemCost = 225, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 8, ToCap = 9, GemCost = 340, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 9, ToCap = 10, GemCost = 500, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 10, ToCap = 11, GemCost = 750, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 11, ToCap = 12, GemCost = 1125, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 12, ToCap = 13, GemCost = 1688, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 13, ToCap = 14, GemCost = 2532, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 14, ToCap = 15, GemCost = 3798, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 10, ToCap = 11, GemCost = 250, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 11, ToCap = 12, GemCost = 400, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 12, ToCap = 13, GemCost = 600, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 13, ToCap = 14, GemCost = 900, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 14, ToCap = 15, GemCost = 1350, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 15, ToCap = 16, GemCost = 2000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 16, ToCap = 17, GemCost = 3000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 17, ToCap = 18, GemCost = 4500, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 18, ToCap = 19, GemCost = 6750, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 19, ToCap = 20, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
     },
     BladeRecovery = {
-        { FromCap = 5, ToCap = 6, GemCost = 100, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 6, ToCap = 7, GemCost = 150, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 7, ToCap = 8, GemCost = 225, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 8, ToCap = 9, GemCost = 340, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 9, ToCap = 10, GemCost = 500, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 10, ToCap = 11, GemCost = 750, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 11, ToCap = 12, GemCost = 1125, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 12, ToCap = 13, GemCost = 1688, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 13, ToCap = 14, GemCost = 2532, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 14, ToCap = 15, GemCost = 3798, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 10, ToCap = 11, GemCost = 250, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 11, ToCap = 12, GemCost = 400, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 12, ToCap = 13, GemCost = 600, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 13, ToCap = 14, GemCost = 900, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 14, ToCap = 15, GemCost = 1350, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 15, ToCap = 16, GemCost = 2000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 16, ToCap = 17, GemCost = 3000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 17, ToCap = 18, GemCost = 4500, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 18, ToCap = 19, GemCost = 6750, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 19, ToCap = 20, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
     },
 }
+-- END GENERATED ATTRIBUTE CONFIG ROWS
 
-local productIdToAttributeKey = {}
+local capUpgradeProductIds = {}
 
 local aliasByCompactKey = {
     damage = "Damage",
@@ -258,11 +271,11 @@ local aliasByCompactKey = {
 }
 
 local function rebuildProductLookup()
-    table.clear(productIdToAttributeKey)
-    for key, product in pairs(AttributeConfig.CapUpgradeProducts) do
-        local productId = math.floor(tonumber(product and product.ProductId) or 0)
-        if productId > 0 and product.Enabled ~= false then
-            productIdToAttributeKey[productId] = key
+    table.clear(capUpgradeProductIds)
+    for _, productId in pairs(AttributeConfig.CapUpgradeLevelProducts or {}) do
+        local resolvedProductId = math.floor(tonumber(productId) or 0)
+        if resolvedProductId > 0 then
+            capUpgradeProductIds[resolvedProductId] = true
         end
     end
 end
@@ -315,26 +328,62 @@ function AttributeConfig.GetMaxCap(attributeKey)
     )
 end
 
-function AttributeConfig.GetCapUpgradeProduct(attributeKey)
+function AttributeConfig.GetCapUpgradeProduct(attributeKey, currentCap)
     local key = AttributeConfig.NormalizeKey(attributeKey)
-    local product = key and AttributeConfig.CapUpgradeProducts[key] or nil
-    local productId = math.floor(tonumber(product and product.ProductId) or 0)
-    if not (product and product.Enabled ~= false and productId > 0) then
+    local definition = key and AttributeConfig.Attributes[key] or nil
+    if not definition then
+        return nil
+    end
+
+    local cap = math.clamp(
+        normalizeInteger(currentCap, definition.InitialCap),
+        normalizeInteger(definition.InitialCap, 0),
+        AttributeConfig.GetMaxCap(key)
+    )
+    if cap >= AttributeConfig.GetMaxCap(key) then
+        return nil
+    end
+
+    local nextCap = cap + 1
+    local productId = math.floor(tonumber((AttributeConfig.CapUpgradeLevelProducts or {})[nextCap]) or 0)
+    if productId <= 0 then
         return nil
     end
     return {
         AttributeKey = key,
+        Level = nextCap,
         ProductId = productId,
         Enabled = true,
     }
 end
 
-function AttributeConfig.GetAttributeByCapUpgradeProductId(productId)
+function AttributeConfig.IsCapUpgradeProductId(productId)
+    local resolvedProductId = math.floor(tonumber(productId) or 0)
+    if resolvedProductId <= 0 then
+        return false
+    end
+    return capUpgradeProductIds[resolvedProductId] == true
+end
+
+function AttributeConfig.GetAttributeByCapUpgradeProductId(productId, caps)
     local resolvedProductId = math.floor(tonumber(productId) or 0)
     if resolvedProductId <= 0 then
         return nil
     end
-    return productIdToAttributeKey[resolvedProductId]
+
+    local matchedKey = nil
+    for _, key in ipairs(AttributeConfig.Order) do
+        local definition = AttributeConfig.Attributes[key]
+        local currentCap = caps and caps[key] or definition and definition.InitialCap
+        local product = AttributeConfig.GetCapUpgradeProduct(key, currentCap)
+        if product and product.ProductId == resolvedProductId then
+            if matchedKey then
+                return nil
+            end
+            matchedKey = key
+        end
+    end
+    return matchedKey
 end
 
 local function getCapUpgradePriceRow(attributeKey, currentCap)
@@ -412,7 +461,7 @@ function AttributeConfig.IsCapUpgradeRobuxEnabled(attributeKey, currentCap)
         return false
     end
 
-    if not AttributeConfig.GetCapUpgradeProduct(key) then
+    if not AttributeConfig.GetCapUpgradeProduct(key, currentCap) then
         return false
     end
 
@@ -433,7 +482,7 @@ function AttributeConfig.GetCapUpgradeInfo(attributeKey, currentCap)
         AttributeConfig.GetMaxCap(key)
     )
     local maxCap = AttributeConfig.GetMaxCap(key)
-    local product = AttributeConfig.GetCapUpgradeProduct(key)
+    local product = AttributeConfig.GetCapUpgradeProduct(key, cap)
     return {
         AttributeKey = key,
         CurrentCap = cap,

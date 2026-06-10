@@ -55,6 +55,7 @@ RebirthService._revengeService = nil
 RebirthService._potionService = nil
 RebirthService._wheelService = nil
 RebirthService._skinService = nil
+RebirthService._shopService = nil
 RebirthService._onlineRewardService = nil
 RebirthService._sevenDayLoginRewardService = nil
 RebirthService._attributeCapUpgradeService = nil
@@ -942,6 +943,13 @@ function RebirthService:_processReceipt(receiptInfo)
         end
     end
 
+    if self._shopService and self._shopService.ProcessReceipt then
+        local handled, decision = self._shopService:ProcessReceipt(receiptInfo)
+        if handled == true then
+            return decision or Enum.ProductPurchaseDecision.NotProcessedYet
+        end
+    end
+
     local wheelPurchase = WheelConfig.GetPurchaseByProductId(productId)
     if wheelPurchase then
         local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
@@ -1057,6 +1065,7 @@ function RebirthService:BindSystems(dependencies)
     self._potionService = dependencies and dependencies.PotionService or self._potionService
     self._wheelService = dependencies and dependencies.WheelService or self._wheelService
     self._skinService = dependencies and dependencies.SkinService or self._skinService
+    self._shopService = dependencies and dependencies.ShopService or self._shopService
     self._onlineRewardService = dependencies and dependencies.OnlineRewardService or self._onlineRewardService
     self._sevenDayLoginRewardService = dependencies and dependencies.SevenDayLoginRewardService or self._sevenDayLoginRewardService
     self._attributeCapUpgradeService = dependencies and dependencies.AttributeCapUpgradeService or self._attributeCapUpgradeService
@@ -1074,6 +1083,7 @@ function RebirthService:Init(dependencies)
     self._potionService = dependencies.PotionService or self._potionService
     self._wheelService = dependencies.WheelService or self._wheelService
     self._skinService = dependencies.SkinService or self._skinService
+    self._shopService = dependencies.ShopService or self._shopService
     self._onlineRewardService = dependencies.OnlineRewardService or self._onlineRewardService
     self._sevenDayLoginRewardService = dependencies.SevenDayLoginRewardService or self._sevenDayLoginRewardService
     self._attributeCapUpgradeService = dependencies.AttributeCapUpgradeService or self._attributeCapUpgradeService
