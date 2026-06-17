@@ -8,7 +8,7 @@ Purpose: V3.3 official Roblox in-experience subscription configuration.
 local SubscriptionConfig = {}
 
 SubscriptionConfig.SubscriptionId = "EXP-2853161122415116867"
-SubscriptionConfig.DailyDiamondReward = 200
+SubscriptionConfig.DailyDiamondReward = 1000
 SubscriptionConfig.DailyWheelSpinReward = 5
 SubscriptionConfig.ExperienceBonus = 1
 SubscriptionConfig.StateRefreshCooldownSeconds = 10

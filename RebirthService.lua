@@ -71,6 +71,9 @@ RebirthService._heartbeatConnection = nil
 RebirthService._nextSaveClock = 0
 RebirthService._shutdownInProgress = false
 
+local OFFLINE_PROGRESS_RESPAWN_MODE = "OfflineProgress"
+local DEFEATED_HALF_LEVEL_RESPAWN_MODE = "DefeatedHalfLevel"
+
 local function getUserId(player)
     return player and player.UserId or 0
 end
@@ -82,6 +85,10 @@ end
 
 local function asNonNegativeInteger(value)
     return math.max(0, math.floor(tonumber(value) or 0))
+end
+
+local function shouldBypassCombatSnapshotMaxAge(respawnMode)
+    return respawnMode == DEFEATED_HALF_LEVEL_RESPAWN_MODE or respawnMode == OFFLINE_PROGRESS_RESPAWN_MODE
 end
 
 local function buildProgressSnapshot(rebirth, rebirthScore, highestLevelReached, savedProgress)
@@ -184,6 +191,7 @@ local function normalizeSavedData(data)
             guideCompleted = false,
             favoritePromptState = normalizeFavoritePromptState(nil),
             sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(nil),
+            taskState = {},
             ownedTitles = {},
             equippedTitleId = nil,
             attributeCaps = AttributeConfig.BuildDefaultCaps(),
@@ -259,6 +267,8 @@ local function normalizeSavedData(data)
             end
         end
     end
+
+    local taskState = type(data.taskState) == "table" and data.taskState or data.TaskState or nil
 
     local options = {
         Music = true,
@@ -430,7 +440,7 @@ local function normalizeSavedData(data)
         local experience = math.max(0, math.floor(tonumber(savedCombatSnapshot.experience) or 0))
         local maxAge = math.max(1, tonumber(GameConfig.REBIRTH.CombatSnapshotMaxAgeSeconds) or 1800)
         local respawnMode = tostring(savedCombatSnapshot.respawnMode or "")
-        local bypassMaxAge = respawnMode == "DefeatedHalfLevel"
+        local bypassMaxAge = shouldBypassCombatSnapshotMaxAge(respawnMode)
         if restoreEligible and savedAt > 0 and level >= 1 and (bypassMaxAge or (os.time() - savedAt) <= maxAge) then
             combatSnapshot = {
                 schemaVersion = math.max(1, math.floor(tonumber(savedCombatSnapshot.schemaVersion) or 1)),
@@ -451,6 +461,7 @@ local function normalizeSavedData(data)
         subscriptionClaims = subscriptionClaims,
         shopClaims = shopClaims,
         dailyFreeReviveClaims = dailyFreeReviveClaims,
+        taskState = taskState,
         options = options,
         guideCompleted = guideCompleted,
         favoritePromptState = favoritePromptState,
@@ -626,10 +637,11 @@ function RebirthService:_buildSavePayload(player, options)
     local state = self._playerStateService:GetState(player)
     local includeCombatSnapshot = options and options.includeCombatSnapshot == true
     local combatSnapshot = nil
-    if includeCombatSnapshot and state and state.IsInArena == true and state.Alive == true then
+    if includeCombatSnapshot and state and state.Alive == true then
         combatSnapshot = {
             schemaVersion = 1,
             restoreEligible = true,
+            respawnMode = OFFLINE_PROGRESS_RESPAWN_MODE,
             savedAt = os.time(),
             level = math.max(1, math.floor(tonumber(state.Level) or GameConfig.PLAYER.BaseLevel)),
             experience = math.max(0, math.floor(tonumber(state.Experience) or 0)),
@@ -650,6 +662,7 @@ function RebirthService:_buildSavePayload(player, options)
         shopClaims = state.ShopClaims or {},
         codeClaims = state.CodeClaims or {},
         dailyFreeReviveClaims = state.DailyFreeReviveClaims or {},
+        taskState = state.TaskState or {},
         sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(state.SevenDayLoginRewardState),
         options = state.Options or { Music = true, Sfx = true },
         guideCompleted = state.GuideCompleted == true,
@@ -695,6 +708,7 @@ function RebirthService:_savePlayer(player, options)
                 subscriptionClaims = payload.subscriptionClaims,
                 shopClaims = payload.shopClaims,
                 dailyFreeReviveClaims = payload.dailyFreeReviveClaims,
+                taskState = payload.taskState,
                 options = payload.options,
                 guideCompleted = payload.guideCompleted,
                 favoritePromptState = payload.favoritePromptState,
@@ -1000,11 +1014,6 @@ function RebirthService:_processReceipt(receiptInfo)
         end
 
         local success = self:_processDefeatedRevive(player)
-        if self._gameAnalyticsService and success then
-            self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 4, "ProductReceiptGranted", {
-                source = "defeated",
-            })
-        end
         if success then
             self:_trackShopPurchaseFunnel(player, 5, "ProductReceiptGranted", "DefeatedRevive", productId, "defeated")
             self:_trackShopPurchaseFunnel(player, 6, "RewardDelivered", "DefeatedRevive", productId, "defeated")
@@ -1070,6 +1079,7 @@ function RebirthService:BindSystems(dependencies)
     self._sevenDayLoginRewardService = dependencies and dependencies.SevenDayLoginRewardService or self._sevenDayLoginRewardService
     self._attributeCapUpgradeService = dependencies and dependencies.AttributeCapUpgradeService or self._attributeCapUpgradeService
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
+    self._taskService = dependencies and dependencies.TaskService or self._taskService
 end
 
 function RebirthService:Init(dependencies)
@@ -1140,7 +1150,7 @@ function RebirthService:OnPlayerAdded(player)
 end
 
 function RebirthService:OnPlayerRemoving(player)
-    self:_savePlayer(player, { includeCombatSnapshot = self._shutdownInProgress == true })
+    self:_savePlayer(player, { includeCombatSnapshot = true })
     if self._respawnService and self._respawnService.ClearOfflineRespawnSaveSnapshot then
         self._respawnService:ClearOfflineRespawnSaveSnapshot(player)
     end

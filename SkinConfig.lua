@@ -24,7 +24,7 @@ SkinConfig.Skins = {
         TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin001',
         IconImage = 'rbxassetid://123177643935146',
         PurchaseChannel = SkinConfig.PurchaseChannel.Diamonds,
-        DiamondPrice = 1999,
+        DiamondPrice = 15999,
         GamePassId = 0,
     },
     {

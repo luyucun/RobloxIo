@@ -19,6 +19,7 @@ GMCommandService._botService = nil
 GMCommandService._healthService = nil
 GMCommandService._revengeService = nil
 GMCommandService._gameAnalyticsService = nil
+GMCommandService._taskService = nil
 GMCommandService._connections = {}
 
 local function requireSharedModule(moduleName)
@@ -108,6 +109,55 @@ local function parsePositiveAmountCommand(message, expectedCommandName)
     return amount
 end
 
+local function parseTaskProgressCommand(message, expectedCommandName)
+    local text = tostring(message or "")
+    local trimmed = text:match("^%s*(.-)%s*$")
+    local command, taskIdText, amountText = trimmed:match("^/(%S+)%s+(%S+)%s+(%S+)%s*$")
+    if not command or string.lower(command) ~= expectedCommandName then
+        return nil
+    end
+
+    local taskId = math.floor(tonumber(taskIdText) or 0)
+    local amount = math.floor(tonumber(amountText) or 0)
+    if taskId <= 0 then
+        return nil, "InvalidTaskId"
+    end
+    if amount <= 0 then
+        return nil, "InvalidAmount"
+    end
+    return taskId, amount
+end
+
+local function parseTaskIdCommand(message, expectedCommandName)
+    local text = tostring(message or "")
+    local trimmed = text:match("^%s*(.-)%s*$")
+    local command, taskIdText = trimmed:match("^/(%S+)%s+(%S+)%s*$")
+    if not command or string.lower(command) ~= expectedCommandName then
+        return nil
+    end
+
+    local taskId = math.floor(tonumber(taskIdText) or 0)
+    if taskId <= 0 then
+        return nil, "InvalidTaskId"
+    end
+    return taskId
+end
+
+local function parseTaskResetCommand(message)
+    local text = tostring(message or "")
+    local trimmed = text:match("^%s*(.-)%s*$")
+    local command, scope = trimmed:match("^/(%S+)%s+(%S+)%s*$")
+    if not command or string.lower(command) ~= "taskreset" then
+        return nil
+    end
+
+    scope = string.lower(tostring(scope or ""))
+    if scope ~= "daily" and scope ~= "weekly" and scope ~= "all" then
+        return nil, "InvalidScope"
+    end
+    return scope
+end
+
 local function parseAttributeCapAmountCommand(message, expectedCommandName)
     local text = tostring(message or "")
     local trimmed = text:match("^%s*(.-)%s*$")
@@ -128,6 +178,72 @@ local function parseAttributeCapAmountCommand(message, expectedCommandName)
 
     amount = math.floor(amount)
     return attributeKey, amount
+end
+
+local function normalizeFriendInfo(friendInfo)
+    if type(friendInfo) ~= "table" then
+        return nil
+    end
+
+    local userId = math.floor(tonumber(friendInfo.Id or friendInfo.UserId or friendInfo.userId or friendInfo.VisitorId) or 0)
+    if userId <= 0 then
+        return nil
+    end
+
+    return {
+        userId = userId,
+        name = tostring(friendInfo.DisplayName or friendInfo.Username or friendInfo.Name or ("Friend " .. tostring(userId))),
+    }
+end
+
+local function collectFriendsForStudioInviteTest(userId, maxCount)
+    local normalizedUserId = math.floor(tonumber(userId) or 0)
+    if normalizedUserId <= 0 then
+        return nil, "InvalidUserId"
+    end
+
+    local success, pagesOrError = pcall(function()
+        return Players:GetFriendsAsync(normalizedUserId)
+    end)
+    if not success or not pagesOrError then
+        return nil, pagesOrError or "GetFriendsFailed"
+    end
+
+    local pages = pagesOrError
+    local friends = {}
+    local limit = math.max(1, math.floor(tonumber(maxCount) or 200))
+
+    while #friends < limit do
+        local pageSuccess, currentPageOrError = pcall(function()
+            return pages:GetCurrentPage()
+        end)
+        if not pageSuccess then
+            return #friends > 0 and friends or nil, currentPageOrError or "GetCurrentPageFailed"
+        end
+
+        for _, friendInfo in ipairs(currentPageOrError or {}) do
+            local friend = normalizeFriendInfo(friendInfo)
+            if friend then
+                table.insert(friends, friend)
+                if #friends >= limit then
+                    break
+                end
+            end
+        end
+
+        if pages.IsFinished or #friends >= limit then
+            break
+        end
+
+        local advanceSuccess, advanceError = pcall(function()
+            pages:AdvanceToNextPageAsync()
+        end)
+        if not advanceSuccess then
+            return #friends > 0 and friends or nil, advanceError or "AdvancePageFailed"
+        end
+    end
+
+    return friends
 end
 
 local function markStateDirty(playerStateService, player)
@@ -195,6 +311,48 @@ local function buildTitleListText()
         table.insert(parts, string.format("%d:%s", math.floor(tonumber(title.Id) or 0), tostring(title.Name or "")))
     end
     return table.concat(parts, ", ")
+end
+
+function GMCommandService:_runStudioInviteTipsTest(player)
+    local syncEvent = self._remoteEventService and self._remoteEventService:GetEvent("FriendsRankingStateSync")
+    if not syncEvent then
+        warn("[GMCommandService] FriendsRankingStateSync event is unavailable")
+        return false, "ServiceUnavailable"
+    end
+
+    local friends, errorCode = collectFriendsForStudioInviteTest(player and player.UserId, 200)
+    if not friends or #friends <= 0 then
+        warn(string.format("[GMCommandService] Could not find friends for /testinvite from %s: %s", player and player.Name or "nil", tostring(errorCode or "NoFriends")))
+        return false, errorCode or "NoFriends"
+    end
+
+    local random = Random.new()
+    local friend = friends[random:NextInteger(1, #friends)]
+    local highestLevelReached = random:NextInteger(5, 250)
+
+    syncEvent:FireClient(player, {
+        studioInviteTipsTest = true,
+        source = "GM_StudioOnly",
+        rows = {
+            {
+                userId = friend.userId,
+                name = friend.name,
+                highestLevelReached = highestLevelReached,
+                totalPlayerKills = random:NextInteger(0, 5000),
+                playtimeSeconds = random:NextInteger(600, 360000),
+            },
+        },
+        timestamp = os.clock(),
+    })
+
+    print(string.format(
+        "[GMCommandService] %s triggered /testinvite with %s (%d), highestLevelReached=%d",
+        player.Name,
+        friend.name,
+        friend.userId,
+        highestLevelReached
+    ))
+    return true, friend
 end
 
 function GMCommandService:_handleChatCommand(player, message)
@@ -515,6 +673,61 @@ function GMCommandService:_handleChatCommand(player, message)
         return false, result
     end
 
+    if commandName == "testinvite" or commandName == "invitetips" then
+        return self:_runStudioInviteTipsTest(player)
+    end
+
+    if commandName == "taskprogress" then
+        if not (self._taskService and self._taskService.AddTaskProgressForStudio) then
+            warn("[GMCommandService] TaskService is unavailable")
+            return false, "ServiceUnavailable"
+        end
+
+        local taskId, amountOrError = parseTaskProgressCommand(message, commandName)
+        if not taskId then
+            warn(string.format("[GMCommandService] Invalid /taskprogress command from %s: %s", player.Name, tostring(message)))
+            return false, amountOrError or "InvalidTaskProgress"
+        end
+
+        local success, result = self._taskService:AddTaskProgressForStudio(player, taskId, amountOrError)
+        print(string.format("[GMCommandService] %s added task progress taskId=%d amount=%d: success=%s, result=%s", player.Name, taskId, amountOrError, tostring(success), tostring(result)))
+        return success == true, result
+    end
+
+    if commandName == "taskcomplete" then
+        if not (self._taskService and self._taskService.CompleteTaskForStudio) then
+            warn("[GMCommandService] TaskService is unavailable")
+            return false, "ServiceUnavailable"
+        end
+
+        local taskId, errorCode = parseTaskIdCommand(message, commandName)
+        if not taskId then
+            warn(string.format("[GMCommandService] Invalid /taskcomplete command from %s: %s", player.Name, tostring(message)))
+            return false, errorCode or "InvalidTaskId"
+        end
+
+        local success, result = self._taskService:CompleteTaskForStudio(player, taskId)
+        print(string.format("[GMCommandService] %s completed task taskId=%d: success=%s, result=%s", player.Name, taskId, tostring(success), tostring(result)))
+        return success == true, result
+    end
+
+    if commandName == "taskreset" then
+        if not (self._taskService and self._taskService.ResetTasksForStudio) then
+            warn("[GMCommandService] TaskService is unavailable")
+            return false, "ServiceUnavailable"
+        end
+
+        local scope, errorCode = parseTaskResetCommand(message)
+        if not scope then
+            warn(string.format("[GMCommandService] Invalid /taskreset command from %s: %s", player.Name, tostring(message)))
+            return false, errorCode or "InvalidScope"
+        end
+
+        local success, result = self._taskService:ResetTasksForStudio(player, scope)
+        print(string.format("[GMCommandService] %s reset tasks scope=%s: success=%s, result=%s", player.Name, scope, tostring(success), tostring(result)))
+        return success == true, result
+    end
+
     local eventId, errorCode = parseEventCommand(message)
     if not eventId then
         if errorCode == "InvalidEventId" then
@@ -546,6 +759,7 @@ function GMCommandService:Init(dependencies)
     self._healthService = dependencies and dependencies.HealthService or self._healthService
     self._revengeService = dependencies and dependencies.RevengeService or self._revengeService
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
+    self._taskService = dependencies and dependencies.TaskService or self._taskService
 
     disconnectAll(self._connections)
 

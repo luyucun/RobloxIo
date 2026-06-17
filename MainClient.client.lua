@@ -84,6 +84,8 @@ local RebirthController = requireLocalModule("RebirthController")
 local WeaponIndexController = requireLocalModule("WeaponIndexController")
 local PotionController = requireLocalModule("PotionController")
 local ModalUiController = requireLocalModule("ModalUiController")
+local LeaveTipsController = requireLocalModule("LeaveTipsController")
+local InviteTipsController = requireLocalModule("InviteTipsController")
 local MonetizationController = requireLocalModule("MonetizationController")
 local DefeatedController = requireLocalModule("DefeatedController")
 local CameraController = requireLocalModule("CameraController")
@@ -107,6 +109,7 @@ local ShopController = requireLocalModule("ShopController")
 local CodeController = requireLocalModule("CodeController")
 local OnlineRewardController = requireLocalModule("OnlineRewardController")
 local SevenDayLoginRewardController = requireLocalModule("SevenDayLoginRewardController")
+local TaskController = requireLocalModule("TaskController")
 local OptionController = requireLocalModule("OptionController")
 local BossHitFeedbackController = requireLocalModule("BossHitFeedbackController")
 local NoobMachineController = requireLocalModule("NoobMachineController")
@@ -121,6 +124,12 @@ initController("AudioSettingsController", AudioSettingsController, {
 initController("ModalUiController", ModalUiController, {
     LocalPlayer = localPlayer,
     RootScript = script,
+})
+
+initController("LeaveTipsController", LeaveTipsController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+    ModalUiController = ModalUiController,
 })
 
 initController("CoreGuiController", CoreGuiController, {
@@ -184,6 +193,11 @@ initController("LocalLeaderboardController", LocalLeaderboardController, {
 })
 
 initController("FriendsRankingController", FriendsRankingController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
+initController("InviteTipsController", InviteTipsController, {
     LocalPlayer = localPlayer,
     RootScript = script,
 })
@@ -269,6 +283,11 @@ initController("OnlineRewardController", OnlineRewardController, {
 })
 
 initController("SevenDayLoginRewardController", SevenDayLoginRewardController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
+initController("TaskController", TaskController, {
     LocalPlayer = localPlayer,
     RootScript = script,
 })

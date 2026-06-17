@@ -53,6 +53,8 @@ local LEGACY_LEADERSTAT_RESPAWN_COUNT_NAME = "RespawnCount"
 local DEFAULT_CHARACTER_COLLISION_GROUP = "IOCharacters"
 local DEFAULT_MONSTER_COLLISION_GROUP = "IOMonsters"
 local FRIEND_EXPERIENCE_BONUS_PER_FRIEND = 0.2
+local OFFLINE_PROGRESS_RESPAWN_MODE = "OfflineProgress"
+local DEFEATED_HALF_LEVEL_RESPAWN_MODE = "DefeatedHalfLevel"
 
 PlayerStateService._statesByActorId = {}
 PlayerStateService._playerStateSyncEvent = nil
@@ -72,6 +74,7 @@ PlayerStateService._healthService = nil
 PlayerStateService._subscriptionService = nil
 PlayerStateService._gameAnalyticsService = nil
 PlayerStateService._skinService = nil
+PlayerStateService._taskService = nil
 PlayerStateService._friendBonusRefreshToken = 0
 PlayerStateService._friendBonusLoopToken = 0
 PlayerStateService._onlineTimeLoopToken = 0
@@ -126,6 +129,10 @@ local function countMapEntries(map)
     return count
 end
 
+local function shouldBypassCombatSnapshotMaxAge(respawnMode)
+    return respawnMode == DEFEATED_HALF_LEVEL_RESPAWN_MODE or respawnMode == OFFLINE_PROGRESS_RESPAWN_MODE
+end
+
 local function buildWeaponLoadout(level)
     return WeaponTierConfig.ResolveLoadoutForLevel(level)
 end
@@ -136,7 +143,12 @@ end
 
 local function getMoveSpeedForLevel(level)
     local normalizedLevel = normalizeLevel(level)
-    return math.max(16, 20 - math.floor((normalizedLevel - 1) / 80))
+    if normalizedLevel >= 241 then
+        return 18
+    elseif normalizedLevel >= 161 then
+        return 19
+    end
+    return 20
 end
 
 local function copyAttributeFinalStats(stats)
@@ -989,6 +1001,22 @@ function PlayerStateService:_createDefaultState(actor)
         ShopClaims = {},
         CodeClaims = {},
         DailyFreeReviveClaims = {},
+        TaskState = {
+            Daily = {
+                CycleKey = "",
+                ProgressByTaskId = {},
+                ClaimedByTaskId = {},
+                CompletedReportedByTaskId = {},
+                LoginDays = {},
+            },
+            Weekly = {
+                CycleKey = "",
+                ProgressByTaskId = {},
+                ClaimedByTaskId = {},
+                CompletedReportedByTaskId = {},
+                LoginDays = {},
+            },
+        },
         SevenDayLoginRewardState = normalizeSevenDayLoginRewardState(nil),
         Options = normalizeOptions(),
         GuideCompleted = true,
@@ -1027,8 +1055,9 @@ function PlayerStateService:_normalizeAttributeState(state)
     end
 
     state.AttributeCaps = AttributeConfig.NormalizeCaps(state.AttributeCaps)
+    local disabledProgressionPoints = AttributeConfig.CountDisabledProgressionPoints(state.AttributeLevels, state.AttributeCaps)
     state.AttributeLevels = AttributeConfig.NormalizeLevels(state.AttributeLevels, state.AttributeCaps)
-    state.SkillPoints = math.max(0, math.floor(tonumber(state.SkillPoints) or 0))
+    state.SkillPoints = math.max(0, math.floor(tonumber(state.SkillPoints) or 0)) + disabledProgressionPoints
     state.UsedSkillPoints = AttributeConfig.CountUsedPoints(state.AttributeLevels)
     state.MasteryPoints = math.max(0, math.floor(tonumber(state.MasteryPoints) or 0))
     state.FinalStats = AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
@@ -1056,9 +1085,28 @@ function PlayerStateService:_awardSkillPointsForLevelGain(state, previousLevel, 
     end
 
     self:_normalizeAttributeState(state)
-    local gainedPoints = levelDelta * math.max(0, math.floor(tonumber(AttributeConfig.SkillPointsPerLevel) or 0))
+    local previousTotalPoints = AttributeConfig.GetTotalSkillPointsForLevel(previousLevel)
+    local newTotalPoints = AttributeConfig.GetTotalSkillPointsForLevel(newLevel)
+    local gainedPoints = math.max(0, newTotalPoints - previousTotalPoints)
     state.SkillPoints = math.max(0, math.floor(tonumber(state.SkillPoints) or 0)) + gainedPoints
     return gainedPoints
+end
+
+function PlayerStateService:_ensureSkillPointsForLevel(state, level)
+    if not state then
+        return 0
+    end
+
+    self:_normalizeAttributeState(state)
+    local expectedTotalPoints = AttributeConfig.GetTotalSkillPointsForLevel(level)
+    local availablePoints = math.max(0, math.floor(tonumber(state.SkillPoints) or 0))
+    local usedPoints = math.max(0, math.floor(tonumber(state.UsedSkillPoints) or 0))
+    local currentTotalPoints = availablePoints + usedPoints
+    local missingPoints = math.max(0, expectedTotalPoints - currentTotalPoints)
+    if missingPoints > 0 then
+        state.SkillPoints += missingPoints
+    end
+    return missingPoints
 end
 
 function PlayerStateService:BuildAttributeSnapshot(actor)
@@ -1079,8 +1127,10 @@ function PlayerStateService:_applyAttributeSnapshot(state, snapshot)
     end
 
     state.AttributeCaps = AttributeConfig.NormalizeCaps(snapshot.attributeCaps or snapshot.AttributeCaps or state.AttributeCaps)
-    state.AttributeLevels = AttributeConfig.NormalizeLevels(snapshot.attributeLevels or snapshot.AttributeLevels, state.AttributeCaps)
-    state.SkillPoints = math.max(0, math.floor(tonumber(snapshot.skillPoints or snapshot.SkillPoints) or 0))
+    local snapshotLevels = snapshot.attributeLevels or snapshot.AttributeLevels
+    local disabledProgressionPoints = AttributeConfig.CountDisabledProgressionPoints(snapshotLevels, state.AttributeCaps)
+    state.AttributeLevels = AttributeConfig.NormalizeLevels(snapshotLevels, state.AttributeCaps)
+    state.SkillPoints = math.max(0, math.floor(tonumber(snapshot.skillPoints or snapshot.SkillPoints) or 0)) + disabledProgressionPoints
     state.MasteryPoints = math.max(0, math.floor(tonumber(snapshot.masteryPoints or snapshot.MasteryPoints or state.MasteryPoints) or 0))
     state.UsedSkillPoints = AttributeConfig.CountUsedPoints(state.AttributeLevels)
     state.FinalStats = AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
@@ -1115,6 +1165,9 @@ function PlayerStateService:SetAttributeCap(actor, attributeKey, cap, context)
     local key = AttributeConfig.NormalizeKey(attributeKey)
     if not key then
         return false, "InvalidAttribute", "Invalid attribute"
+    end
+    if AttributeConfig.IsProgressionDisabled(key) then
+        return false, "AttributeDisabled", "Attribute disabled"
     end
 
     local definition = AttributeConfig.GetDefinition(key)
@@ -1160,6 +1213,9 @@ function PlayerStateService:SetAllAttributeCaps(actor, cap, context)
     local requestedCap = math.floor(tonumber(cap) or 0)
     local changed = false
     for _, key in ipairs(AttributeConfig.Order) do
+        if AttributeConfig.IsProgressionDisabled(key) then
+            continue
+        end
         local definition = AttributeConfig.GetDefinition(key)
         local minCap = math.max(0, math.floor(tonumber(definition and definition.InitialCap) or 0))
         local maxCap = AttributeConfig.GetMaxCap(key)
@@ -1202,7 +1258,9 @@ function PlayerStateService:MaxAttributeCaps(actor)
     local state = self:_getOrCreateState(actor)
     state.AttributeCaps = {}
     for _, key in ipairs(AttributeConfig.Order) do
-        state.AttributeCaps[key] = AttributeConfig.GetMaxCap(key)
+        if not AttributeConfig.IsProgressionDisabled(key) then
+            state.AttributeCaps[key] = AttributeConfig.GetMaxCap(key)
+        end
     end
     self:_normalizeAttributeState(state)
     self:RecalculateDerivedStats(actor)
@@ -1217,6 +1275,9 @@ function PlayerStateService:TryUpgradeAttributeCapWithDiamonds(actor, attributeK
     local key = AttributeConfig.NormalizeKey(attributeKey)
     if not key then
         return false, "InvalidAttribute", "Invalid attribute"
+    end
+    if AttributeConfig.IsProgressionDisabled(key) then
+        return false, "AttributeDisabled", "Attribute disabled"
     end
 
     local state = self:_getOrCreateState(actor)
@@ -1264,6 +1325,9 @@ function PlayerStateService:GrantAttributeCapProduct(actor, attributeKey)
     local key = AttributeConfig.NormalizeKey(attributeKey)
     if not key then
         return false, "InvalidAttribute", "Invalid attribute"
+    end
+    if AttributeConfig.IsProgressionDisabled(key) then
+        return false, "AttributeDisabled", "Attribute disabled"
     end
 
     local state = self:_getOrCreateState(actor)
@@ -1361,6 +1425,9 @@ function PlayerStateService:TryUpgradeAttribute(actor, attributeKey)
     local key = AttributeConfig.NormalizeKey(attributeKey)
     if not key then
         return false, "InvalidAttribute", "Invalid attribute"
+    end
+    if AttributeConfig.IsProgressionDisabled(key) then
+        return false, "AttributeDisabled", "Attribute disabled"
     end
 
     local state = self:_getOrCreateState(actor)
@@ -1829,6 +1896,7 @@ function PlayerStateService:BindSystems(dependencies)
     self._subscriptionService = dependencies and dependencies.SubscriptionService or self._subscriptionService
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
     self._skinService = dependencies and dependencies.SkinService or self._skinService
+    self._taskService = dependencies and dependencies.TaskService or self._taskService
 end
 
 function PlayerStateService:_markArenaProgressDirty()
@@ -1940,6 +2008,7 @@ function PlayerStateService:BuildStatePayload(actor)
         shopClaims = copyBooleanMap(normalizeShopClaims(state.ShopClaims)),
         codeClaims = copyBooleanMap(normalizeCodeClaims(state.CodeClaims)),
         dailyFreeReviveClaims = normalizeDailyFreeReviveClaims(state.DailyFreeReviveClaims),
+        taskState = state.TaskState or {},
         sevenDayLoginRewardState = normalizeSevenDayLoginRewardState(state.SevenDayLoginRewardState),
         guideCompleted = state.GuideCompleted == true,
         favoritePromptState = {
@@ -2162,6 +2231,9 @@ function PlayerStateService:AddDiamonds(actor, amount, context)
     state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0) + delta)
     if shouldCountDiamondEarn(delta, context) then
         state.TotalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)) + delta
+        if self._taskService and self._taskService.RecordDiamondsEarned then
+            self._taskService:RecordDiamondsEarned(actor, delta, context)
+        end
     end
     self:PushState(actor)
     if self._rebirthService then
@@ -2774,6 +2846,9 @@ function PlayerStateService:RefreshOnlineTime(actor, shouldCheckTitles)
 
     state.LastOnlineClock = now
     state.TotalOnlineSeconds = math.max(0, math.floor(tonumber(state.TotalOnlineSeconds) or 0)) + delta
+    if self._taskService and self._taskService.RecordOnlineSeconds then
+        self._taskService:RecordOnlineSeconds(actor, delta)
+    end
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
     end
@@ -2793,6 +2868,9 @@ function PlayerStateService:_addDiamondsWithoutPush(actor, amount, context)
     state.Diamonds = math.max(0, math.floor(tonumber(state.Diamonds) or 0) + delta)
     if shouldCountDiamondEarn(delta, context) then
         state.TotalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)) + delta
+        if self._taskService and self._taskService.RecordDiamondsEarned then
+            self._taskService:RecordDiamondsEarned(actor, delta, context)
+        end
     end
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
@@ -2820,6 +2898,9 @@ function PlayerStateService:AwardPlayerKillReward(killer, target)
     end
 
     self:AddKillCount(killer, 1)
+    if self._taskService and self._taskService.RecordPlayerKill then
+        self._taskService:RecordPlayerKill(killer, 1)
+    end
     self:_addDiamondsWithoutPush(killer, GameConfig.ECONOMY.PlayerKillDiamondReward, {
         source = "player",
         productGroup = "combat",
@@ -3049,6 +3130,7 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.ShopClaims = normalizeShopClaims(savedProgress.shopClaims or savedProgress.ShopClaims)
         state.CodeClaims = normalizeCodeClaims(savedProgress.codeClaims or savedProgress.CodeClaims)
         state.DailyFreeReviveClaims = normalizeDailyFreeReviveClaims(savedProgress.dailyFreeReviveClaims or savedProgress.DailyFreeReviveClaims)
+        state.TaskState = savedProgress.taskState or savedProgress.TaskState or {}
         state.SevenDayLoginRewardState = normalizeSevenDayLoginRewardState(savedProgress.sevenDayLoginRewardState or savedProgress.SevenDayLoginRewardState)
         state.Options = normalizeOptions(savedProgress.options or savedProgress.Options)
         state.GuideCompleted = readGuideCompleted(savedProgress, true)
@@ -3080,12 +3162,13 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
             local snapshotLevel = math.max(1, math.floor(tonumber(combatSnapshot.level) or 0))
             local snapshotExperience = math.max(0, math.floor(tonumber(combatSnapshot.experience) or 0))
             local respawnMode = tostring(combatSnapshot.respawnMode or "")
-            local bypassMaxAge = respawnMode == "DefeatedHalfLevel"
+            local bypassMaxAge = shouldBypassCombatSnapshotMaxAge(respawnMode)
             if restoreEligible and savedAt > 0 and (bypassMaxAge or (os.time() - savedAt) <= maxAge) then
                 local restoredLevel = math.clamp(snapshotLevel, 1, GameConfig.PLAYER.MaxSupportedLevel)
                 state.Level = restoredLevel
                 state.Experience = math.min(snapshotExperience, GameConfig.GetNextLevelExperience(restoredLevel))
                 state.HighestLevelReached = math.max(state.HighestLevelReached, restoredLevel)
+                self:_ensureSkillPointsForLevel(state, restoredLevel)
                 state.IsInArena = false
                 state.Alive = true
                 state.KillCount = 0
@@ -3418,6 +3501,7 @@ function PlayerStateService:RestoreCombatProgress(actor, snapshot, options)
     state.Buffs = {}
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), restoredLevel)
     self:_applyAttributeSnapshot(state, snapshot.attributeSnapshot or snapshot.attributes)
+    self:_ensureSkillPointsForLevel(state, restoredLevel)
     self:_applyLevelDerivedState(state)
     if type(options) == "table" and options.restoreFullHealth == false then
         state.CurrentHealth = math.clamp(math.floor(tonumber(state.CurrentHealth) or state.MaxHealth), 1, state.MaxHealth)

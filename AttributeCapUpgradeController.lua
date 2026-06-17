@@ -56,6 +56,10 @@ AttributeCapUpgradeController._bindRetryQueued = false
 AttributeCapUpgradeController._regionBindRetryQueued = false
 
 local MODAL_OWNER_ID = "AttributeCapUpgrade"
+local SUPPRESSED_ATTRIBUTE_KEYS = {
+    Damage = true,
+    MoveSpeed = true,
+}
 local REGION_WAIT_SECONDS = 30
 local UI_BIND_RETRY_COUNT = 80
 local UI_BIND_RETRY_INTERVAL_SECONDS = 0.25
@@ -94,6 +98,11 @@ local function disconnectAll(connections)
         end
     end
     table.clear(connections)
+end
+
+local function isAttributeUiSuppressed(attributeKey)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    return key ~= nil and SUPPRESSED_ATTRIBUTE_KEYS[key] == true
 end
 
 local function findDescendant(root, path)
@@ -483,8 +492,15 @@ function AttributeCapUpgradeController:_bindButtonFeedback(button, options)
 end
 
 function AttributeCapUpgradeController:_bindRow(statsList, attributeKey)
+    local isSuppressed = isAttributeUiSuppressed(attributeKey)
     local rowName = rowNameByKey[attributeKey]
     local row = rowName and statsList and statsList:FindFirstChild(rowName)
+    if isSuppressed then
+        if row and row:IsA("GuiObject") then
+            row.Visible = false
+        end
+        return nil
+    end
     if not row then
         return nil
     end
@@ -606,7 +622,7 @@ function AttributeCapUpgradeController:_bindUi(silent)
         local row = self:_bindRow(statsList, attributeKey)
         if row then
             self._rowsByKey[attributeKey] = row
-        elseif not silent then
+        elseif not silent and not isAttributeUiSuppressed(attributeKey) then
             warn(string.format("[AttributeCapUpgradeController] Missing cap row for %s", tostring(attributeKey)))
         end
     end
@@ -725,7 +741,9 @@ function AttributeCapUpgradeController:_applyState(payload)
     local caps = AttributeConfig.NormalizeCaps(extractAttributeCaps(self._latestPayload))
     setText(self._gemValue, formatCompactNumber(diamonds))
     for _, attributeKey in ipairs(AttributeConfig.Order) do
-        self:_applyRow(attributeKey, self._rowsByKey[attributeKey], caps, diamonds)
+        if not isAttributeUiSuppressed(attributeKey) then
+            self:_applyRow(attributeKey, self._rowsByKey[attributeKey], caps, diamonds)
+        end
     end
 end
 

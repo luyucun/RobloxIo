@@ -142,6 +142,10 @@ function RemoteEventService:Init()
         { Key = "RequestOptionUpdate", Parent = systemEvents, Name = RemoteNames.System.RequestOptionUpdate },
         { Key = "RequestFriendsRankingStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestFriendsRankingStateSync },
         { Key = "FriendsRankingStateSync", Parent = systemEvents, Name = RemoteNames.System.FriendsRankingStateSync },
+        { Key = "TaskStateSync", Parent = systemEvents, Name = RemoteNames.System.TaskStateSync },
+        { Key = "RequestTaskStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestTaskStateSync },
+        { Key = "RequestTaskClaim", Parent = systemEvents, Name = RemoteNames.System.RequestTaskClaim },
+        { Key = "RequestInviteTaskProgress", Parent = systemEvents, Name = RemoteNames.System.RequestInviteTaskProgress },
 
         { Key = "PickupFeedback", Parent = battleEvents, Name = RemoteNames.Battle.PickupFeedback },
         { Key = "ExperienceFeedback", Parent = battleEvents, Name = RemoteNames.Battle.ExperienceFeedback },

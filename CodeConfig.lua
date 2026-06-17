@@ -62,7 +62,7 @@ CodeConfig.ExcelRows = {
         ['使用人数上限'] = nil,
         Rewards = {
             { RewardType = 'Potion', PotionId = 1001, Amount = 3 },
-            { RewardType = 'Diamonds', Amount = 50 },
+            { RewardType = 'Diamonds', Amount = 1000 },
         },
     },
 }

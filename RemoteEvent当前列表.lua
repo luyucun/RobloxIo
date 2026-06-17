@@ -32,6 +32,10 @@ ReplicatedStorage
     - RequestOnlineRewardClaim
     - RequestFriendsRankingStateSync
     - FriendsRankingStateSync
+    - TaskStateSync
+    - RequestTaskStateSync
+    - RequestTaskClaim
+    - RequestInviteTaskProgress
   - BattleEvents
     - PickupFeedback
     - ExperienceFeedback
@@ -149,13 +153,50 @@ RequestFriendsRankingStateSync（C -> S）
 
 FriendsRankingStateSync（S -> C）
 发送方：`FriendsRankingService`
-接收方：`FriendsRankingController`
-用途：同步好友榜列表和 TopSummary 自身数据。
+接收方：`FriendsRankingController`、`InviteTipsController`
+用途：同步好友榜列表和 TopSummary 自身数据；V5.2 好友邀请提示复用 rows 中的曾玩过本体验好友数据，不新增 RemoteEvent。
 字段：
 - rows：好友行数组，每项包含 userId、name、highestLevelReached、totalPlayerKills、playtimeSeconds
 - self：自身信息，包含 userId、name、highestLevelReached、totalPlayerKills、friendBonusPercent
 - throttled
 - timestamp
+说明：
+- `InviteTipsController` 会在客户端结合 `LocalPlayer:GetFriendsOnlineAsync(200)` 过滤出当前在线好友，再按 `highestLevelReached` 选择本次登录未弹过的候选。
+- 点击 `StarterGui.Main.InviteTips.InviteButton` 后直接使用 Roblox 官方 `SocialService:PromptGameInvite` 和 `ExperienceInviteOptions.InviteUser` 调起定向邀请；V5.3 仅在官方弹窗成功打开后额外发送 `RequestInviteTaskProgress`，用于每日邀请任务进度。
+- Studio GM `/testinvite` / `/invitetips` 会随机抽取当前玩家好友，构造 `studioInviteTipsTest = true` 的单行测试 payload，经本事件发给触发者，仅用于编辑器内验证 `Main.InviteTips` 弹窗。
+
+三-补4、每日/每周任务系统 RemoteEvent（V5.3）
+
+TaskStateSync（S -> C）
+发送方：`TaskService:PushState`
+接收方：`TaskController`
+用途：同步服务端权威的每日/每周任务进度、领取状态、重置倒计时和红点状态。
+字段：
+- tasks.daily / tasks.weekly：任务数组，每项包含 taskId、period、taskType、target、progress、rewardType、potionId、amount、description、icon、isComplete、isClaimed、isClaimable
+- dailyCycleKey / weeklyCycleKey
+- dailyResetAt / weeklyResetAt
+- serverTimestamp
+- hasClaimableReward
+- weeklyLoginDays
+
+RequestTaskStateSync（C -> S）
+发送方：`TaskController`
+接收方：`TaskService`
+用途：客户端初始化、打开 `Main.TaskBg` 或重建 UI 后请求任务状态刷新。
+字段：无。
+
+RequestTaskClaim（C -> S）
+发送方：`TaskController`
+接收方：`TaskService`
+用途：玩家点击任务条目的 `ClaimButton` 后请求领奖；服务端校验任务存在、周期有效、进度达标且未领取，再发放奖励。
+字段：
+- taskId
+
+RequestInviteTaskProgress（C -> S）
+发送方：`InviteTipsController`
+接收方：`TaskService`
+用途：V5.2 邀请弹窗成功调用 Roblox 官方 `PromptGameInvite` 后，给邀请好友任务增加一次进度；服务端仍按任务目标上限截断。
+字段：无。
 
 四、ArenaTransitionFeedback（S -> C）
 发送方：`ArenaService:_fireTransitionFeedback`

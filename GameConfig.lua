@@ -10,7 +10,7 @@ local GameConfig = {}
 GameConfig.VERSION = "V3.0.0"
 
 GameConfig.SERVER = {
-    MaxPlayers = 10,
+    MaxPlayers = 12,
 }
 
 GameConfig.COLLISION = {
@@ -145,7 +145,7 @@ GameConfig.WEAPON = {
 }
 
 GameConfig.WEAPON_UNLOCK = {
-    RewardDiamonds = 100,
+    RewardDiamonds = 1000,
 }
 
 GameConfig.PERFORMANCE = {
@@ -324,7 +324,7 @@ GameConfig.LEADERBOARD = {
 }
 
 GameConfig.ECONOMY = {
-    PlayerKillDiamondReward = 50,
+    PlayerKillDiamondReward = 200,
 }
 
 GameConfig.DATASTORE = {

@@ -75,6 +75,7 @@ local HIGH_FREQUENCY_ECONOMY_SKUS = {
 }
 
 local DEDUPE_FUNNEL_NAMES = {
+    DefeatedFreeRespawn = true,
     DefeatedRevive = true,
     ShopPurchase = true,
     SkinFlow = true,
@@ -860,9 +861,19 @@ function GameAnalyticsService:_buildCustomFields(player, fields)
     return customFields, context, sanitizedFields
 end
 
-function GameAnalyticsService:_getFunnelSessionId(player, funnelName)
+local function getFunnelSessionStoreKey(funnelName, sessionKey)
+    local normalizedFunnelName = tostring(funnelName or "Default")
+    local normalizedSessionKey = tostring(sessionKey or "")
+    if normalizedSessionKey == "" then
+        return normalizedFunnelName
+    end
+    return normalizedFunnelName .. ":" .. normalizedSessionKey
+end
+
+function GameAnalyticsService:_getFunnelSessionId(player, funnelName, sessionKey)
     local userId = getUserId(player)
     local normalizedFunnelName = tostring(funnelName or "Default")
+    local sessionStoreKey = getFunnelSessionStoreKey(normalizedFunnelName, sessionKey)
     if userId <= 0 then
         self._sequence += 1
         return string.format("server_%d_%s", self._sequence, normalizedFunnelName)
@@ -874,12 +885,12 @@ function GameAnalyticsService:_getFunnelSessionId(player, funnelName)
         self._funnelSessionIdsByUserId[userId] = sessions
     end
 
-    if not sessions[normalizedFunnelName] then
+    if not sessions[sessionStoreKey] then
         self._sequence += 1
-        sessions[normalizedFunnelName] = string.format("%d_%s_%d", userId, normalizedFunnelName, self._sequence)
+        sessions[sessionStoreKey] = string.format("%d_%s_%d", userId, normalizedFunnelName, self._sequence)
     end
 
-    return sessions[normalizedFunnelName]
+    return sessions[sessionStoreKey]
 end
 
 function GameAnalyticsService:_debugPrint(eventType, payload)
@@ -889,16 +900,17 @@ function GameAnalyticsService:_debugPrint(eventType, payload)
     print(string.format("[AnalyticsDebug] %s %s", tostring(eventType or "Event"), encodeDebugPayload(payload or {})))
 end
 
-function GameAnalyticsService:_emitFunnel(player, funnelName, stepNumber, stepName, fields)
+function GameAnalyticsService:_emitFunnel(player, funnelName, stepNumber, stepName, fields, options)
     if self:_isAnalyticsThrottled() then
         return true
     end
 
+    local normalizedOptions = type(options) == "table" and options or {}
     local customFields, context, sanitizedFields = self:_buildCustomFields(player, fields)
     local normalizedFunnelName = tostring(funnelName or "Default")
     local normalizedStepNumber = math.max(1, math.floor(tonumber(stepNumber) or 1))
     local normalizedStepName = tostring(stepName or ("Step" .. tostring(normalizedStepNumber)))
-    local sessionId = self:_getFunnelSessionId(player, normalizedFunnelName)
+    local sessionId = self:_getFunnelSessionId(player, normalizedFunnelName, normalizedOptions.sessionKey)
 
     self:_debugPrint("Funnel", {
         funnelName = normalizedFunnelName,
@@ -1069,17 +1081,19 @@ function GameAnalyticsService:OnHeartbeat()
     self:_maybeLogAnalyticsStats()
 end
 
-function GameAnalyticsService:TrackFunnel(player, funnelName, stepNumber, stepName, fields)
+function GameAnalyticsService:TrackFunnel(player, funnelName, stepNumber, stepName, fields, options)
     self:_recordAnalyticsStat("attempted", 1)
     local normalizedFunnelName = tostring(funnelName or "Default")
     local normalizedStepNumber = math.max(1, math.floor(tonumber(stepNumber) or 1))
     local normalizedStepName = tostring(stepName or ("Step" .. tostring(normalizedStepNumber)))
     local normalizedFields = type(fields) == "table" and fields or {}
+    local normalizedOptions = type(options) == "table" and options or {}
     if isDedupeFunnelName(normalizedFunnelName) then
         local ttlSeconds = math.max(self:_getDedupeSeconds(), 2)
         local dedupeKey = string.format(
-            "funnel:%s:%d:%s:%s",
+            "funnel:%s:%s:%d:%s:%s",
             normalizedFunnelName,
+            tostring(normalizedOptions.sessionKey or ""),
             normalizedStepNumber,
             normalizedStepName,
             buildFieldFingerprint(normalizedFields, { "source", "productGroup", "itemSku", "skinId", "gamePassId" })
@@ -1094,7 +1108,7 @@ function GameAnalyticsService:TrackFunnel(player, funnelName, stepNumber, stepNa
         return true
     end
 
-    return self:_emitFunnel(player, normalizedFunnelName, normalizedStepNumber, normalizedStepName, fields)
+    return self:_emitFunnel(player, normalizedFunnelName, normalizedStepNumber, normalizedStepName, fields, normalizedOptions)
 end
 
 function GameAnalyticsService:TrackCustom(player, eventName, value, fields)

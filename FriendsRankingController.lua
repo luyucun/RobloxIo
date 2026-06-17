@@ -721,6 +721,10 @@ function FriendsRankingController:Init(dependencies)
     end))
 
     table.insert(self._connections, self._syncEvent.OnClientEvent:Connect(function(payload)
+        if payload and payload.studioInviteTipsTest == true then
+            return
+        end
+
         if not (payload and payload.throttled == true) then
             self._latestRows = type(payload and payload.rows) == "table" and payload.rows or {}
             self._prefetchCompleted = true

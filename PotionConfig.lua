@@ -8,6 +8,8 @@ Studio放置路径: ReplicatedStorage/Shared/PotionConfig
 
 local PotionConfig = {}
 
+-- BEGIN GENERATED POTION ROWS
+-- Source: IO_BaseBalanceDraft.xlsx / 药水. Update via tools/SyncCodeConfigFromWorkbook.py.
 PotionConfig.OrderedPotionIds = {
     1001,
     1002,
@@ -17,44 +19,45 @@ PotionConfig.OrderedPotionIds = {
 PotionConfig.Potions = {
     [1001] = {
         Id = 1001,
-        Name = "Basic Potion",
+        Name = 'Basic Potion',
         Rarity = 1,
-        IconImage = "rbxassetid://111415582573034",
-        ModelName = "BasicPotion",
-        DurationSeconds = 45,
-        ExperienceBonus = 0.3,
+        IconImage = 'rbxassetid://111415582573034',
+        ModelName = 'BasicPotion',
+        DurationSeconds = 60,
+        ExperienceBonus = 0.5,
         MoveSpeedBonus = 0,
-        DiamondPrice = 59,
-        RobuxPrice = 9,
+        DiamondPrice = 239,
+        RobuxPrice = 19,
         ProductId = 3587884072,
     },
     [1002] = {
         Id = 1002,
-        Name = "Advanced Potion",
+        Name = 'Advanced Potion',
         Rarity = 2,
-        IconImage = "rbxassetid://106498508152369",
-        ModelName = "AdvancedPotion",
-        DurationSeconds = 60,
-        ExperienceBonus = 1,
+        IconImage = 'rbxassetid://106498508152369',
+        ModelName = 'AdvancedPotion',
+        DurationSeconds = 90,
+        ExperienceBonus = 1.5,
         MoveSpeedBonus = 0,
-        DiamondPrice = 199,
-        RobuxPrice = 19,
+        DiamondPrice = 599,
+        RobuxPrice = 39,
         ProductId = 3587883973,
     },
     [1003] = {
         Id = 1003,
-        Name = "Rare Potion",
+        Name = 'Rare Potion',
         Rarity = 3,
-        IconImage = "rbxassetid://100154459165982",
-        ModelName = "RarePotion",
-        DurationSeconds = 90,
-        ExperienceBonus = 1.8,
+        IconImage = 'rbxassetid://100154459165982',
+        ModelName = 'RarePotion',
+        DurationSeconds = 120,
+        ExperienceBonus = 2.5,
         MoveSpeedBonus = 0,
-        DiamondPrice = 399,
-        RobuxPrice = 39,
+        DiamondPrice = 999,
+        RobuxPrice = 69,
         ProductId = 3587884282,
     },
 }
+-- END GENERATED POTION ROWS
 
 PotionConfig.PotionIdByProductId = {}
 for _, potionId in ipairs(PotionConfig.OrderedPotionIds) do

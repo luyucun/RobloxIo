@@ -100,6 +100,7 @@ local POPUP_SLIDE_OFFSET_SCALE = -0.22
 local POPUP_OPEN_DURATION = 0.24
 local POPUP_ITEM_STAGGER = 0.08
 local POPUP_CLOSE_DELAY = 1.5
+local MIN_POPUP_CLOSE_DELAY = 0.1
 local SECRET_GRADIENT_OFFSET_RANGE = 1
 local SECRET_GRADIENT_ONE_WAY_DURATION = 2.4
 local SECRET_GRADIENT_UPDATE_INTERVAL = 0.033
@@ -1201,7 +1202,8 @@ function ShopController:_playRewardPopup(payload)
         end
     end
 
-    task.delay(POPUP_CLOSE_DELAY, function()
+    local closeDelay = math.max(MIN_POPUP_CLOSE_DELAY, tonumber(payload and payload.closeDelay) or POPUP_CLOSE_DELAY)
+    task.delay(closeDelay, function()
         if self._rewardPopupSerial ~= serial or not (self._claimPopup and self._claimPopup.Parent) then
             return
         end

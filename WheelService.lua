@@ -41,6 +41,7 @@ WheelService._rebirthService = nil
 WheelService._skinService = nil
 WheelService._healthService = nil
 WheelService._shopService = nil
+WheelService._taskService = nil
 WheelService._wheelStateSyncEvent = nil
 WheelService._requestWheelStateSyncEvent = nil
 WheelService._requestWheelSpinEvent = nil
@@ -268,6 +269,9 @@ function WheelService:_handleSpinRequest(player)
             source = "wheel",
         })
     end
+    if self._taskService and self._taskService.RecordWheelSpin then
+        self._taskService:RecordWheelSpin(player, 1)
+    end
 
     local reward = WheelConfig.RollReward(self._random)
     local granted, reason = self:_grantReward(player, reward)
@@ -395,6 +399,7 @@ function WheelService:BindSystems(dependencies)
     self._healthService = dependencies and dependencies.HealthService or self._healthService
     self._shopService = dependencies and dependencies.ShopService or self._shopService
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
+    self._taskService = dependencies and dependencies.TaskService or self._taskService
 end
 
 function WheelService:Init(dependencies)
@@ -405,6 +410,7 @@ function WheelService:Init(dependencies)
     self._healthService = dependencies and dependencies.HealthService or nil
     self._shopService = dependencies and dependencies.ShopService or nil
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or nil
+    self._taskService = dependencies and dependencies.TaskService or nil
     local remoteEventService = dependencies and dependencies.RemoteEventService or nil
     self._wheelStateSyncEvent = remoteEventService and remoteEventService:GetEvent("WheelStateSync") or nil
     self._requestWheelStateSyncEvent = remoteEventService and remoteEventService:GetEvent("RequestWheelStateSync") or nil

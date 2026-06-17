@@ -110,7 +110,11 @@
 17.`OnlineRewardService`
 - 管理 V4.3 本次在线会话奖励计时、状态同步、领取发奖、ClaimSuccessful 奖励弹框回传，以及 UnlockAll 开发者商品 `3599440996` 的收据处理；玩家离开后在线计时重置，不写入持久化会话进度。
 - 发经验奖励时走 `PlayerStateService:AddExperienceWithMultiplier`，其它奖励复用对应现有服务链路。
-18.归档服务：
+18.`TaskService`
+- 管理 V5.3 每日/每周任务，任务配置由 `IO_BaseBalanceDraft.xlsx / 任务系统数据表` 同步生成 `TaskConfig`；每日按 UTC 0 点重置，每周按周一 UTC 0 点重置。
+- 服务端权威维护 `state.TaskState` 的周期 key、progress、claimed、weekly login days 和 completed reported；监听在线时长、真实玩家击杀、转盘使用、钻石获得、登录天数、邀请弹窗打开等进度来源。
+- 领奖时校验任务存在、周期有效、进度达标且未领取，再发放钻石、转盘次数、经验或药水；奖励反馈复用 `ShopRewardFeedback -> Main.ClaimSuccessful`，任务来源使用 0.8 秒后可点击关闭。
+19.归档服务：
 - `PickupService`：空实现，当前主线不初始化。
 
 五、数据与调试安全规则
@@ -168,6 +172,10 @@
 `SpecialEventService:_step -> 按权重生成当前事件和未来两场 -> SpecialEventSync -> SpecialEventController 本地克隆 ReplicatedStorage/EventScene/<事件> 到 Workspace -> 更新 BattleSenceEventBoard / HomeEventBoard 倒计时 -> 事件结束后客户端清理本地克隆`
 13.在线奖励：
 `PlayerAdded -> OnlineRewardService:OnPlayerAdded 记录 StartedAt -> OnlineRewardStateSync -> OnlineRewardController 更新 Main.Right.Online 倒计时/红点和 Main.OnlineReward 奖励列表 -> RequestOnlineRewardClaim -> OnlineRewardService 校验在线秒数和已领取状态 -> 发放奖励 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful；UnlockAll 购买成功由 RebirthService.ProcessReceipt 委托 OnlineRewardService 解锁本轮全部奖励。`
+14.好友邀请提示：
+`InviteTipsController -> 玩家在线 2 分钟后请求 FriendsRankingStateSync -> 客户端刷新 GetFriendsOnlineAsync -> 从“曾玩过本体验且当前在线”的好友中按 highestLevelReached 选择最高者 -> 显示 PlayerGui.Main.InviteTips 5 秒 -> 点击 InviteButton 后用 ExperienceInviteOptions.InviteUser 调起 SocialService:PromptGameInvite；本次登录已弹过的好友不再重复弹出，之后每 5 分钟继续检查剩余候选。`
+15.每日/每周任务：
+`TaskConfig -> TaskService 初始化并规范化 PlayerState.TaskState -> PlayerStateService/WheelService/InviteTipsController 等来源上报进度 -> TaskStateSync -> TaskController 渲染 Main.Right.Daily 红点、Main.TaskBg 列表和重置倒计时 -> RequestTaskClaim -> TaskService 校验并发奖 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful。Studio GM /taskprogress、/taskcomplete、/taskreset 仅在 RunService:IsStudio() 下可用。`
 
 八、RemoteEvent
 1.SystemEvents：
@@ -184,6 +192,10 @@
 - OnlineRewardStateSync
 - RequestOnlineRewardStateSync
 - RequestOnlineRewardClaim
+- TaskStateSync
+- RequestTaskStateSync
+- RequestTaskClaim
+- RequestInviteTaskProgress
 2.BattleEvents：
 - PickupFeedback
 - ExperienceFeedback
@@ -211,6 +223,9 @@
 11.`DefeatedController` 负责监听 `DeathFeedback` 打开 Defeated 面板，隐藏倒计时 UI，展示免费半等级复活目标等级，并通过 Marketplace 产品信息实时刷新 Revenge / Revive 的 RMoney 价格。
 12.`DefeatedController` 点击 FreeRespawn、Lobby、Close、Revive、Revenge 时只发送意图或触发购买；复活等级、复仇目标、离线快照和是否允许 Revenge 均由服务端判定。
 13.`LocalMonsterController` 负责普通小怪本地私有生成和显示：所有生成小怪均物化为所属客户端可见模型，Dormant 小怪保持静默可见，只有 CombatActive 小怪参与追击、攻击、动画和模拟预算。
+14.`InviteTipsController` 负责 V5.2 好友邀请提示，仅绑定既有 `StarterGui/Main/InviteTips`，复用 `FriendsRankingStateSync` 的历史好友数据和客户端 `GetFriendsOnlineAsync` 在线状态，不新增 RemoteEvent、不启用模态遮罩或 Blur。
+15.`TaskController` 负责 V5.3 任务面板，仅绑定既有 `StarterGui/Main/TaskBg` 和 `Main.Right.Daily`；面板打开/关闭使用本地 `UIScale + TweenService`，不走模态遮罩、不隐藏其它 HUD、不启用 Blur。任务列表按可领取、未完成、已领取排序，领取请求只发 taskId，最终发奖由服务端判定。
+16.Studio-only GM `/testinvite` / `/invitetips` 由 `GMCommandService` 随机抽取当前玩家好友，经 `FriendsRankingStateSync` 发送 `studioInviteTipsTest = true` 测试 payload，客户端仅在 `RunService:IsStudio()` 下直接弹出 `Main.InviteTips`；V5.3 额外提供 `/taskprogress <taskId> <amount>`、`/taskcomplete <taskId>`、`/taskreset daily|weekly|all` 便于编辑器测试任务进度和周期重置。
 
 =====================================================
 文档结束

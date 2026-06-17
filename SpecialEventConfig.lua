@@ -29,7 +29,7 @@ SpecialEventConfig.Events = {
         TextLabelName = "HackerEvent",
         DurationSeconds = 180,
         BossDefinitionId = "2002",
-        BossCount = 2,
+        BossCount = 4,
     },
     [102] = {
         Id = 102,
@@ -39,7 +39,7 @@ SpecialEventConfig.Events = {
         TextLabelName = "LavaEvent",
         DurationSeconds = 180,
         BossDefinitionId = "2001",
-        BossCount = 2,
+        BossCount = 4,
     },
     [103] = {
         Id = 103,
@@ -49,7 +49,7 @@ SpecialEventConfig.Events = {
         TextLabelName = "HeartEvent",
         DurationSeconds = 180,
         BossDefinitionId = "2003",
-        BossCount = 2,
+        BossCount = 4,
     },
     [104] = {
         Id = 104,
@@ -59,7 +59,7 @@ SpecialEventConfig.Events = {
         TextLabelName = "DiamondEvent",
         DurationSeconds = 180,
         BossDefinitionId = "2004",
-        BossCount = 2,
+        BossCount = 4,
     },
 }
 

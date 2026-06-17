@@ -100,6 +100,24 @@ local function buildOfflineRespawnSaveSnapshot(combatSnapshot)
     }
 end
 
+local function getDefeatedAnalyticsSessionKey(defeatRecord)
+    if type(defeatRecord) ~= "table" then
+        return nil
+    end
+
+    return defeatRecord.analyticsSessionKey
+end
+
+local function trackDefeatedFunnel(gameAnalyticsService, player, defeatRecord, funnelName, stepNumber, stepName, fields)
+    if not gameAnalyticsService then
+        return
+    end
+
+    gameAnalyticsService:TrackFunnel(player, funnelName, stepNumber, stepName, fields, {
+        sessionKey = getDefeatedAnalyticsSessionKey(defeatRecord),
+    })
+end
+
 local function copyOfflineRespawnSaveSnapshot(snapshot)
     if type(snapshot) ~= "table" then
         return nil
@@ -379,7 +397,7 @@ function RespawnService:_tryGrantFreeRespawn(player, defeatRecord)
     end
 
     if self._gameAnalyticsService then
-        self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 5, "FreeRespawnedSuccessfully", {
+        trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedFreeRespawn", 3, "FreeRespawnedSuccessfully", {
             source = "defeated",
         })
     end
@@ -421,6 +439,7 @@ function RespawnService:_recordPlayerDefeat(player, sourceActor, deathSerial, co
     local killerUserId = ActorUtils.IsPlayer(sourceActor) and sourceActor.UserId or nil
     self._defeatRecordsByUserId[player.UserId] = {
         deathSerial = deathSerial,
+        analyticsSessionKey = string.format("death_%d", math.max(0, math.floor(tonumber(deathSerial) or 0))),
         killerUserId = killerUserId,
         killerName = sourceActor and ActorUtils.GetActorName(sourceActor) or "",
         createdAt = os.clock(),
@@ -432,7 +451,10 @@ function RespawnService:_recordPlayerDefeat(player, sourceActor, deathSerial, co
     }
 
     if self._gameAnalyticsService then
-        self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 1, "DefeatedPanelShown", {
+        trackDefeatedFunnel(self._gameAnalyticsService, player, self._defeatRecordsByUserId[player.UserId], "DefeatedRevive", 1, "DefeatedPanelShown", {
+            source = "defeated",
+        })
+        trackDefeatedFunnel(self._gameAnalyticsService, player, self._defeatRecordsByUserId[player.UserId], "DefeatedFreeRespawn", 1, "DefeatedPanelShown", {
             source = "defeated",
         })
     end
@@ -490,6 +512,11 @@ function RespawnService:_onRequestDefeatedAction(player, action)
         if state.Alive ~= false then
             return
         end
+        if self:IsCurrentDefeatRecord(player, defeatRecord) then
+            trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedFreeRespawn", 2, "FreeRespawnClicked", {
+                source = "defeated",
+            })
+        end
         self:_tryGrantFreeRespawn(player, defeatRecord)
     elseif normalizedAction == "Lobby" or normalizedAction == "Close" then
         if state.Alive ~= false then
@@ -501,14 +528,12 @@ function RespawnService:_onRequestDefeatedAction(player, action)
             return
         end
         defeatRecord.revivePurchasePending = true
-        if self._gameAnalyticsService then
-            self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 2, "ReviveButtonClicked", {
-                source = "defeated",
-            })
-            self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 3, "RevivePurchaseIntent", {
-                source = "defeated",
-            })
-        end
+        trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedRevive", 2, "ReviveButtonClicked", {
+            source = "defeated",
+        })
+        trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedRevive", 3, "RevivePurchaseIntent", {
+            source = "defeated",
+        })
     elseif normalizedAction == "RevivePurchaseCancel" then
         if not self:IsDefeatRecordForCurrentDeath(player, defeatRecord) then
             return
@@ -614,7 +639,10 @@ function RespawnService:GrantDefeatedRevivePurchase(player)
                 source = "defeated",
             })
         end
-        self._gameAnalyticsService:TrackFunnel(player, "DefeatedRevive", 5, "RevivedSuccessfully", {
+        trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedRevive", 4, "ProductReceiptGranted", {
+            source = "defeated",
+        })
+        trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedRevive", 5, "RevivedSuccessfully", {
             source = "defeated",
         })
     end

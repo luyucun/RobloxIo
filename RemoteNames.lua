@@ -70,6 +70,10 @@ local RemoteNames = {
         RequestOptionUpdate = "RequestOptionUpdate",
         RequestFriendsRankingStateSync = "RequestFriendsRankingStateSync",
         FriendsRankingStateSync = "FriendsRankingStateSync",
+        TaskStateSync = "TaskStateSync",
+        RequestTaskStateSync = "RequestTaskStateSync",
+        RequestTaskClaim = "RequestTaskClaim",
+        RequestInviteTaskProgress = "RequestInviteTaskProgress",
     },
     Battle = {
         PickupFeedback = "PickupFeedback",

@@ -54,18 +54,36 @@ DIAMOND_SHOP_DATA_START_ROW = 6
 DIAMOND_SHOP_BEGIN_MARKER = "-- BEGIN GENERATED DIAMOND PRODUCT ROWS"
 DIAMOND_SHOP_END_MARKER = "-- END GENERATED DIAMOND PRODUCT ROWS"
 
+POTION_CONFIG_PATH = ROOT / "PotionConfig.lua"
+POTION_SHEET_NAME = "药水"
+POTION_HEADER_ROW = 2
+POTION_DATA_START_ROW = 3
+POTION_BEGIN_MARKER = "-- BEGIN GENERATED POTION ROWS"
+POTION_END_MARKER = "-- END GENERATED POTION ROWS"
+
+WHEEL_CONFIG_PATH = ROOT / "WheelConfig.lua"
+WHEEL_SHEET_NAME = "转盘规划"
+WHEEL_HEADER_ROW = 6
+WHEEL_DATA_START_ROW = 7
+WHEEL_BEGIN_MARKER = "-- BEGIN GENERATED WHEEL REWARD ROWS"
+WHEEL_END_MARKER = "-- END GENERATED WHEEL REWARD ROWS"
+
 ATTRIBUTE_CONFIG_PATH = ROOT / "AttributeConfig.lua"
 ATTRIBUTE_CONFIG_SHEET_NAME = "属性养成配置"
-ATTRIBUTE_PRICE_SHEET_NAME = "属性上限价格"
 ATTRIBUTE_PRODUCT_SHEET_NAME = "属性养成新的开发者商品"
 ATTRIBUTE_CONFIG_HEADER_ROW = 4
 ATTRIBUTE_CONFIG_DATA_START_ROW = 5
-ATTRIBUTE_PRICE_HEADER_ROW = 4
-ATTRIBUTE_PRICE_DATA_START_ROW = 5
 ATTRIBUTE_PRODUCT_HEADER_ROW = 12
 ATTRIBUTE_PRODUCT_DATA_START_ROW = 13
 ATTRIBUTE_CONFIG_BEGIN_MARKER = "-- BEGIN GENERATED ATTRIBUTE CONFIG ROWS"
 ATTRIBUTE_CONFIG_END_MARKER = "-- END GENERATED ATTRIBUTE CONFIG ROWS"
+
+TASK_CONFIG_PATH = ROOT / "TaskConfig.lua"
+TASK_SHEET_NAME = "任务系统数据表"
+TASK_HEADER_ROW = 21
+TASK_DATA_START_ROW = 22
+TASK_BEGIN_MARKER = "-- BEGIN GENERATED TASK ROWS"
+TASK_END_MARKER = "-- END GENERATED TASK ROWS"
 
 
 def is_blank(value) -> bool:
@@ -112,6 +130,12 @@ POTION_NAME_ALIASES = {
     "加基础药水": 1001,
     "基础药水": 1001,
     "BasicPotion": 1001,
+    "加高级药水": 1002,
+    "高级药水": 1002,
+    "AdvancedPotion": 1002,
+    "加稀有药水": 1003,
+    "稀有药水": 1003,
+    "RarePotion": 1003,
 }
 
 
@@ -228,9 +252,29 @@ def parse_reward_text(value) -> tuple[dict | None, str | None]:
     if wheel:
         return {"RewardType": "WheelSpins", "Amount": parse_amount_token(wheel.group(1))}, None
 
+    shield = re.fullmatch(r"(\d+)秒护盾", compact) or re.fullmatch(r"Shield(\d+)s?", compact)
+    if shield:
+        duration_seconds = parse_amount_token(shield.group(1))
+        return {"RewardType": "Shield", "Amount": duration_seconds, "DurationSeconds": duration_seconds}, None
+
+    skin = re.fullmatch(r"(?:特殊)?(?:武器)?皮肤(\d+)", compact) or re.fullmatch(r"(?:Special)?(?:Weapon)?Skin(\d+)", compact)
+    if skin:
+        return {"RewardType": "PendingWeaponSkin", "SkinId": parse_amount_token(skin.group(1)), "Amount": 1, "Pending": True}, None
+
     potion = parse_potion_reward(compact)
     if potion:
         return potion, None
+
+    alias_potion_id = POTION_NAME_ALIASES.get(compact)
+    if alias_potion_id:
+        return {"RewardType": "Potion", "PotionId": alias_potion_id, "Amount": 1}, None
+
+    for alias, potion_id in sorted(POTION_NAME_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if compact.startswith(alias):
+            suffix = compact[len(alias):]
+            amount_match = re.fullmatch(r"[+xX*×]?(\d+)", suffix)
+            if amount_match:
+                return {"RewardType": "Potion", "PotionId": potion_id, "Amount": parse_amount_token(amount_match.group(1))}, None
 
     return None, f"无法解析奖励内容: {text}"
 
@@ -454,6 +498,322 @@ def build_header_map(worksheet, header_row: int) -> dict[str, int]:
 def cell_by_header(worksheet, row_index: int, headers: dict[str, int], header: str):
     column_index = headers.get(header)
     return worksheet.cell(row_index, column_index).value if column_index else None
+
+
+def read_potion_rows() -> list[dict]:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, POTION_SHEET_NAME, 8)
+    headers = build_header_map(worksheet, POTION_HEADER_ROW)
+    required_headers = [
+        "ID",
+        "药水名字",
+        "稀有度",
+        "药水图标",
+        "药水模型名字",
+        "药水生效时间（秒）",
+        "药水经验加成比例",
+        "钻石价格",
+        "罗布币价格",
+        "开发者商品ID",
+    ]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing potion headers: " + ", ".join(missing_headers))
+
+    rows = []
+    for row_index in range(POTION_DATA_START_ROW, worksheet.max_row + 1):
+        potion_id = math_safe_int(cell_by_header(worksheet, row_index, headers, "ID"), 0)
+        if potion_id <= 0:
+            continue
+        rows.append({
+            "Id": potion_id,
+            "Name": "" if is_blank(cell_by_header(worksheet, row_index, headers, "药水名字")) else str(cell_by_header(worksheet, row_index, headers, "药水名字")).strip(),
+            "Rarity": math_safe_int(cell_by_header(worksheet, row_index, headers, "稀有度"), 0),
+            "IconImage": "" if is_blank(cell_by_header(worksheet, row_index, headers, "药水图标")) else str(cell_by_header(worksheet, row_index, headers, "药水图标")).strip(),
+            "ModelName": "" if is_blank(cell_by_header(worksheet, row_index, headers, "药水模型名字")) else str(cell_by_header(worksheet, row_index, headers, "药水模型名字")).strip(),
+            "DurationSeconds": math_safe_int(cell_by_header(worksheet, row_index, headers, "药水生效时间（秒）"), 0),
+            "ExperienceBonus": math_safe_float(cell_by_header(worksheet, row_index, headers, "药水经验加成比例"), 0),
+            "MoveSpeedBonus": math_safe_float(cell_by_header(worksheet, row_index, headers, "药水移动速度加成比例"), 0),
+            "DiamondPrice": math_safe_int(cell_by_header(worksheet, row_index, headers, "钻石价格"), 0),
+            "RobuxPrice": math_safe_int(cell_by_header(worksheet, row_index, headers, "罗布币价格"), 0),
+            "ProductId": math_safe_int(cell_by_header(worksheet, row_index, headers, "开发者商品ID"), 0),
+        })
+    rows.sort(key=lambda row: row["Id"])
+    return rows
+
+
+def build_potion_generated_block(rows: list[dict]) -> str:
+    lines = [
+        POTION_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 药水. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "PotionConfig.OrderedPotionIds = {",
+    ]
+    for row in rows:
+        lines.append(f"    {row['Id']},")
+    lines.extend(["}", "", "PotionConfig.Potions = {"])
+    for row in rows:
+        lines.extend([
+            f"    [{row['Id']}] = {{",
+            f"        Id = {row['Id']},",
+            f"        Name = {lua_value(row['Name'])},",
+            f"        Rarity = {row['Rarity']},",
+            f"        IconImage = {lua_value(row['IconImage'])},",
+            f"        ModelName = {lua_value(row['ModelName'])},",
+            f"        DurationSeconds = {row['DurationSeconds']},",
+            f"        ExperienceBonus = {lua_number(row['ExperienceBonus'])},",
+            f"        MoveSpeedBonus = {lua_number(row['MoveSpeedBonus'])},",
+            f"        DiamondPrice = {row['DiamondPrice']},",
+            f"        RobuxPrice = {row['RobuxPrice']},",
+            f"        ProductId = {row['ProductId']},",
+            "    },",
+        ])
+    lines.extend(["}", POTION_END_MARKER])
+    return "\n".join(lines)
+
+
+def build_wheel_reward_label(reward: dict) -> str:
+    reward_type = reward["RewardType"]
+    if reward_type == "Shield":
+        return f"{int(reward['DurationSeconds'])}s Shield"
+    if reward_type == "Potion":
+        potion_names = {
+            1001: "Basic Potion",
+            1002: "Advanced Potion",
+            1003: "Rare Potion",
+        }
+        return f"{potion_names.get(math_safe_int(reward.get('PotionId'), 0), 'Potion')} +{math_safe_int(reward.get('Amount'), 1)}"
+    if reward_type == "PendingWeaponSkin":
+        return f"Special Weapon Skin {math_safe_int(reward.get('SkinId'), 0)}"
+    if reward_type == "WheelSpins":
+        return f"Wheel Spins +{math_safe_int(reward.get('Amount'), 0)}"
+    if reward_type == "Diamonds":
+        return f"Diamonds +{math_safe_int(reward.get('Amount'), 0)}"
+    return reward_type
+
+
+def build_wheel_reward_id(reward: dict) -> str:
+    reward_type = reward["RewardType"]
+    if reward_type == "Shield":
+        return f"Shield{math_safe_int(reward.get('DurationSeconds'), 0)}"
+    if reward_type == "Potion":
+        return f"Potion{math_safe_int(reward.get('PotionId'), 0)}"
+    if reward_type == "PendingWeaponSkin":
+        return f"WeaponSkin{math_safe_int(reward.get('SkinId'), 0)}"
+    if reward_type == "WheelSpins":
+        return f"WheelSpins{math_safe_int(reward.get('Amount'), 0)}"
+    if reward_type == "Diamonds":
+        return f"Diamonds{math_safe_int(reward.get('Amount'), 0)}"
+    return reward_type
+
+
+def read_wheel_reward_rows() -> tuple[list[dict], list[dict]]:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, WHEEL_SHEET_NAME, 11)
+    headers = build_header_map(worksheet, WHEEL_HEADER_ROW)
+    required_headers = ["转盘位置", "奖励内容", "对应权重", "对应转盘子节点", "对应旋转角度"]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing wheel headers: " + ", ".join(missing_headers))
+
+    rows = []
+    warnings = []
+    for row_index in range(WHEEL_DATA_START_ROW, worksheet.max_row + 1):
+        slot = math_safe_int(cell_by_header(worksheet, row_index, headers, "转盘位置"), 0)
+        reward_text = cell_by_header(worksheet, row_index, headers, "奖励内容")
+        if slot <= 0 and is_blank(reward_text):
+            continue
+        reward, warning = parse_reward_text(reward_text)
+        if warning:
+            warnings.append({"row": row_index, "column": "奖励内容", "warning": warning})
+            continue
+        if not reward:
+            continue
+        row = dict(reward)
+        row.update({
+            "Slot": slot,
+            "Id": build_wheel_reward_id(reward),
+            "Label": build_wheel_reward_label(reward),
+            "Weight": math_safe_float(cell_by_header(worksheet, row_index, headers, "对应权重"), 0),
+            "GiftName": "" if is_blank(cell_by_header(worksheet, row_index, headers, "对应转盘子节点")) else str(cell_by_header(worksheet, row_index, headers, "对应转盘子节点")).strip(),
+            "TargetRotation": math_safe_int(cell_by_header(worksheet, row_index, headers, "对应旋转角度"), 0),
+        })
+        rows.append(row)
+    rows.sort(key=lambda row: row["Slot"])
+    return rows, warnings
+
+
+def build_wheel_reward_generated_block(rows: list[dict]) -> str:
+    lines = [
+        WHEEL_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 转盘规划. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "WheelConfig.Rewards = {",
+    ]
+    for row in rows:
+        lines.extend([
+            "    {",
+            f"        Slot = {row['Slot']},",
+            f"        Id = {lua_value(row['Id'])},",
+            f"        RewardType = {lua_value(row['RewardType'])},",
+            f"        Label = {lua_value(row['Label'])},",
+            f"        Weight = {lua_number(row['Weight'])},",
+            f"        GiftName = {lua_value(row['GiftName'])},",
+            f"        TargetRotation = {row['TargetRotation']},",
+        ])
+        if row["RewardType"] == "Shield":
+            lines.append(f"        DurationSeconds = {math_safe_int(row.get('DurationSeconds'), 0)},")
+        elif row["RewardType"] == "Potion":
+            lines.append(f"        PotionId = {math_safe_int(row.get('PotionId'), 0)},")
+            lines.append(f"        Amount = {math_safe_int(row.get('Amount'), 1)},")
+        elif row["RewardType"] == "PendingWeaponSkin":
+            lines.append(f"        SkinId = {math_safe_int(row.get('SkinId'), 0)},")
+            lines.append("        Pending = true,")
+        elif row["RewardType"] in {"WheelSpins", "Diamonds"}:
+            lines.append(f"        Amount = {math_safe_int(row.get('Amount'), 0)},")
+        lines.append("    },")
+    lines.extend(["}", WHEEL_END_MARKER])
+    return "\n".join(lines)
+
+
+TASK_TYPE_BY_ID = {
+    1001: ("Daily", "OnlineSeconds"),
+    1002: ("Daily", "PlayerKills"),
+    1003: ("Daily", "InviteFriend"),
+    1004: ("Daily", "WheelSpinsUsed"),
+    2001: ("Weekly", "OnlineSeconds"),
+    2002: ("Weekly", "PlayerKills"),
+    2003: ("Weekly", "DiamondsEarned"),
+    2004: ("Weekly", "LoginDays"),
+}
+
+TASK_POTION_REWARD_IDS = {
+    "中级药水": 1002,
+    "高级药水": 1003,
+    "AdvancedPotion": 1002,
+    "RarePotion": 1003,
+}
+
+
+def parse_task_target(task_type: str, description: str) -> int:
+    text = str(description or "")
+    if task_type == "OnlineSeconds":
+        hour_match = re.search(r"(\d+)\s*小时", text)
+        if hour_match:
+            return math_safe_int(hour_match.group(1), 1) * 3600
+        minute_match = re.search(r"(\d+)\s*分钟", text)
+        if minute_match:
+            return math_safe_int(minute_match.group(1), 1) * 60
+        english_hour = re.search(r"(\d+)\s*h(?:our)?", text, re.I)
+        if english_hour:
+            return math_safe_int(english_hour.group(1), 1) * 3600
+        english_minute = re.search(r"(\d+)\s*m(?:in)?", text, re.I)
+        if english_minute:
+            return math_safe_int(english_minute.group(1), 1) * 60
+
+    if task_type == "InviteFriend":
+        match = re.search(r"(\d+)", text)
+        return math_safe_int(match.group(1), 1) if match else 1
+
+    match = re.search(r"(\d+)", text)
+    if match:
+        return math_safe_int(match.group(1), 1)
+    return 1
+
+
+def parse_task_reward(reward_value, amount_value) -> dict:
+    reward_text = "" if is_blank(reward_value) else str(reward_value).strip()
+    compact = re.sub(r"\s+", "", reward_text)
+    amount = parse_amount_token(amount_value)
+
+    if compact in {"钻石", "宝石", "Diamonds", "Diamond", "Gems", "Gem"}:
+        return {"RewardType": "Diamonds", "Amount": amount}
+    if compact in {"转盘次数", "转盘", "WheelSpins", "Spins"}:
+        return {"RewardType": "WheelSpins", "Amount": amount}
+    if compact in {"经验", "经验值", "Experience", "EXP", "Exp"}:
+        return {"RewardType": "Experience", "Amount": amount}
+    potion_id = TASK_POTION_REWARD_IDS.get(compact)
+    if potion_id:
+        return {"RewardType": "Potion", "PotionId": potion_id, "Amount": amount}
+
+    reward, warning = parse_reward_type_and_amount(reward_text, amount)
+    if warning or not reward:
+        raise RuntimeError(f"Unable to parse task reward: {reward_text}")
+    return reward
+
+
+def read_task_rows() -> list[dict]:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, TASK_SHEET_NAME, len(workbook.worksheets) - 1)
+    headers = build_header_map(worksheet, TASK_HEADER_ROW)
+    required_headers = ["任务id", "任务类型", "奖励内容", "数量", "任务描述", "奖励图标"]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing task headers: " + ", ".join(missing_headers))
+
+    rows = []
+    for row_index in range(TASK_DATA_START_ROW, worksheet.max_row + 1):
+        task_id_value = cell_by_header(worksheet, row_index, headers, "任务id")
+        task_type_id_value = cell_by_header(worksheet, row_index, headers, "任务类型")
+        reward_value = cell_by_header(worksheet, row_index, headers, "奖励内容")
+        amount_value = cell_by_header(worksheet, row_index, headers, "数量")
+        description_value = cell_by_header(worksheet, row_index, headers, "任务描述")
+        icon_value = cell_by_header(worksheet, row_index, headers, "奖励图标")
+
+        if all(is_blank(value) for value in (task_id_value, task_type_id_value, reward_value, amount_value, description_value, icon_value)):
+            continue
+
+        task_id = math_safe_int(task_id_value, 0)
+        task_type_id = math_safe_int(task_type_id_value, 0)
+        if task_id <= 0 or task_type_id <= 0:
+            raise RuntimeError(f"Invalid task row {row_index}: task id and type id are required")
+        if task_type_id not in TASK_TYPE_BY_ID:
+            raise RuntimeError(f"Unknown task type id {task_type_id} at row {row_index}")
+
+        period, task_type = TASK_TYPE_BY_ID[task_type_id]
+        description = "" if is_blank(description_value) else str(description_value).strip()
+        reward = parse_task_reward(reward_value, amount_value)
+        row = {
+            "TaskId": task_id,
+            "Period": period,
+            "TaskType": task_type,
+            "TaskTypeId": task_type_id,
+            "Target": parse_task_target(task_type, description),
+            "RewardType": reward["RewardType"],
+            "PotionId": math_safe_int(reward.get("PotionId"), 0),
+            "Amount": math_safe_int(reward.get("Amount"), 1),
+            "Description": description,
+            "Icon": "" if is_blank(icon_value) else str(icon_value).strip(),
+        }
+        rows.append(row)
+
+    rows.sort(key=lambda row: row["TaskId"])
+    return rows
+
+
+def build_task_generated_block(rows: list[dict]) -> str:
+    lines = [
+        TASK_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 任务系统数据表. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "TaskConfig.Tasks = {",
+    ]
+    for row in rows:
+        fields = [
+            f"TaskId = {row['TaskId']}",
+            f"Period = {lua_value(row['Period'])}",
+            f"TaskType = {lua_value(row['TaskType'])}",
+            f"TaskTypeId = {row['TaskTypeId']}",
+            f"Target = {row['Target']}",
+            f"RewardType = {lua_value(row['RewardType'])}",
+        ]
+        if row["PotionId"] > 0:
+            fields.append(f"PotionId = {row['PotionId']}")
+        fields.extend([
+            f"Amount = {row['Amount']}",
+            f"Description = {lua_value(row['Description'])}",
+            f"Icon = {lua_value(row['Icon'])}",
+        ])
+        lines.append("    { " + ", ".join(fields) + " },")
+    lines.extend(["}", TASK_END_MARKER])
+    return "\n".join(lines)
 
 
 def parse_title_unlock_condition(value) -> tuple[dict | None, str | None]:
@@ -786,10 +1146,8 @@ def build_title_generated_block(rows) -> str:
 def read_attribute_config_rows():
     workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
     config_sheet = get_sheet(workbook, ATTRIBUTE_CONFIG_SHEET_NAME, len(workbook.worksheets) - 3)
-    price_sheet = get_sheet(workbook, ATTRIBUTE_PRICE_SHEET_NAME, len(workbook.worksheets) - 2)
     product_sheet = get_sheet(workbook, ATTRIBUTE_PRODUCT_SHEET_NAME, len(workbook.worksheets) - 1)
     config_headers = build_header_map(config_sheet, ATTRIBUTE_CONFIG_HEADER_ROW)
-    price_headers = build_header_map(price_sheet, ATTRIBUTE_PRICE_HEADER_ROW)
     product_headers = build_header_map(product_sheet, ATTRIBUTE_PRODUCT_HEADER_ROW)
 
     required_config_headers = [
@@ -809,21 +1167,10 @@ def read_attribute_config_rows():
     if missing_config_headers:
         raise RuntimeError("Missing attribute config headers: " + ", ".join(missing_config_headers))
 
-    required_price_headers = [
-        "AttributeID",
-        "当前上限",
-        "升级后上限",
-        "钻石消耗/规则",
-        "启用钻石购买",
-        "启用罗布币购买",
-    ]
-    missing_price_headers = [header for header in required_price_headers if header not in price_headers]
-    if missing_price_headers:
-        raise RuntimeError("Missing attribute price headers: " + ", ".join(missing_price_headers))
-
     required_product_headers = [
         "等级",
         "开发者商品",
+        "钻石价格",
     ]
     missing_product_headers = [header for header in required_product_headers if header not in product_headers]
     if missing_product_headers:
@@ -850,43 +1197,46 @@ def read_attribute_config_rows():
             "RobuxEnabled": bool_from_cell(cell_by_header(config_sheet, row_index, config_headers, "罗布币购买"), True),
         })
 
-    prices_by_key = {row["Key"]: [] for row in attributes}
-    for row_index in range(ATTRIBUTE_PRICE_DATA_START_ROW, price_sheet.max_row + 1):
-        attribute_id = cell_by_header(price_sheet, row_index, price_headers, "AttributeID")
-        if is_blank(attribute_id):
-            continue
-        attribute_key = str(attribute_id).strip()
-        current_cap = cell_by_header(price_sheet, row_index, price_headers, "当前上限")
-        next_cap = cell_by_header(price_sheet, row_index, price_headers, "升级后上限")
-        gem_cost = cell_by_header(price_sheet, row_index, price_headers, "钻石消耗/规则")
-        if not isinstance(current_cap, (int, float)) or not isinstance(next_cap, (int, float)) or not isinstance(gem_cost, (int, float)):
-            continue
-        prices_by_key.setdefault(attribute_key, []).append({
-            "FromCap": math_safe_int(current_cap, 0),
-            "ToCap": math_safe_int(next_cap, 0),
-            "GemCost": math_safe_int(gem_cost, 0),
-            "GemEnabled": bool_from_cell(cell_by_header(price_sheet, row_index, price_headers, "启用钻石购买"), True),
-            "RobuxEnabled": bool_from_cell(cell_by_header(price_sheet, row_index, price_headers, "启用罗布币购买"), True),
-        })
-
-    for price_rows in prices_by_key.values():
-        price_rows.sort(key=lambda row: (row["FromCap"], row["ToCap"]))
-
     level_products = []
+    common_price_rows = []
     for row_index in range(ATTRIBUTE_PRODUCT_DATA_START_ROW, product_sheet.max_row + 1):
         level = cell_by_header(product_sheet, row_index, product_headers, "等级")
         product_id = cell_by_header(product_sheet, row_index, product_headers, "开发者商品")
-        if not isinstance(level, (int, float)) or not isinstance(product_id, (int, float)):
+        gem_cost = cell_by_header(product_sheet, row_index, product_headers, "钻石价格")
+        if not isinstance(level, (int, float)) or not isinstance(product_id, (int, float)) or not isinstance(gem_cost, (int, float)):
             continue
         resolved_level = math_safe_int(level, 0)
         resolved_product_id = math_safe_int(product_id, 0)
+        resolved_gem_cost = math_safe_int(gem_cost, 0)
         if resolved_level <= 0 or resolved_product_id <= 0:
             continue
         level_products.append({
             "Level": resolved_level,
             "ProductId": resolved_product_id,
+            "GemCost": resolved_gem_cost,
         })
+        if resolved_gem_cost > 0:
+            common_price_rows.append({
+                "FromCap": resolved_level - 1,
+                "ToCap": resolved_level,
+                "GemCost": resolved_gem_cost,
+            })
     level_products.sort(key=lambda row: row["Level"])
+    common_price_rows.sort(key=lambda row: (row["FromCap"], row["ToCap"]))
+
+    prices_by_key = {}
+    for attribute in attributes:
+        initial_cap = math_safe_int(attribute["InitialCap"], 0)
+        max_cap = math_safe_int(attribute["MaxCap"], initial_cap)
+        prices_by_key[attribute["Key"]] = []
+        for row in common_price_rows:
+            if row["FromCap"] < initial_cap or row["ToCap"] > max_cap:
+                continue
+            prices_by_key[attribute["Key"]].append({
+                **row,
+                "GemEnabled": attribute["GemEnabled"],
+                "RobuxEnabled": attribute["RobuxEnabled"],
+            })
 
     return attributes, prices_by_key, level_products
 
@@ -908,7 +1258,7 @@ def lua_number(value) -> str:
 def build_attribute_config_generated_block(attributes: list[dict], prices_by_key: dict[str, list[dict]], level_products: list[dict]) -> str:
     lines = [
         ATTRIBUTE_CONFIG_BEGIN_MARKER,
-        "-- Source: IO_BaseBalanceDraft.xlsx / 属性养成配置 + 属性上限价格. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "-- Source: IO_BaseBalanceDraft.xlsx / 属性养成配置 + 属性养成新的开发者商品. Update via tools/SyncCodeConfigFromWorkbook.py.",
         "AttributeConfig.Order = {",
     ]
     for row in attributes:
@@ -1039,6 +1389,39 @@ def sync_diamond_shop_config() -> dict:
     }
 
 
+def sync_potion_config() -> dict:
+    potion_rows = read_potion_rows()
+    potion_source = POTION_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_potion_source = replace_generated_block(
+        potion_source,
+        build_potion_generated_block(potion_rows),
+        POTION_BEGIN_MARKER,
+        POTION_END_MARKER,
+        POTION_CONFIG_PATH,
+    )
+    POTION_CONFIG_PATH.write_text(updated_potion_source, encoding="utf-8", newline="\n")
+    return {
+        "potionRows": len(potion_rows),
+    }
+
+
+def sync_wheel_config() -> dict:
+    wheel_rows, wheel_warnings = read_wheel_reward_rows()
+    wheel_source = WHEEL_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_wheel_source = replace_generated_block(
+        wheel_source,
+        build_wheel_reward_generated_block(wheel_rows),
+        WHEEL_BEGIN_MARKER,
+        WHEEL_END_MARKER,
+        WHEEL_CONFIG_PATH,
+    )
+    WHEEL_CONFIG_PATH.write_text(updated_wheel_source, encoding="utf-8", newline="\n")
+    return {
+        "wheelRewardRows": len(wheel_rows),
+        "warnings": wheel_warnings,
+    }
+
+
 def sync_seven_day_login_reward_config() -> dict:
     first_cycle_rows, repeat_cycle_rows, skin_metadata, seven_day_warnings = read_seven_day_login_reward_rows()
     seven_day_source = SEVEN_DAY_LOGIN_REWARD_CONFIG_PATH.read_text(encoding="utf-8")
@@ -1074,12 +1457,29 @@ def sync_title_config() -> dict:
     }
 
 
+def sync_task_config() -> dict:
+    task_rows = read_task_rows()
+    task_source = TASK_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_task_source = replace_generated_block(
+        task_source,
+        build_task_generated_block(task_rows),
+        TASK_BEGIN_MARKER,
+        TASK_END_MARKER,
+        TASK_CONFIG_PATH,
+    )
+    TASK_CONFIG_PATH.write_text(updated_task_source, encoding="utf-8", newline="\n")
+    return {
+        "taskRows": len(task_rows),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync Lua config files from IO_BaseBalanceDraft.xlsx.")
     parser.add_argument("--attribute-only", action="store_true", help="Only sync AttributeConfig.lua from attribute progression sheets.")
     parser.add_argument("--diamond-shop-only", action="store_true", help="Only sync ShopConfig.lua diamond products from the diamond purchase sheet.")
     parser.add_argument("--seven-day-only", action="store_true", help="Only sync SevenDayLoginRewardConfig.lua from the seven-day login reward sheet.")
     parser.add_argument("--title-only", action="store_true", help="Only sync TitleConfig.lua from the title sheet.")
+    parser.add_argument("--task-only", action="store_true", help="Only sync TaskConfig.lua from the task sheet.")
     args = parser.parse_args()
 
     if args.diamond_shop_only:
@@ -1094,6 +1494,12 @@ def main() -> None:
     if args.title_only:
         print(json.dumps(sync_title_config(), ensure_ascii=False))
         return
+    if args.task_only:
+        print(json.dumps({
+            **sync_task_config(),
+            "warnings": [],
+        }, ensure_ascii=False))
+        return
 
     attribute_result = sync_attribute_config()
     if args.attribute_only:
@@ -1102,6 +1508,8 @@ def main() -> None:
             "warnings": [],
         }, ensure_ascii=False))
         return
+
+    potion_result = sync_potion_config()
 
     rows, warnings = read_code_rows()
     source = CONFIG_PATH.read_text(encoding="utf-8")
@@ -1145,6 +1553,8 @@ def main() -> None:
 
     title_result = sync_title_config()
     diamond_shop_result = sync_diamond_shop_config()
+    wheel_result = sync_wheel_config()
+    task_result = sync_task_config()
     print(json.dumps({
         "codeRows": len(rows),
         "onlineRewardRows": len(online_rows),
@@ -1153,9 +1563,12 @@ def main() -> None:
         "skinRows": len(skin_rows),
         "trailRows": len(trail_rows),
         "titleRows": title_result["titleRows"],
+        **potion_result,
+        **wheel_result,
         **attribute_result,
         **diamond_shop_result,
-        "warnings": warnings + online_warnings + seven_day_result["warnings"] + title_result["warnings"],
+        **task_result,
+        "warnings": warnings + online_warnings + seven_day_result["warnings"] + title_result["warnings"] + wheel_result["warnings"],
     }, ensure_ascii=False))
 
 

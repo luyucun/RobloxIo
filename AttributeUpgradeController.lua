@@ -64,6 +64,10 @@ local PENDING_TIMEOUT_SECONDS = 1.5
 local HOLD_REPEAT_START_DELAY_SECONDS = 0.35
 local HOLD_REPEAT_INTERVAL_SECONDS = 0.1
 local MODAL_OWNER_ID = "AttributeUpgrade"
+local SUPPRESSED_ATTRIBUTE_KEYS = {
+    Damage = true,
+    MoveSpeed = true,
+}
 local HUD_TRANSITION_SECONDS = 0.22
 local HUD_ENTRY_OPEN_X_SCALE = 0.5
 local HUD_EXPERIENCE_HIDDEN_SCALE = 0.94
@@ -96,6 +100,11 @@ local function disconnectAll(connections)
         end
     end
     table.clear(connections)
+end
+
+local function isAttributeUiSuppressed(attributeKey)
+    local key = AttributeConfig.NormalizeKey(attributeKey)
+    return key ~= nil and SUPPRESSED_ATTRIBUTE_KEYS[key] == true
 end
 
 local function isPrimaryPointerInput(inputObject)
@@ -842,8 +851,15 @@ function AttributeUpgradeController:_startUpgradeHold(attributeKey)
 end
 
 function AttributeUpgradeController:_bindCard(statsGrid, attributeKey)
+    local isSuppressed = isAttributeUiSuppressed(attributeKey)
     local definition = AttributeConfig.GetDefinition(attributeKey)
     local card = definition and statsGrid and statsGrid:FindFirstChild(definition.CardName)
+    if isSuppressed then
+        if card and card:IsA("GuiObject") then
+            card.Visible = false
+        end
+        return nil
+    end
     if not card then
         return nil
     end
@@ -1026,7 +1042,7 @@ function AttributeUpgradeController:_bindUi(silent)
         local card = self:_bindCard(statsGrid, attributeKey)
         if card then
             self._cardsByKey[attributeKey] = card
-        elseif not silent then
+        elseif not silent and not isAttributeUiSuppressed(attributeKey) then
             warn(string.format("[AttributeUpgradeController] Missing card for %s", tostring(attributeKey)))
         end
     end
@@ -1117,7 +1133,9 @@ function AttributeUpgradeController:_applyState(payload)
     end
     self._lastSkillPoints = currentSkillPoints
     for _, attributeKey in ipairs(AttributeConfig.Order) do
-        self:_applyCard(attributeKey, self._cardsByKey[attributeKey], attributeState)
+        if not isAttributeUiSuppressed(attributeKey) then
+            self:_applyCard(attributeKey, self._cardsByKey[attributeKey], attributeState)
+        end
     end
 end
 

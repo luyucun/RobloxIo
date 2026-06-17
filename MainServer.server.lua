@@ -87,6 +87,7 @@ local ShopService = requireServerModule("ShopService")
 local CodeService = requireServerModule("CodeService")
 local OnlineRewardService = requireServerModule("OnlineRewardService")
 local SevenDayLoginRewardService = requireServerModule("SevenDayLoginRewardService")
+local TaskService = requireServerModule("TaskService")
 local GameAnalyticsService = requireServerModule("GameAnalyticsService")
 
 Players.RespawnTime = GameConfig.RESPAWN.DeathRecoverySeconds
@@ -273,11 +274,19 @@ RebirthService:Init({
     SevenDayLoginRewardService = SevenDayLoginRewardService,
     AttributeCapUpgradeService = AttributeCapUpgradeService,
     GameAnalyticsService = GameAnalyticsService,
+    TaskService = TaskService,
 })
 PotionService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
+})
+TaskService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 WheelService:Init({
     RemoteEventService = RemoteEventService,
@@ -286,6 +295,7 @@ WheelService:Init({
     RebirthService = RebirthService,
     HealthService = HealthService,
     GameAnalyticsService = GameAnalyticsService,
+    TaskService = TaskService,
 })
 SkinService:Init({
     RemoteEventService = RemoteEventService,
@@ -462,6 +472,7 @@ GMCommandService:Init({
     HealthService = HealthService,
     RevengeService = RevengeService,
     GameAnalyticsService = GameAnalyticsService,
+    TaskService = TaskService,
 })
 PlayerStateService:BindSystems({
     WeaponService = WeaponService,
@@ -473,6 +484,7 @@ PlayerStateService:BindSystems({
     SubscriptionService = SubscriptionService,
     SkinService = SkinService,
     GameAnalyticsService = GameAnalyticsService,
+    TaskService = TaskService,
 })
 AttributeUpgradeService:Init({
     RemoteEventService = RemoteEventService,
@@ -515,6 +527,7 @@ WheelService:BindSystems({
     HealthService = HealthService,
     ShopService = ShopService,
     GameAnalyticsService = GameAnalyticsService,
+    TaskService = TaskService,
 })
 SkinService:BindSystems({
     PlayerStateService = PlayerStateService,
@@ -570,6 +583,12 @@ MonsterService:BindSystems({
 GameAnalyticsService:BindSystems({
     PlayerStateService = PlayerStateService,
 })
+TaskService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+    GameAnalyticsService = GameAnalyticsService,
+})
 
 local function onPlayerAdded(player)
     if #Players:GetPlayers() > GameConfig.SERVER.MaxPlayers then
@@ -580,6 +599,7 @@ local function onPlayerAdded(player)
     GameAnalyticsService:OnPlayerAdded(player)
     PlayerStateService:OnPlayerAdded(player)
     RebirthService:OnPlayerAdded(player)
+    TaskService:OnPlayerAdded(player)
     WheelService:OnPlayerAdded(player)
     SkinService:OnPlayerAdded(player)
     SubscriptionService:OnPlayerAdded(player)
@@ -633,6 +653,7 @@ local function onPlayerRemoving(player)
     WeaponUnlockRewardService:OnPlayerRemoving(player)
     GroupRewardService:OnPlayerRemoving(player)
     WheelService:OnPlayerRemoving(player)
+    TaskService:OnPlayerRemoving(player)
     SkinService:OnPlayerRemoving(player)
     SubscriptionService:OnPlayerRemoving(player)
     ShopService:OnPlayerRemoving(player)
