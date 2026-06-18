@@ -45,6 +45,9 @@ SpecialEventService._futureEvents = {}
 SpecialEventService._recentEventIds = {}
 SpecialEventService._sequenceIndex = 0
 SpecialEventService._bossService = nil
+SpecialEventService._playerStateService = nil
+SpecialEventService._activeEffect = nil
+SpecialEventService._nextPeriodicDiamondClock = 0
 
 local function cloneEventConfig(eventConfig, startClock)
     if not eventConfig then
@@ -156,6 +159,44 @@ function SpecialEventService:_spawnBossesForEvent(scheduledEvent)
     })
 end
 
+function SpecialEventService:_getEventEffect(eventId)
+    if SpecialEventConfig.GetEventEffect then
+        return SpecialEventConfig.GetEventEffect(eventId)
+    end
+    return nil
+end
+
+function SpecialEventService:_applyActiveEffect(activeEvent)
+    local effect = self:_getEventEffect(activeEvent and activeEvent.id)
+    self._activeEffect = effect
+    local nowClock = os.clock()
+    self._nextPeriodicDiamondClock = nowClock + math.max(1, math.floor(tonumber(effect and effect.PeriodicDiamondIntervalSeconds) or 0))
+
+    if self._playerStateService and self._playerStateService.RefreshSpecialEventEffectsForAll then
+        self._playerStateService:RefreshSpecialEventEffectsForAll()
+    end
+end
+
+function SpecialEventService:_clearActiveEffect()
+    self._activeEffect = nil
+    self._nextPeriodicDiamondClock = 0
+
+    if self._playerStateService and self._playerStateService.RefreshSpecialEventEffectsForAll then
+        self._playerStateService:RefreshSpecialEventEffectsForAll()
+    end
+end
+
+function SpecialEventService:GetActiveEffect()
+    if type(self._activeEffect) ~= "table" then
+        return nil
+    end
+    local result = {}
+    for key, value in pairs(self._activeEffect) do
+        result[key] = value
+    end
+    return result
+end
+
 function SpecialEventService:_ensureFutureEvents()
     local intervalSeconds = self:_getSpawnIntervalSeconds()
     local targetCount = math.max(0, math.floor(tonumber(SpecialEventConfig.FutureDisplayCount) or 2))
@@ -190,6 +231,7 @@ function SpecialEventService:_startNextEvent()
     nextEvent.startClock = nowClock
     nextEvent.endClock = nowClock + math.max(0, tonumber(nextEvent.durationSeconds) or 0)
     self._activeEvent = nextEvent
+    self:_applyActiveEffect(nextEvent)
     self._nextStartClock = nowClock + self:_getSpawnIntervalSeconds()
     self:_ensureFutureEvents()
     self:_spawnBossesForEvent(nextEvent)
@@ -206,6 +248,7 @@ function SpecialEventService:_clearExpiredActiveEvent()
     end
 
     self._activeEvent = nil
+    self:_clearActiveEffect()
     self:BroadcastState()
     return true
 end
@@ -215,6 +258,21 @@ function SpecialEventService:_step()
         return
     end
     if self._activeEvent then
+        local effect = self._activeEffect
+        local diamondInterval = math.max(1, math.floor(tonumber(effect and effect.PeriodicDiamondIntervalSeconds) or 0))
+        local diamondAmount = math.max(0, math.floor(tonumber(effect and effect.PeriodicDiamondAmount) or 0))
+        if diamondAmount > 0 and effect and self._playerStateService and os.clock() >= (self._nextPeriodicDiamondClock or 0) then
+            self._nextPeriodicDiamondClock = os.clock() + diamondInterval
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player and player.Parent then
+                    self._playerStateService:AddDiamonds(player, diamondAmount, {
+                        source = "special_event",
+                        productGroup = "special_event",
+                        itemSku = "SpecialEventPeriodicDiamond",
+                    })
+                end
+            end
+        end
         return
     end
     if os.clock() >= self._nextStartClock then
@@ -229,6 +287,10 @@ function SpecialEventService:StartEventById(eventId)
     end
 
     local nowClock = os.clock()
+    if self._activeEvent then
+        self._activeEvent = nil
+        self:_clearActiveEffect()
+    end
     local activeEvent = cloneEventConfig(eventConfig, nowClock)
     if not activeEvent then
         return false, "EventInvalid"
@@ -237,6 +299,7 @@ function SpecialEventService:StartEventById(eventId)
     self._sequenceIndex = self._sequenceIndex + 1
     activeEvent.sequenceIndex = self._sequenceIndex
     self._activeEvent = activeEvent
+    self:_applyActiveEffect(activeEvent)
     self:_rememberEvent(eventConfig.Id)
 
     self._futureEvents = {}
@@ -279,6 +342,9 @@ end
 function SpecialEventService:OnPlayerAdded(player)
     task.defer(function()
         self:PushState(player)
+        if self._playerStateService and self._playerStateService.RefreshSpecialEventEffectForPlayer then
+            self._playerStateService:RefreshSpecialEventEffectForPlayer(player)
+        end
     end)
 end
 
@@ -286,12 +352,15 @@ function SpecialEventService:Init(dependencies)
     self._specialEventSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("SpecialEventSync") or nil
     self._requestSpecialEventSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestSpecialEventSync") or nil
     self._bossService = dependencies and dependencies.BossService or nil
+    self._playerStateService = dependencies and dependencies.PlayerStateService or nil
     self._startedAtClock = os.clock()
     self._nextStartClock = self._startedAtClock + self:_getSpawnIntervalSeconds()
     self._activeEvent = nil
     self._futureEvents = {}
     self._recentEventIds = {}
     self._sequenceIndex = 0
+    self._activeEffect = nil
+    self._nextPeriodicDiamondClock = 0
     self:_ensureFutureEvents()
 
     if self._requestConnection then

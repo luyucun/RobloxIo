@@ -85,6 +85,13 @@ TASK_DATA_START_ROW = 22
 TASK_BEGIN_MARKER = "-- BEGIN GENERATED TASK ROWS"
 TASK_END_MARKER = "-- END GENERATED TASK ROWS"
 
+SPECIAL_EVENT_CONFIG_PATH = ROOT / "SpecialEventConfig.lua"
+SPECIAL_EVENT_SHEET_NAME = "特殊事件"
+SPECIAL_EVENT_HEADER_ROW = 5
+SPECIAL_EVENT_DATA_START_ROW = 6
+SPECIAL_EVENT_BEGIN_MARKER = "-- BEGIN GENERATED SPECIAL EVENT ROWS"
+SPECIAL_EVENT_END_MARKER = "-- END GENERATED SPECIAL EVENT ROWS"
+
 
 def is_blank(value) -> bool:
     if value is None:
@@ -816,6 +823,96 @@ def build_task_generated_block(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def read_special_event_rows() -> list[dict]:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, SPECIAL_EVENT_SHEET_NAME, 9)
+    headers = build_header_map(worksheet, SPECIAL_EVENT_HEADER_ROW)
+    required_headers = [
+        "特殊事件ID",
+        "特殊事件名字",
+        "特殊事件权重",
+        "特殊事件路径",
+        "特殊事件文本名字",
+        "特殊事件持续时间（秒）",
+        "出现的boss",
+        "出现的boss数量",
+    ]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing special event headers: " + ", ".join(missing_headers))
+
+    rows = []
+    for row_index in range(SPECIAL_EVENT_DATA_START_ROW, worksheet.max_row + 1):
+        event_id_value = cell_by_header(worksheet, row_index, headers, "特殊事件ID")
+        event_name_value = cell_by_header(worksheet, row_index, headers, "特殊事件名字")
+        weight_value = cell_by_header(worksheet, row_index, headers, "特殊事件权重")
+        scene_path_value = cell_by_header(worksheet, row_index, headers, "特殊事件路径")
+        text_label_value = cell_by_header(worksheet, row_index, headers, "特殊事件文本名字")
+        duration_value = cell_by_header(worksheet, row_index, headers, "特殊事件持续时间（秒）")
+        boss_definition_value = cell_by_header(worksheet, row_index, headers, "出现的boss")
+        boss_count_value = cell_by_header(worksheet, row_index, headers, "出现的boss数量")
+
+        if all(is_blank(value) for value in (
+            event_id_value,
+            event_name_value,
+            weight_value,
+            scene_path_value,
+            text_label_value,
+            duration_value,
+            boss_definition_value,
+            boss_count_value,
+        )):
+            continue
+
+        event_id = math_safe_int(event_id_value, 0)
+        if event_id <= 0:
+            raise RuntimeError(f"Invalid special event row {row_index}: event id is required")
+
+        boss_definition_id = "" if is_blank(boss_definition_value) else str(boss_definition_value).strip()
+        if boss_definition_id.endswith(".0"):
+            boss_definition_id = boss_definition_id[:-2]
+
+        rows.append({
+            "Id": event_id,
+            "Name": "" if is_blank(event_name_value) else str(event_name_value).strip(),
+            "Weight": math_safe_float(weight_value, 0),
+            "ScenePath": "" if is_blank(scene_path_value) else str(scene_path_value).strip(),
+            "TextLabelName": "" if is_blank(text_label_value) else str(text_label_value).strip(),
+            "DurationSeconds": math_safe_int(duration_value, 0),
+            "BossDefinitionId": boss_definition_id,
+            "BossCount": math_safe_int(boss_count_value, 0),
+        })
+
+    rows.sort(key=lambda row: row["Id"])
+    return rows
+
+
+def build_special_event_generated_block(rows: list[dict]) -> str:
+    lines = [
+        SPECIAL_EVENT_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 特殊事件. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "SpecialEventConfig.OrderedEventIds = {",
+    ]
+    for row in rows:
+        lines.append(f"    {row['Id']},")
+    lines.extend(["}", "", "SpecialEventConfig.Events = {"])
+    for row in rows:
+        lines.extend([
+            f"    [{row['Id']}] = {{",
+            f"        Id = {row['Id']},",
+            f"        Name = {lua_value(row['Name'])},",
+            f"        Weight = {lua_number(row['Weight'])},",
+            f"        ScenePath = {lua_value(row['ScenePath'])},",
+            f"        TextLabelName = {lua_value(row['TextLabelName'])},",
+            f"        DurationSeconds = {row['DurationSeconds']},",
+            f"        BossDefinitionId = {lua_value(row['BossDefinitionId'])},",
+            f"        BossCount = {row['BossCount']},",
+            "    },",
+        ])
+    lines.extend(["}", SPECIAL_EVENT_END_MARKER])
+    return "\n".join(lines)
+
+
 def parse_title_unlock_condition(value) -> tuple[dict | None, str | None]:
     if is_blank(value):
         return None, "Empty title unlock condition"
@@ -1473,6 +1570,22 @@ def sync_task_config() -> dict:
     }
 
 
+def sync_special_event_config() -> dict:
+    special_event_rows = read_special_event_rows()
+    special_event_source = SPECIAL_EVENT_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_special_event_source = replace_generated_block(
+        special_event_source,
+        build_special_event_generated_block(special_event_rows),
+        SPECIAL_EVENT_BEGIN_MARKER,
+        SPECIAL_EVENT_END_MARKER,
+        SPECIAL_EVENT_CONFIG_PATH,
+    )
+    SPECIAL_EVENT_CONFIG_PATH.write_text(updated_special_event_source, encoding="utf-8", newline="\n")
+    return {
+        "specialEventRows": len(special_event_rows),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync Lua config files from IO_BaseBalanceDraft.xlsx.")
     parser.add_argument("--attribute-only", action="store_true", help="Only sync AttributeConfig.lua from attribute progression sheets.")
@@ -1480,6 +1593,7 @@ def main() -> None:
     parser.add_argument("--seven-day-only", action="store_true", help="Only sync SevenDayLoginRewardConfig.lua from the seven-day login reward sheet.")
     parser.add_argument("--title-only", action="store_true", help="Only sync TitleConfig.lua from the title sheet.")
     parser.add_argument("--task-only", action="store_true", help="Only sync TaskConfig.lua from the task sheet.")
+    parser.add_argument("--special-event-only", action="store_true", help="Only sync SpecialEventConfig.lua from the special event sheet.")
     args = parser.parse_args()
 
     if args.diamond_shop_only:
@@ -1497,6 +1611,12 @@ def main() -> None:
     if args.task_only:
         print(json.dumps({
             **sync_task_config(),
+            "warnings": [],
+        }, ensure_ascii=False))
+        return
+    if args.special_event_only:
+        print(json.dumps({
+            **sync_special_event_config(),
             "warnings": [],
         }, ensure_ascii=False))
         return
@@ -1555,6 +1675,7 @@ def main() -> None:
     diamond_shop_result = sync_diamond_shop_config()
     wheel_result = sync_wheel_config()
     task_result = sync_task_config()
+    special_event_result = sync_special_event_config()
     print(json.dumps({
         "codeRows": len(rows),
         "onlineRewardRows": len(online_rows),
@@ -1568,6 +1689,7 @@ def main() -> None:
         **attribute_result,
         **diamond_shop_result,
         **task_result,
+        **special_event_result,
         "warnings": warnings + online_warnings + seven_day_result["warnings"] + title_result["warnings"] + wheel_result["warnings"],
     }, ensure_ascii=False))
 

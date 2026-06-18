@@ -3,7 +3,7 @@
 脚本文件: SpecialEventConfig.lua
 脚本类型: ModuleScript
 Studio放置路径: ReplicatedStorage/Shared/SpecialEventConfig
-说明: V2.2 特殊事件数据配置，来源于 IO_BaseBalanceDraft.xlsx 的“特殊事件”页签。
+说明: V5.4 特殊事件数据配置，事件基础数据来源于 IO_BaseBalanceDraft.xlsx 的“特殊事件”页签，效果配置由服务端读取。
 ]]
 
 local SpecialEventConfig = {}
@@ -13,6 +13,26 @@ SpecialEventConfig.FutureDisplayCount = 2
 SpecialEventConfig.RecentRepeatBlockCount = 2
 SpecialEventConfig.RuntimeCloneAttributeName = "SpecialEventRuntimeClone"
 
+SpecialEventConfig.EventEffects = {
+    [101] = {
+        MoveSpeedMultiplier = 2,
+    },
+    [102] = {
+        ExperienceBonus = 1,
+    },
+    [103] = {
+        BaseMaxHealthMultiplier = 2,
+        BaseHealthRegenMultiplier = 2,
+    },
+    [104] = {
+        PlayerKillDiamondMultiplier = 2,
+        PeriodicDiamondAmount = 10,
+        PeriodicDiamondIntervalSeconds = 5,
+    },
+}
+
+-- BEGIN GENERATED SPECIAL EVENT ROWS
+-- Source: IO_BaseBalanceDraft.xlsx / 特殊事件. Update via tools/SyncCodeConfigFromWorkbook.py.
 SpecialEventConfig.OrderedEventIds = {
     101,
     102,
@@ -23,48 +43,65 @@ SpecialEventConfig.OrderedEventIds = {
 SpecialEventConfig.Events = {
     [101] = {
         Id = 101,
-        Name = "Hacker",
+        Name = 'Hacker',
         Weight = 20,
-        ScenePath = "ReplicatedStorage/EventScene/Hacker",
-        TextLabelName = "HackerEvent",
+        ScenePath = 'ReplicatedStorage/EventScene/Hacker',
+        TextLabelName = 'HackerEvent',
         DurationSeconds = 180,
-        BossDefinitionId = "2002",
-        BossCount = 4,
+        BossDefinitionId = '2002',
+        BossCount = 2,
     },
     [102] = {
         Id = 102,
-        Name = "Lava",
+        Name = 'Lava',
         Weight = 20,
-        ScenePath = "ReplicatedStorage/EventScene/Lava",
-        TextLabelName = "LavaEvent",
+        ScenePath = 'ReplicatedStorage/EventScene/Lava',
+        TextLabelName = 'LavaEvent',
         DurationSeconds = 180,
-        BossDefinitionId = "2001",
-        BossCount = 4,
+        BossDefinitionId = '2001',
+        BossCount = 2,
     },
     [103] = {
         Id = 103,
-        Name = "Heart",
+        Name = 'Heart',
         Weight = 20,
-        ScenePath = "ReplicatedStorage/EventScene/Heart",
-        TextLabelName = "HeartEvent",
+        ScenePath = 'ReplicatedStorage/EventScene/Heart',
+        TextLabelName = 'HeartEvent',
         DurationSeconds = 180,
-        BossDefinitionId = "2003",
-        BossCount = 4,
+        BossDefinitionId = '2003',
+        BossCount = 2,
     },
     [104] = {
         Id = 104,
-        Name = "Diamond",
+        Name = 'Diamond',
         Weight = 20,
-        ScenePath = "ReplicatedStorage/EventScene/Diamond",
-        TextLabelName = "DiamondEvent",
+        ScenePath = 'ReplicatedStorage/EventScene/Diamond',
+        TextLabelName = 'DiamondEvent',
         DurationSeconds = 180,
-        BossDefinitionId = "2004",
-        BossCount = 4,
+        BossDefinitionId = '2004',
+        BossCount = 2,
     },
 }
+-- END GENERATED SPECIAL EVENT ROWS
+
+local function copyEffect(effect)
+    if type(effect) ~= "table" then
+        return nil
+    end
+
+    local result = {}
+    for key, value in pairs(effect) do
+        result[key] = value
+    end
+    return result
+end
 
 function SpecialEventConfig.GetEvent(eventId)
     return SpecialEventConfig.Events[tonumber(eventId)]
+end
+
+function SpecialEventConfig.GetEventEffect(eventId)
+    return copyEffect(SpecialEventConfig.EventEffects[tonumber(eventId)])
 end
 
 function SpecialEventConfig.GetAllEvents()

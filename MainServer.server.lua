@@ -463,6 +463,7 @@ RevengeService:Init({
 SpecialEventService:Init({
     RemoteEventService = RemoteEventService,
     BossService = BossService,
+    PlayerStateService = PlayerStateService,
 })
 GMCommandService:Init({
     SpecialEventService = SpecialEventService,
@@ -485,6 +486,7 @@ PlayerStateService:BindSystems({
     SkinService = SkinService,
     GameAnalyticsService = GameAnalyticsService,
     TaskService = TaskService,
+    SpecialEventService = SpecialEventService,
 })
 AttributeUpgradeService:Init({
     RemoteEventService = RemoteEventService,

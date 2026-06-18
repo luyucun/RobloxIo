@@ -47,7 +47,8 @@
 - 由 `IO_BaseBalanceDraft.xlsx / 怪物基础信息草稿` 同步怪物定义，包含模板、权重、击杀积分、基础战斗数值、经验和动画配置。
 - 普通小怪随机池由 `TypeName = 普通小怪` 且 `SpawnWeight > 0` 的定义组成；当前为 `Monster001`-`Monster007`。
 6.`SpecialEventConfig`
-- 由 `IO_BaseBalanceDraft.xlsx / 特殊事件` 同步特殊事件定义，包含事件 ID、名字、权重、客户端场景路径、事件板文本名和持续时间。
+- 由 `IO_BaseBalanceDraft.xlsx / 特殊事件` 同步特殊事件定义，包含事件 ID、名字、权重、客户端场景路径、事件板文本名、持续时间、BossDefinitionId 和 BossCount。
+- V5.4 特殊事件效果以 `EventEffects` 静态配置维护：Hacker 最终移速翻倍，Lava 增加 `+100%` 经验加成，Heart 翻倍基础血量/基础回血，Diamond 击杀钻石翻倍并周期发钻石。
 - 特殊事件按服务器运行时每 10 分钟触发一次，排除最近 2 次事件后按权重抽取。
 7.兼容/归档配置：
 - `AttackProgressionConfig`：保留 Deprecated 标记和警告，当前主线不使用。
@@ -106,7 +107,8 @@
 - 只统计 `IsInArena = true` 且 `Alive = true` 的真实玩家，不统计 Studio Bot。
 16.`SpecialEventService`
 - 作为特殊事件服务端真值，维护当前事件、未来两场事件、最近两次事件排除列表，并通过 `SpecialEventSync` 下发给客户端。
-- V2.2 只做事件场景与事件板表现，不生成 Boss。
+- V5.4 特殊事件效果只在服务端生效，不新增 RemoteEvent；事件开始、GM 强制切换、事件过期时统一通知 `PlayerStateService` 刷新玩家派生属性。
+- 事件开始时按配置刷新 Boss；Diamond 事件期间由服务端每 5 秒给在线真实玩家发放 10 钻石，事件结束或切换后停止。
 17.`OnlineRewardService`
 - 管理 V4.3 本次在线会话奖励计时、状态同步、领取发奖、ClaimSuccessful 奖励弹框回传，以及 UnlockAll 开发者商品 `3599440996` 的收据处理；玩家离开后在线计时重置，不写入持久化会话进度。
 - 发经验奖励时走 `PlayerStateService:AddExperienceWithMultiplier`，其它奖励复用对应现有服务链路。
@@ -169,7 +171,7 @@
 11.自动战斗：
 `AutoBattleController -> 只寻找客户端本地普通小怪 -> Humanoid:MoveTo 直线靠近 -> 卡住检测 -> PathfindingService 路径绕路 -> 路径失败时短暂排除当前小怪并重新寻敌`
 12.特殊事件：
-`SpecialEventService:_step -> 按权重生成当前事件和未来两场 -> SpecialEventSync -> SpecialEventController 本地克隆 ReplicatedStorage/EventScene/<事件> 到 Workspace -> 更新 BattleSenceEventBoard / HomeEventBoard 倒计时 -> 事件结束后客户端清理本地克隆`
+`SpecialEventService:_step -> 按权重生成当前事件和未来两场 -> 应用服务端 EventEffects 并刷新 PlayerStateService 派生属性 -> 刷新事件 Boss -> SpecialEventSync -> SpecialEventController 本地克隆 ReplicatedStorage/EventScene/<事件> 到 Workspace -> 更新 BattleSenceEventBoard / HomeEventBoard 倒计时 -> 事件结束后清除服务端效果并由客户端清理本地克隆`
 13.在线奖励：
 `PlayerAdded -> OnlineRewardService:OnPlayerAdded 记录 StartedAt -> OnlineRewardStateSync -> OnlineRewardController 更新 Main.Right.Online 倒计时/红点和 Main.OnlineReward 奖励列表 -> RequestOnlineRewardClaim -> OnlineRewardService 校验在线秒数和已领取状态 -> 发放奖励 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful；UnlockAll 购买成功由 RebirthService.ProcessReceipt 委托 OnlineRewardService 解锁本轮全部奖励。`
 14.好友邀请提示：
@@ -208,6 +210,7 @@
 3.当前保留但主线未使用：
 - PickupFeedback
 - StudioBotCommand
+4.V5.4 特殊事件基础效果复用既有同步链路，不新增 RemoteEvent；移速、经验、血量、回血和钻石奖励均以服务端计算为准。
 
 九、客户端约束
 1.客户端不决定经验、等级、伤害、击杀、死亡、武器胜负、Buff 是否生效。

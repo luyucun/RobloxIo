@@ -75,6 +75,7 @@ PlayerStateService._subscriptionService = nil
 PlayerStateService._gameAnalyticsService = nil
 PlayerStateService._skinService = nil
 PlayerStateService._taskService = nil
+PlayerStateService._specialEventService = nil
 PlayerStateService._friendBonusRefreshToken = 0
 PlayerStateService._friendBonusLoopToken = 0
 PlayerStateService._onlineTimeLoopToken = 0
@@ -903,8 +904,10 @@ function PlayerStateService:_applyLevelDerivedState(state)
     self:_normalizeAttributeState(state)
     local finalStats = state.FinalStats or AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
     local baseMaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
+    local specialEventEffect = self:GetSpecialEventEffect(state.ActorRef)
+    local heartHealthMultiplier = math.max(1, tonumber(specialEventEffect and specialEventEffect.BaseMaxHealthMultiplier) or 1)
     state.BaseMaxHealth = baseMaxHealth
-    state.MaxHealth = math.max(1, math.floor((baseMaxHealth * (tonumber(finalStats.MaxHealthMultiplier) or 1)) + 0.5))
+    state.MaxHealth = math.max(1, math.floor((baseMaxHealth * heartHealthMultiplier * (tonumber(finalStats.MaxHealthMultiplier) or 1)) + 0.5))
     state.NextLevelExperience = GameConfig.GetNextLevelExperience(state.Level)
     state.BaseMoveSpeed = getMoveSpeedForLevel(state.Level)
     state.MoveSpeed = state.BaseMoveSpeed
@@ -1421,6 +1424,45 @@ function PlayerStateService:RecalculateDerivedStats(actor, options)
     return state
 end
 
+function PlayerStateService:GetSpecialEventEffect(actor)
+    if not ActorUtils.IsPlayer(actor) then
+        return nil
+    end
+    if self._specialEventService and self._specialEventService.GetActiveEffect then
+        return self._specialEventService:GetActiveEffect()
+    end
+    return nil
+end
+
+function PlayerStateService:GetBaseHealthRegenMultiplier(actor)
+    if not ActorUtils.IsPlayer(actor) then
+        return 1
+    end
+
+    local effect = self:GetSpecialEventEffect(actor)
+    return math.max(1, tonumber(effect and effect.BaseHealthRegenMultiplier) or 1)
+end
+
+function PlayerStateService:RefreshSpecialEventEffectForPlayer(player)
+    if not ActorUtils.IsPlayer(player) then
+        return false
+    end
+
+    self:RecalculateDerivedStats(player, {
+        preserveHealthRatio = true,
+    })
+    self:PushState(player)
+    return true
+end
+
+function PlayerStateService:RefreshSpecialEventEffectsForAll()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player and player.Parent then
+            self:RefreshSpecialEventEffectForPlayer(player)
+        end
+    end
+end
+
 function PlayerStateService:TryUpgradeAttribute(actor, attributeKey)
     local key = AttributeConfig.NormalizeKey(attributeKey)
     if not key then
@@ -1801,6 +1843,7 @@ function PlayerStateService:Init(dependencies)
     self._healthService = dependencies and dependencies.HealthService or nil
     self._subscriptionService = dependencies and dependencies.SubscriptionService or nil
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or nil
+    self._specialEventService = dependencies and dependencies.SpecialEventService or nil
     self._playerStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PlayerStateSync") or nil
     self._requestStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestPlayerStateSync") or nil
     self._requestOptionStateSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestOptionStateSync") or nil
@@ -1895,6 +1938,7 @@ function PlayerStateService:BindSystems(dependencies)
     self._healthService = dependencies and dependencies.HealthService or self._healthService
     self._subscriptionService = dependencies and dependencies.SubscriptionService or self._subscriptionService
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
+    self._specialEventService = dependencies and dependencies.SpecialEventService or self._specialEventService
     self._skinService = dependencies and dependencies.SkinService or self._skinService
     self._taskService = dependencies and dependencies.TaskService or self._taskService
 end
@@ -1921,6 +1965,7 @@ function PlayerStateService:OnPlayerAdded(player)
     local state = self:_getOrCreateState(player)
     state.LastOnlineClock = os.clock()
     self:CheckTitleUnlocks(player)
+    self:RefreshSpecialEventEffectForPlayer(player)
     if self._gameAnalyticsService and self._gameAnalyticsService.BeginOnboardingSurvivalCheck then
         self._gameAnalyticsService:BeginOnboardingSurvivalCheck(player, 60)
     end
@@ -2901,7 +2946,13 @@ function PlayerStateService:AwardPlayerKillReward(killer, target)
     if self._taskService and self._taskService.RecordPlayerKill then
         self._taskService:RecordPlayerKill(killer, 1)
     end
-    self:_addDiamondsWithoutPush(killer, GameConfig.ECONOMY.PlayerKillDiamondReward, {
+    local rewardAmount = GameConfig.ECONOMY.PlayerKillDiamondReward
+    local specialEventEffect = self:GetSpecialEventEffect(killer)
+    if specialEventEffect and specialEventEffect.PlayerKillDiamondMultiplier then
+        rewardAmount = math.max(0, math.floor((tonumber(rewardAmount) or 0) * math.max(1, tonumber(specialEventEffect.PlayerKillDiamondMultiplier) or 1) + 0.5))
+    end
+
+    self:_addDiamondsWithoutPush(killer, rewardAmount, {
         source = "player",
         productGroup = "combat",
         itemSku = "PlayerKillReward",
@@ -2922,7 +2973,8 @@ function PlayerStateService:GetExperienceMultiplier(actor)
     local friendBonus = math.max(0, tonumber(state.FriendExperienceBonus) or 0)
     local subscriptionBonus = self._subscriptionService and self._subscriptionService.GetExperienceBonus and self._subscriptionService:GetExperienceBonus(actor) or 0
     local attributeBonus = math.max(0, tonumber((self:GetAttributeFinalStats(actor) or {}).ExpGainBonus) or 0)
-    return math.max(1, 1 + rebirthBonus + extraBonus + potionBonus + friendBonus + attributeBonus + math.max(0, tonumber(subscriptionBonus) or 0))
+    local specialEventBonus = math.max(0, tonumber((self:GetSpecialEventEffect(actor) or {}).ExperienceBonus) or 0)
+    return math.max(1, 1 + rebirthBonus + extraBonus + potionBonus + friendBonus + attributeBonus + math.max(0, tonumber(subscriptionBonus) or 0) + specialEventBonus)
 end
 
 function PlayerStateService:GetActivePotions(actor)
@@ -3001,7 +3053,9 @@ function PlayerStateService:GetMoveSpeedMultiplier(actor)
     local potionMoveSpeedBonus = self:GetPotionMoveSpeedBonus(actor)
     local finalStats = self:GetAttributeFinalStats(actor) or {}
     local attributeMoveSpeedBonus = math.max(0, (tonumber(finalStats.MoveSpeedMultiplier) or 1) - 1)
-    return math.max(0.1, 1 + potionMoveSpeedBonus + attributeMoveSpeedBonus)
+    local specialEventEffect = self:GetSpecialEventEffect(actor)
+    local specialEventMoveSpeedMultiplier = math.max(1, tonumber(specialEventEffect and specialEventEffect.MoveSpeedMultiplier) or 1)
+    return math.max(0.1, (1 + potionMoveSpeedBonus + attributeMoveSpeedBonus) * specialEventMoveSpeedMultiplier)
 end
 
 function PlayerStateService:_countServerFriends(player)

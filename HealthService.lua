@@ -708,9 +708,15 @@ function HealthService:_tryRegeneratePlayer(player, now, config)
         return false
     end
 
-    local regenPercentPerSecond = 0
+    local baseRegenPercentPerSecond = math.max(0, tonumber(config.MaxHealthPercentPerTick) or 0) / math.max(0.1, tonumber(config.TickSeconds) or 1)
+    local regenPercentPerSecond = baseRegenPercentPerSecond
+    local specialEventMultiplier = 1
+    if self._playerStateService.GetBaseHealthRegenMultiplier then
+        specialEventMultiplier = math.max(1, tonumber(self._playerStateService:GetBaseHealthRegenMultiplier(player)) or 1)
+    end
+    regenPercentPerSecond = regenPercentPerSecond * specialEventMultiplier
     if self._playerStateService.GetHealthRegenPercentPerSecond then
-        regenPercentPerSecond = self._playerStateService:GetHealthRegenPercentPerSecond(player)
+        regenPercentPerSecond += math.max(0, tonumber(self._playerStateService:GetHealthRegenPercentPerSecond(player)) or 0)
     end
     if regenPercentPerSecond <= 0 then
         self:_removeRecoverEffect(player)
