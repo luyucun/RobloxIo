@@ -47,6 +47,7 @@ TaskService._requestInviteTaskProgressEvent = nil
 TaskService._shopRewardFeedbackEvent = nil
 TaskService._connections = {}
 TaskService._lastRequestClockByUserId = {}
+TaskService._claimLocksByUserId = {}
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -410,13 +411,56 @@ function TaskService:RecordLoginDay(player, nowTimestamp)
     return didChange
 end
 
-function TaskService:_grantReward(player, task)
-    local rewardType = tostring(task.RewardType or "")
-    local amount = math.max(1, math.floor(tonumber(task.Amount) or 1))
+local function getTaskRewards(task)
+    local result = {}
+    if type(task) ~= "table" then
+        return result
+    end
+
+    if type(task.Rewards) == "table" then
+        for _, reward in ipairs(task.Rewards) do
+            if type(reward) == "table" and tostring(reward.RewardType or "") ~= "" then
+                table.insert(result, {
+                    RewardType = tostring(reward.RewardType or ""),
+                    PotionId = math.max(0, math.floor(tonumber(reward.PotionId) or 0)),
+                    Amount = math.max(1, math.floor(tonumber(reward.Amount) or 1)),
+                    Icon = tostring(reward.Icon or ""),
+                })
+            end
+        end
+    end
+
+    if #result <= 0 and tostring(task.RewardType or "") ~= "" then
+        table.insert(result, {
+            RewardType = tostring(task.RewardType or ""),
+            PotionId = math.max(0, math.floor(tonumber(task.PotionId) or 0)),
+            Amount = math.max(1, math.floor(tonumber(task.Amount) or 1)),
+            Icon = tostring(task.Icon or ""),
+        })
+    end
+
+    return result
+end
+
+function TaskService:_canGrantSingleReward(reward)
+    local rewardType = tostring(reward and reward.RewardType or "")
+    if rewardType == "Diamonds" or rewardType == "WheelSpins" or rewardType == "Experience" then
+        return self._playerStateService ~= nil
+    elseif rewardType == "Potion" then
+        return math.max(0, math.floor(tonumber(reward and reward.PotionId) or 0)) > 0
+            and self._potionService ~= nil
+            and self._potionService.AddPotion ~= nil
+    end
+    return false
+end
+
+function TaskService:_grantSingleReward(player, task, reward, rewardIndex)
+    local rewardType = tostring(reward and reward.RewardType or "")
+    local amount = math.max(1, math.floor(tonumber(reward and reward.Amount) or 1))
     local context = {
         source = "task",
         productGroup = "Task",
-        itemSku = "Task_" .. tostring(task.TaskId),
+        itemSku = "Task_" .. tostring(task.TaskId) .. "_" .. tostring(math.max(1, math.floor(tonumber(rewardIndex) or 1))),
     }
 
     if rewardType == "Diamonds" then
@@ -432,10 +476,32 @@ function TaskService:_grantReward(player, task)
         if not (self._potionService and self._potionService.AddPotion) then
             return false, "PotionServiceUnavailable"
         end
-        return self._potionService:AddPotion(player, task.PotionId, amount, "Task")
+        return self._potionService:AddPotion(player, reward.PotionId, amount, "Task")
     end
 
     return false, "UnknownRewardType"
+end
+
+function TaskService:_grantReward(player, task)
+    local rewards = getTaskRewards(task)
+    if #rewards <= 0 then
+        return false, "NoReward"
+    end
+
+    for _, reward in ipairs(rewards) do
+        if not self:_canGrantSingleReward(reward) then
+            return false, "UnknownRewardType"
+        end
+    end
+
+    for index, reward in ipairs(rewards) do
+        local granted, reason = self:_grantSingleReward(player, task, reward, index)
+        if granted ~= true then
+            return false, reason or "GrantFailed"
+        end
+    end
+
+    return true
 end
 
 function TaskService:_fireRewardFeedback(player, task)
@@ -443,18 +509,16 @@ function TaskService:_fireRewardFeedback(player, task)
         return
     end
 
-    local reward = {
-        RewardType = task.RewardType,
-        PotionId = task.PotionId,
-        Amount = task.Amount,
-        Icon = task.Icon,
-    }
+    local rewards = getTaskRewards(task)
+    if #rewards <= 0 then
+        return
+    end
 
     self._shopRewardFeedbackEvent:FireClient(player, {
         eventType = "RewardGranted",
         source = "Task",
         reason = "TaskClaim",
-        rewards = ShopConfig.CopyRewardsForClient({ reward }),
+        rewards = ShopConfig.CopyRewardsForClient(rewards),
         closeDelay = 0.8,
         timestamp = os.clock(),
     })
@@ -478,6 +542,11 @@ function TaskService:ClaimTask(player, taskId)
     local period = getPeriodForTask(task)
     local periodState = period == TaskConfig.Period.Weekly and taskState.Weekly or taskState.Daily
     local taskKey = formatTaskKey(task.TaskId)
+    local claimLockKey = tostring(player.UserId) .. ":" .. tostring(period) .. ":" .. tostring(periodState.CycleKey or "") .. ":" .. taskKey
+    if self._claimLocksByUserId[claimLockKey] == true then
+        self:PushState(player)
+        return false, "ClaimInProgress"
+    end
     local progress = self:_getProgress(periodState, task.TaskId)
     if periodState.ClaimedByTaskId[taskKey] == true then
         self:PushState(player)
@@ -488,20 +557,51 @@ function TaskService:ClaimTask(player, taskId)
         return false, "NotComplete"
     end
 
-    local granted, reason = self:_grantReward(player, task)
+    self._claimLocksByUserId[claimLockKey] = true
+    periodState.ClaimedByTaskId[taskKey] = true
+    self:_markDirty(player)
+    self:PushState(player)
+
+    local grantOk, granted, reason = pcall(function()
+        return self:_grantReward(player, task)
+    end)
+    if grantOk ~= true then
+        local grantError = granted
+        granted = false
+        reason = "GrantError"
+        warn(string.format(
+            "[TaskService] Failed to grant task reward taskId=%s player=%s error=%s",
+            tostring(task.TaskId),
+            tostring(player and player.Name or ""),
+            tostring(grantError)
+        ))
+    end
     if granted ~= true then
+        local rollbackState = self:_getPlayerTaskState(player)
+        local rollbackPeriodState = rollbackState and (period == TaskConfig.Period.Weekly and rollbackState.Weekly or rollbackState.Daily)
+        if rollbackPeriodState and rollbackPeriodState.ClaimedByTaskId then
+            rollbackPeriodState.ClaimedByTaskId[taskKey] = nil
+        end
+        self._claimLocksByUserId[claimLockKey] = nil
+        self:_markDirty(player)
         self:PushState(player)
         return false, reason or "GrantFailed"
     end
 
-    periodState.ClaimedByTaskId[taskKey] = true
+    local confirmedState = self:_getPlayerTaskState(player)
+    local confirmedPeriodState = confirmedState and (period == TaskConfig.Period.Weekly and confirmedState.Weekly or confirmedState.Daily)
+    if confirmedPeriodState and confirmedPeriodState.ClaimedByTaskId then
+        confirmedPeriodState.ClaimedByTaskId[taskKey] = true
+    end
     self:_markDirty(player)
+    self._claimLocksByUserId[claimLockKey] = nil
     self:_trackTaskEvent(player, "TaskRewardClaimed", 1, {
         taskId = task.TaskId,
         taskType = task.TaskType,
         period = period,
         rewardType = task.RewardType,
         rewardAmount = task.Amount,
+        rewardCount = #(task.Rewards or {}),
         source = "task",
     })
     self:PushState(player)
@@ -600,6 +700,7 @@ function TaskService:Init(dependencies)
 
     disconnectAll(self._connections)
     self._lastRequestClockByUserId = {}
+    self._claimLocksByUserId = {}
 
     if self._requestStateSyncEvent then
         table.insert(self._connections, self._requestStateSyncEvent.OnServerEvent:Connect(function(player)
@@ -648,6 +749,11 @@ function TaskService:OnPlayerRemoving(player)
         for requestKey in pairs(self._lastRequestClockByUserId) do
             if string.sub(tostring(requestKey), 1, #prefix) == prefix then
                 self._lastRequestClockByUserId[requestKey] = nil
+            end
+        end
+        for lockKey in pairs(self._claimLocksByUserId) do
+            if string.sub(tostring(lockKey), 1, #prefix) == prefix then
+                self._claimLocksByUserId[lockKey] = nil
             end
         end
     end

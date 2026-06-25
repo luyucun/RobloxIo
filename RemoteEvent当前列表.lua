@@ -36,6 +36,12 @@ ReplicatedStorage
     - RequestTaskStateSync
     - RequestTaskClaim
     - RequestInviteTaskProgress
+    - PromptFavoritePlace
+    - FavoritePlacePromptStarted
+    - FavoritePlacePromptResult
+    - PromptActivityRsvp
+    - ActivityRsvpPromptStarted
+    - ActivityRsvpPromptResult
   - BattleEvents
     - PickupFeedback
     - ExperienceFeedback
@@ -165,14 +171,14 @@ FriendsRankingStateSync（S -> C）
 - 点击 `StarterGui.Main.InviteTips.InviteButton` 后直接使用 Roblox 官方 `SocialService:PromptGameInvite` 和 `ExperienceInviteOptions.InviteUser` 调起定向邀请；V5.3 仅在官方弹窗成功打开后额外发送 `RequestInviteTaskProgress`，用于每日邀请任务进度。
 - Studio GM `/testinvite` / `/invitetips` 会随机抽取当前玩家好友，构造 `studioInviteTipsTest = true` 的单行测试 payload，经本事件发给触发者，仅用于编辑器内验证 `Main.InviteTips` 弹窗。
 
-三-补4、每日/每周任务系统 RemoteEvent（V5.3）
+三-补4、每日/每周任务系统 RemoteEvent（V5.3 / V5.8）
 
 TaskStateSync（S -> C）
 发送方：`TaskService:PushState`
 接收方：`TaskController`
-用途：同步服务端权威的每日/每周任务进度、领取状态、重置倒计时和红点状态。
+用途：同步服务端权威的每日/每周任务进度、领取状态、短文本、多奖励、重置倒计时和红点状态。
 字段：
-- tasks.daily / tasks.weekly：任务数组，每项包含 taskId、period、taskType、target、progress、rewardType、potionId、amount、description、icon、isComplete、isClaimed、isClaimable
+- tasks.daily / tasks.weekly：任务数组，每项包含 taskId、period、taskType、target、progress、rewardType、potionId、amount、description、shortTitle、shortDescription、icon、rewards、isComplete、isClaimed、isClaimable；rewards 为 1 到多个奖励项数组，每项包含 rewardType、potionId、amount、icon。rewardType / potionId / amount / icon 仍保留为第一个奖励的兼容字段。
 - dailyCycleKey / weeklyCycleKey
 - dailyResetAt / weeklyResetAt
 - serverTimestamp
@@ -182,13 +188,13 @@ TaskStateSync（S -> C）
 RequestTaskStateSync（C -> S）
 发送方：`TaskController`
 接收方：`TaskService`
-用途：客户端初始化、打开 `Main.TaskBg` 或重建 UI 后请求任务状态刷新。
+用途：客户端初始化、打开 `Main.TaskBgNew` 或重建 UI 后请求任务状态刷新。
 字段：无。
 
 RequestTaskClaim（C -> S）
 发送方：`TaskController`
 接收方：`TaskService`
-用途：玩家点击任务条目的 `ClaimButton` 后请求领奖；服务端校验任务存在、周期有效、进度达标且未领取，再发放奖励。
+用途：玩家点击任务详情的 `ClaimButton` 后请求领奖；服务端校验任务存在、周期有效、进度达标且未领取，再逐项发放该任务的 rewards 奖励。
 字段：
 - taskId
 
@@ -197,6 +203,71 @@ RequestInviteTaskProgress（C -> S）
 接收方：`TaskService`
 用途：V5.2 邀请弹窗成功调用 Roblox 官方 `PromptGameInvite` 后，给邀请好友任务增加一次进度；服务端仍按任务目标上限截断。
 字段：无。
+
+三补、收藏游戏系统 Prompt RemoteEvent（V5.7）
+PromptFavoritePlace（S -> C）
+发送方：`FavoritePlacePromptService`
+接收方：`FavoritePlacePromptController`
+用途：玩家进服一段时间后请求客户端调起 Roblox 系统收藏游戏弹窗。客户端会先查询 `AvatarEditorService:GetFavoriteAsync(placeId, Enum.AvatarItemType.Asset)`，已收藏时直接回传 `AlreadyFavorite`，不再打开系统弹窗。
+字段：
+- requestId
+- placeId
+- timestamp
+
+FavoritePlacePromptStarted（C -> S）
+发送方：`FavoritePlacePromptController`
+接收方：`FavoritePlacePromptService`
+用途：客户端成功打开收藏游戏系统弹窗后通知服务端记录本日已提示。
+字段：
+- requestId
+- placeId
+- timestamp
+
+FavoritePlacePromptResult（C -> S）
+发送方：`FavoritePlacePromptController`
+接收方：`FavoritePlacePromptService`
+用途：客户端回传收藏游戏系统弹窗结果；`Success` 或 `AlreadyFavorite` 会使服务端写入并立即保存 `FavoritePromptState.HasFavorited = true`。
+字段：
+- requestId
+- placeId
+- result
+- timestamp
+
+三补、活动预约系统 Prompt RemoteEvent（V5.6）
+PromptActivityRsvp（S -> C）
+发送方：`ActivityRsvpPromptService`
+接收方：`ActivityRsvpPromptController`
+用途：玩家进服一段时间后请求客户端调起 Roblox 官方 Experience Event RSVP 系统弹窗。当前活动 ID 为 `1601744394573185602`，客户端会先查询 RSVP 状态，已 `Going` 时不再弹出取消预约弹窗。
+字段：
+- requestId
+- eventId
+- timestamp
+
+ActivityRsvpPromptStarted（C -> S）
+发送方：`ActivityRsvpPromptController`
+接收方：`ActivityRsvpPromptService`
+用途：客户端准备调用 `SocialService:PromptRsvpToEventAsync` 前回传当前 RSVP 状态，便于埋点和排查。
+字段：
+- requestId
+- eventId
+- currentStatus
+- statusError
+- timestamp
+
+ActivityRsvpPromptResult（C -> S）
+发送方：`ActivityRsvpPromptController`
+接收方：`ActivityRsvpPromptService`
+用途：客户端调用活动预约系统弹窗后的结果回传；服务端仅记录埋点，不信任客户端发奖或改核心状态。
+字段：
+- requestId
+- eventId
+- success
+- result
+- previousStatus
+- currentStatus
+- error
+- skipped
+- timestamp
 
 四、ArenaTransitionFeedback（S -> C）
 发送方：`ArenaService:_fireTransitionFeedback`

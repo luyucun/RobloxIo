@@ -747,12 +747,51 @@ def parse_task_reward(reward_value, amount_value) -> dict:
     return reward
 
 
+def read_task_reward_slots(worksheet, row_index: int, headers: dict[str, int]) -> list[dict]:
+    rewards = []
+    slot = 1
+    while True:
+        reward_header = f"奖励内容{slot}"
+        amount_header = f"数量{slot}"
+        icon_header = f"奖励图标{slot}"
+        if reward_header not in headers and amount_header not in headers and icon_header not in headers:
+            break
+
+        reward_value = cell_by_header(worksheet, row_index, headers, reward_header)
+        amount_value = cell_by_header(worksheet, row_index, headers, amount_header)
+        icon_value = cell_by_header(worksheet, row_index, headers, icon_header)
+        if not all(is_blank(value) for value in (reward_value, amount_value, icon_value)):
+            reward = parse_task_reward(reward_value, amount_value)
+            reward["Icon"] = "" if is_blank(icon_value) else str(icon_value).strip()
+            rewards.append(reward)
+        slot += 1
+
+    if rewards:
+        return rewards
+
+    reward_value = cell_by_header(worksheet, row_index, headers, "奖励内容")
+    amount_value = cell_by_header(worksheet, row_index, headers, "数量")
+    icon_value = cell_by_header(worksheet, row_index, headers, "奖励图标")
+    if all(is_blank(value) for value in (reward_value, amount_value, icon_value)):
+        return []
+
+    reward = parse_task_reward(reward_value, amount_value)
+    reward["Icon"] = "" if is_blank(icon_value) else str(icon_value).strip()
+    return [reward]
+
+
 def read_task_rows() -> list[dict]:
     workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
     worksheet = get_sheet(workbook, TASK_SHEET_NAME, len(workbook.worksheets) - 1)
     headers = build_header_map(worksheet, TASK_HEADER_ROW)
-    required_headers = ["任务id", "任务类型", "奖励内容", "数量", "任务描述", "奖励图标"]
+    required_headers = ["任务id", "任务类型", "任务描述"]
     missing_headers = [header for header in required_headers if header not in headers]
+    if not any(header.startswith("奖励内容") or header == "奖励内容" for header in headers):
+        missing_headers.append("奖励内容/奖励内容1")
+    if not any(header.startswith("数量") or header == "数量" for header in headers):
+        missing_headers.append("数量/数量1")
+    if not any(header.startswith("奖励图标") or header == "奖励图标" for header in headers):
+        missing_headers.append("奖励图标/奖励图标1")
     if missing_headers:
         raise RuntimeError("Missing task headers: " + ", ".join(missing_headers))
 
@@ -760,12 +799,12 @@ def read_task_rows() -> list[dict]:
     for row_index in range(TASK_DATA_START_ROW, worksheet.max_row + 1):
         task_id_value = cell_by_header(worksheet, row_index, headers, "任务id")
         task_type_id_value = cell_by_header(worksheet, row_index, headers, "任务类型")
-        reward_value = cell_by_header(worksheet, row_index, headers, "奖励内容")
-        amount_value = cell_by_header(worksheet, row_index, headers, "数量")
         description_value = cell_by_header(worksheet, row_index, headers, "任务描述")
-        icon_value = cell_by_header(worksheet, row_index, headers, "奖励图标")
+        short_title_value = cell_by_header(worksheet, row_index, headers, "任务短名称")
+        short_description_value = cell_by_header(worksheet, row_index, headers, "任务短描述")
+        rewards = read_task_reward_slots(worksheet, row_index, headers)
 
-        if all(is_blank(value) for value in (task_id_value, task_type_id_value, reward_value, amount_value, description_value, icon_value)):
+        if all(is_blank(value) for value in (task_id_value, task_type_id_value, description_value)) and not rewards:
             continue
 
         task_id = math_safe_int(task_id_value, 0)
@@ -774,21 +813,26 @@ def read_task_rows() -> list[dict]:
             raise RuntimeError(f"Invalid task row {row_index}: task id and type id are required")
         if task_type_id not in TASK_TYPE_BY_ID:
             raise RuntimeError(f"Unknown task type id {task_type_id} at row {row_index}")
+        if not rewards:
+            raise RuntimeError(f"Invalid task row {row_index}: at least one reward is required")
 
         period, task_type = TASK_TYPE_BY_ID[task_type_id]
         description = "" if is_blank(description_value) else str(description_value).strip()
-        reward = parse_task_reward(reward_value, amount_value)
+        primary_reward = rewards[0]
         row = {
             "TaskId": task_id,
             "Period": period,
             "TaskType": task_type,
             "TaskTypeId": task_type_id,
             "Target": parse_task_target(task_type, description),
-            "RewardType": reward["RewardType"],
-            "PotionId": math_safe_int(reward.get("PotionId"), 0),
-            "Amount": math_safe_int(reward.get("Amount"), 1),
+            "RewardType": primary_reward["RewardType"],
+            "PotionId": math_safe_int(primary_reward.get("PotionId"), 0),
+            "Amount": math_safe_int(primary_reward.get("Amount"), 1),
             "Description": description,
-            "Icon": "" if is_blank(icon_value) else str(icon_value).strip(),
+            "ShortTitle": "" if is_blank(short_title_value) else str(short_title_value).strip(),
+            "ShortDescription": "" if is_blank(short_description_value) else str(short_description_value).strip(),
+            "Icon": str(primary_reward.get("Icon") or ""),
+            "Rewards": rewards,
         }
         rows.append(row)
 
@@ -803,22 +847,39 @@ def build_task_generated_block(rows: list[dict]) -> str:
         "TaskConfig.Tasks = {",
     ]
     for row in rows:
-        fields = [
-            f"TaskId = {row['TaskId']}",
-            f"Period = {lua_value(row['Period'])}",
-            f"TaskType = {lua_value(row['TaskType'])}",
-            f"TaskTypeId = {row['TaskTypeId']}",
-            f"Target = {row['Target']}",
-            f"RewardType = {lua_value(row['RewardType'])}",
-        ]
-        if row["PotionId"] > 0:
-            fields.append(f"PotionId = {row['PotionId']}")
-        fields.extend([
-            f"Amount = {row['Amount']}",
-            f"Description = {lua_value(row['Description'])}",
-            f"Icon = {lua_value(row['Icon'])}",
+        lines.append("    {")
+        lines.extend([
+            f"        TaskId = {row['TaskId']},",
+            f"        Period = {lua_value(row['Period'])},",
+            f"        TaskType = {lua_value(row['TaskType'])},",
+            f"        TaskTypeId = {row['TaskTypeId']},",
+            f"        Target = {row['Target']},",
+            f"        RewardType = {lua_value(row['RewardType'])},",
         ])
-        lines.append("    { " + ", ".join(fields) + " },")
+        if row["PotionId"] > 0:
+            lines.append(f"        PotionId = {row['PotionId']},")
+        lines.extend([
+            f"        Amount = {row['Amount']},",
+            f"        Description = {lua_value(row['Description'])},",
+            f"        ShortTitle = {lua_value(row['ShortTitle'])},",
+            f"        ShortDescription = {lua_value(row['ShortDescription'])},",
+            f"        Icon = {lua_value(row['Icon'])},",
+            "        Rewards = {",
+        ])
+        for reward in row["Rewards"]:
+            reward_fields = [
+                f"RewardType = {lua_value(reward['RewardType'])}",
+                f"Amount = {math_safe_int(reward.get('Amount'), 1)}",
+                f"Icon = {lua_value(reward.get('Icon', ''))}",
+            ]
+            potion_id = math_safe_int(reward.get("PotionId"), 0)
+            if potion_id > 0:
+                reward_fields.insert(1, f"PotionId = {potion_id}")
+            lines.append("            { " + ", ".join(reward_fields) + " },")
+        lines.extend([
+            "        },",
+            "    },",
+        ])
     lines.extend(["}", TASK_END_MARKER])
     return "\n".join(lines)
 
@@ -832,6 +893,8 @@ def read_special_event_rows() -> list[dict]:
         "特殊事件名字",
         "特殊事件权重",
         "特殊事件路径",
+        "事件图标",
+        "事件效果描述",
         "特殊事件文本名字",
         "特殊事件持续时间（秒）",
         "出现的boss",
@@ -847,6 +910,8 @@ def read_special_event_rows() -> list[dict]:
         event_name_value = cell_by_header(worksheet, row_index, headers, "特殊事件名字")
         weight_value = cell_by_header(worksheet, row_index, headers, "特殊事件权重")
         scene_path_value = cell_by_header(worksheet, row_index, headers, "特殊事件路径")
+        icon_image_value = cell_by_header(worksheet, row_index, headers, "事件图标")
+        effect_description_value = cell_by_header(worksheet, row_index, headers, "事件效果描述")
         text_label_value = cell_by_header(worksheet, row_index, headers, "特殊事件文本名字")
         duration_value = cell_by_header(worksheet, row_index, headers, "特殊事件持续时间（秒）")
         boss_definition_value = cell_by_header(worksheet, row_index, headers, "出现的boss")
@@ -857,6 +922,8 @@ def read_special_event_rows() -> list[dict]:
             event_name_value,
             weight_value,
             scene_path_value,
+            icon_image_value,
+            effect_description_value,
             text_label_value,
             duration_value,
             boss_definition_value,
@@ -877,6 +944,8 @@ def read_special_event_rows() -> list[dict]:
             "Name": "" if is_blank(event_name_value) else str(event_name_value).strip(),
             "Weight": math_safe_float(weight_value, 0),
             "ScenePath": "" if is_blank(scene_path_value) else str(scene_path_value).strip(),
+            "IconImage": "" if is_blank(icon_image_value) else str(icon_image_value).strip(),
+            "EffectDescription": "" if is_blank(effect_description_value) else str(effect_description_value).strip(),
             "TextLabelName": "" if is_blank(text_label_value) else str(text_label_value).strip(),
             "DurationSeconds": math_safe_int(duration_value, 0),
             "BossDefinitionId": boss_definition_id,
@@ -903,6 +972,8 @@ def build_special_event_generated_block(rows: list[dict]) -> str:
             f"        Name = {lua_value(row['Name'])},",
             f"        Weight = {lua_number(row['Weight'])},",
             f"        ScenePath = {lua_value(row['ScenePath'])},",
+            f"        IconImage = {lua_value(row['IconImage'])},",
+            f"        EffectDescription = {lua_value(row['EffectDescription'])},",
             f"        TextLabelName = {lua_value(row['TextLabelName'])},",
             f"        DurationSeconds = {row['DurationSeconds']},",
             f"        BossDefinitionId = {lua_value(row['BossDefinitionId'])},",

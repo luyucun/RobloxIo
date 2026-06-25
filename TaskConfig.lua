@@ -34,16 +34,161 @@ TaskConfig.Source = {
 -- BEGIN GENERATED TASK ROWS
 -- Source: IO_BaseBalanceDraft.xlsx / 任务系统数据表. Update via tools/SyncCodeConfigFromWorkbook.py.
 TaskConfig.Tasks = {
-    { TaskId = 101, Period = 'Daily', TaskType = 'OnlineSeconds', TaskTypeId = 1001, Target = 900, RewardType = 'Diamonds', Amount = 1000, Description = '今日累计在线时长达到15分钟', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 102, Period = 'Daily', TaskType = 'PlayerKills', TaskTypeId = 1002, Target = 5, RewardType = 'Potion', PotionId = 1002, Amount = 2, Description = '今日累计击杀5名其他玩家', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 103, Period = 'Daily', TaskType = 'WheelSpinsUsed', TaskTypeId = 1004, Target = 5, RewardType = 'Diamonds', Amount = 1000, Description = '今日累计使用5次转盘', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 104, Period = 'Daily', TaskType = 'InviteFriend', TaskTypeId = 1003, Target = 1, RewardType = 'Potion', PotionId = 1003, Amount = 1, Description = '今日累计邀请一名好友加入游戏', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 201, Period = 'Weekly', TaskType = 'OnlineSeconds', TaskTypeId = 2001, Target = 3600, RewardType = 'Diamonds', Amount = 5000, Description = '本周累计在线达到1小时', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 202, Period = 'Weekly', TaskType = 'OnlineSeconds', TaskTypeId = 2001, Target = 10800, RewardType = 'Diamonds', Amount = 5000, Description = '本周累计在线达到3小时', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 203, Period = 'Weekly', TaskType = 'PlayerKills', TaskTypeId = 2002, Target = 50, RewardType = 'Diamonds', Amount = 5000, Description = '本周累计击杀玩家50人', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 204, Period = 'Weekly', TaskType = 'PlayerKills', TaskTypeId = 2002, Target = 100, RewardType = 'Diamonds', Amount = 5000, Description = '本周累计击杀玩家100人', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 205, Period = 'Weekly', TaskType = 'DiamondsEarned', TaskTypeId = 2003, Target = 10000, RewardType = 'Diamonds', Amount = 5000, Description = '本周累计获得钻石10000点', Icon = 'rbxassetid://124553019062246' },
-    { TaskId = 206, Period = 'Weekly', TaskType = 'LoginDays', TaskTypeId = 2004, Target = 7, RewardType = 'Diamonds', Amount = 5000, Description = '累计登录7天', Icon = 'rbxassetid://124553019062246' },
+    {
+        TaskId = 101,
+        Period = 'Daily',
+        TaskType = 'OnlineSeconds',
+        TaskTypeId = 1001,
+        Target = 900,
+        RewardType = 'Diamonds',
+        Amount = 500,
+        Description = 'Play for 15 minutes today',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务短描述',
+        Icon = 'rbxassetid://89590364394067',
+        Rewards = {
+            { RewardType = 'Diamonds', Amount = 500, Icon = 'rbxassetid://89590364394067' },
+            { RewardType = 'Diamonds', Amount = 500, Icon = 'rbxassetid://89590364394067' },
+        },
+    },
+    {
+        TaskId = 102,
+        Period = 'Daily',
+        TaskType = 'PlayerKills',
+        TaskTypeId = 1002,
+        Target = 5,
+        RewardType = 'Potion',
+        PotionId = 1002,
+        Amount = 2,
+        Description = 'Defeat 5 players today',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务',
+        Icon = 'rbxassetid://106498508152369',
+        Rewards = {
+            { RewardType = 'Potion', PotionId = 1002, Amount = 2, Icon = 'rbxassetid://106498508152369' },
+            { RewardType = 'Potion', PotionId = 1002, Amount = 2, Icon = 'rbxassetid://106498508152369' },
+        },
+    },
+    {
+        TaskId = 103,
+        Period = 'Daily',
+        TaskType = 'WheelSpinsUsed',
+        TaskTypeId = 1004,
+        Target = 5,
+        RewardType = 'Diamonds',
+        Amount = 500,
+        Description = 'Spin the wheel 5 times today',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务',
+        Icon = 'rbxassetid://89590364394067',
+        Rewards = {
+            { RewardType = 'Diamonds', Amount = 500, Icon = 'rbxassetid://89590364394067' },
+            { RewardType = 'Diamonds', Amount = 500, Icon = 'rbxassetid://89590364394067' },
+        },
+    },
+    {
+        TaskId = 104,
+        Period = 'Daily',
+        TaskType = 'InviteFriend',
+        TaskTypeId = 1003,
+        Target = 1,
+        RewardType = 'Potion',
+        PotionId = 1003,
+        Amount = 1,
+        Description = 'Invite 1 friend to join the game',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务',
+        Icon = 'rbxassetid://100154459165982',
+        Rewards = {
+            { RewardType = 'Potion', PotionId = 1003, Amount = 1, Icon = 'rbxassetid://100154459165982' },
+            { RewardType = 'Potion', PotionId = 1003, Amount = 1, Icon = 'rbxassetid://100154459165982' },
+        },
+    },
+    {
+        TaskId = 201,
+        Period = 'Weekly',
+        TaskType = 'OnlineSeconds',
+        TaskTypeId = 2001,
+        Target = 3600,
+        RewardType = 'Diamonds',
+        Amount = 1000,
+        Description = 'Play for 1 hour this week',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务',
+        Icon = 'rbxassetid://89590364394067',
+        Rewards = {
+            { RewardType = 'Diamonds', Amount = 1000, Icon = 'rbxassetid://89590364394067' },
+            { RewardType = 'Diamonds', Amount = 1000, Icon = 'rbxassetid://89590364394067' },
+        },
+    },
+    {
+        TaskId = 202,
+        Period = 'Weekly',
+        TaskType = 'OnlineSeconds',
+        TaskTypeId = 2001,
+        Target = 10800,
+        RewardType = 'Diamonds',
+        Amount = 3000,
+        Description = 'Play for 3 hours this week',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务',
+        Icon = 'rbxassetid://89590364394067',
+        Rewards = {
+            { RewardType = 'Diamonds', Amount = 3000, Icon = 'rbxassetid://89590364394067' },
+            { RewardType = 'Diamonds', Amount = 3000, Icon = 'rbxassetid://89590364394067' },
+        },
+    },
+    {
+        TaskId = 203,
+        Period = 'Weekly',
+        TaskType = 'PlayerKills',
+        TaskTypeId = 2002,
+        Target = 50,
+        RewardType = 'Diamonds',
+        Amount = 1000,
+        Description = 'Defeat 50 players this week',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务',
+        Icon = 'rbxassetid://89590364394067',
+        Rewards = {
+            { RewardType = 'Diamonds', Amount = 1000, Icon = 'rbxassetid://89590364394067' },
+            { RewardType = 'Diamonds', Amount = 1000, Icon = 'rbxassetid://89590364394067' },
+        },
+    },
+    {
+        TaskId = 204,
+        Period = 'Weekly',
+        TaskType = 'PlayerKills',
+        TaskTypeId = 2002,
+        Target = 100,
+        RewardType = 'Diamonds',
+        Amount = 3000,
+        Description = 'Defeat 100 players this week',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务',
+        Icon = 'rbxassetid://89590364394067',
+        Rewards = {
+            { RewardType = 'Diamonds', Amount = 3000, Icon = 'rbxassetid://89590364394067' },
+            { RewardType = 'Diamonds', Amount = 3000, Icon = 'rbxassetid://89590364394067' },
+        },
+    },
+    {
+        TaskId = 205,
+        Period = 'Weekly',
+        TaskType = 'LoginDays',
+        TaskTypeId = 2004,
+        Target = 7,
+        RewardType = 'Diamonds',
+        Amount = 5000,
+        Description = 'Log in for 7 days',
+        ShortTitle = '测试任务',
+        ShortDescription = '测试任务',
+        Icon = 'rbxassetid://89590364394067',
+        Rewards = {
+            { RewardType = 'Diamonds', Amount = 5000, Icon = 'rbxassetid://89590364394067' },
+            { RewardType = 'Diamonds', Amount = 5000, Icon = 'rbxassetid://89590364394067' },
+        },
+    },
 }
 -- END GENERATED TASK ROWS
 
@@ -58,10 +203,71 @@ local function normalizePeriod(period)
     return TaskConfig.Period.Daily
 end
 
+local function copyReward(reward)
+    if type(reward) ~= "table" then
+        return nil
+    end
+
+    local copied = {
+        RewardType = tostring(reward.RewardType or reward.rewardType or ""),
+        PotionId = math.max(0, math.floor(tonumber(reward.PotionId or reward.potionId) or 0)),
+        Amount = math.max(1, math.floor(tonumber(reward.Amount or reward.amount) or 1)),
+        Icon = tostring(reward.Icon or reward.icon or ""),
+    }
+    if copied.RewardType == "" then
+        return nil
+    end
+    return copied
+end
+
+local function buildRewards(task)
+    local result = {}
+    if type(task) ~= "table" then
+        return result
+    end
+
+    local sourceRewards = task.Rewards or task.rewards
+    if type(sourceRewards) == "table" then
+        for _, reward in ipairs(sourceRewards) do
+            local copied = copyReward(reward)
+            if copied then
+                table.insert(result, copied)
+            end
+        end
+    end
+
+    if #result <= 0 then
+        local fallback = copyReward({
+            RewardType = task.RewardType or task.rewardType,
+            PotionId = task.PotionId or task.potionId,
+            Amount = task.Amount or task.amount,
+            Icon = task.Icon or task.icon,
+        })
+        if fallback then
+            table.insert(result, fallback)
+        end
+    end
+
+    return result
+end
+
 local function copyTask(task)
     if type(task) ~= "table" then
         return nil
     end
+
+    local rewards = buildRewards(task)
+    local primaryReward = rewards[1] or copyReward({
+        RewardType = task.RewardType or task.rewardType,
+        PotionId = task.PotionId or task.potionId,
+        Amount = task.Amount or task.amount,
+        Icon = task.Icon or task.icon,
+    }) or {
+        RewardType = "",
+        PotionId = 0,
+        Amount = 1,
+        Icon = "",
+    }
 
     return {
         TaskId = math.max(0, math.floor(tonumber(task.TaskId or task.taskId) or 0)),
@@ -69,11 +275,14 @@ local function copyTask(task)
         TaskType = tostring(task.TaskType or task.taskType or ""),
         TaskTypeId = math.max(0, math.floor(tonumber(task.TaskTypeId or task.taskTypeId) or 0)),
         Target = math.max(1, math.floor(tonumber(task.Target or task.target) or 1)),
-        RewardType = tostring(task.RewardType or task.rewardType or ""),
-        PotionId = math.max(0, math.floor(tonumber(task.PotionId or task.potionId) or 0)),
-        Amount = math.max(1, math.floor(tonumber(task.Amount or task.amount) or 1)),
+        RewardType = primaryReward.RewardType,
+        PotionId = primaryReward.PotionId,
+        Amount = primaryReward.Amount,
         Description = tostring(task.Description or task.description or ""),
-        Icon = tostring(task.Icon or task.icon or ""),
+        ShortTitle = tostring(task.ShortTitle or task.shortTitle or ""),
+        ShortDescription = tostring(task.ShortDescription or task.shortDescription or ""),
+        Icon = primaryReward.Icon,
+        Rewards = rewards,
     }
 end
 
@@ -140,6 +349,16 @@ function TaskConfig.CopyTaskForClient(task)
         return nil
     end
 
+    local rewards = {}
+    for _, reward in ipairs(copied.Rewards or {}) do
+        table.insert(rewards, {
+            rewardType = reward.RewardType,
+            potionId = reward.PotionId,
+            amount = reward.Amount,
+            icon = reward.Icon,
+        })
+    end
+
     return {
         taskId = copied.TaskId,
         period = copied.Period,
@@ -150,7 +369,10 @@ function TaskConfig.CopyTaskForClient(task)
         potionId = copied.PotionId,
         amount = copied.Amount,
         description = copied.Description,
+        shortTitle = copied.ShortTitle,
+        shortDescription = copied.ShortDescription,
         icon = copied.Icon,
+        rewards = rewards,
     }
 end
 

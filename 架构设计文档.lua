@@ -41,13 +41,17 @@
 - `ResolveLoadoutForLevel(level)` 负责等级到武器档位和数量的映射。
 3.`RemoteNames`
 - 集中声明 RemoteEvent 文件夹和事件名。
+3.1.`GameConfig.ACTIVITY_RSVP_PROMPT`
+- 配置 Roblox Experience Event 活动预约系统弹窗，当前 `EventId = "1601744394573185602"`，玩家进服 90 秒后由服务端请求客户端调起官方 RSVP Prompt；客户端会先查询 RSVP 状态，已 `Going` 的玩家不再弹出取消预约弹窗。
 4.`OnlineRewardConfig`
 - 由 `IO_BaseBalanceDraft.xlsx / 在线奖励` 同步在线奖励定义，包含奖励类型、数量、图标和本轮所需在线秒数；当前通过 `tools/SyncCodeConfigFromWorkbook.py` 与兑换码配置一起刷新。
+4.1.`SevenDayLoginRewardConfig`
+- 由 `IO_BaseBalanceDraft.xlsx / 七日登录奖励` 同步七日登录奖励定义；第一轮第 2 天为皮肤 `10007`，第 3 天为 `3000` 钻石，第二轮及之后继续使用重复轮配置。
 5.`MonsterCatalog`
 - 由 `IO_BaseBalanceDraft.xlsx / 怪物基础信息草稿` 同步怪物定义，包含模板、权重、击杀积分、基础战斗数值、经验和动画配置。
 - 普通小怪随机池由 `TypeName = 普通小怪` 且 `SpawnWeight > 0` 的定义组成；当前为 `Monster001`-`Monster007`。
 6.`SpecialEventConfig`
-- 由 `IO_BaseBalanceDraft.xlsx / 特殊事件` 同步特殊事件定义，包含事件 ID、名字、权重、客户端场景路径、事件板文本名、持续时间、BossDefinitionId 和 BossCount。
+- 由 `IO_BaseBalanceDraft.xlsx / 特殊事件` 同步特殊事件定义，包含事件 ID、名字、权重、客户端场景路径、事件图标、事件效果描述、事件板文本名、持续时间、BossDefinitionId 和 BossCount。
 - V5.4 特殊事件效果以 `EventEffects` 静态配置维护：Hacker 最终移速翻倍，Lava 增加 `+100%` 经验加成，Heart 翻倍基础血量/基础回血，Diamond 击杀钻石翻倍并周期发钻石。
 - 特殊事件按服务器运行时每 10 分钟触发一次，排除最近 2 次事件后按权重抽取。
 7.兼容/归档配置：
@@ -109,14 +113,21 @@
 - 作为特殊事件服务端真值，维护当前事件、未来两场事件、最近两次事件排除列表，并通过 `SpecialEventSync` 下发给客户端。
 - V5.4 特殊事件效果只在服务端生效，不新增 RemoteEvent；事件开始、GM 强制切换、事件过期时统一通知 `PlayerStateService` 刷新玩家派生属性。
 - 事件开始时按配置刷新 Boss；Diamond 事件期间由服务端每 5 秒给在线真实玩家发放 10 钻石，事件结束或切换后停止。
+- V5.5 同步 payload 会附带事件图标和效果描述，用于客户端 `EventDescribe`、`EventStart` 和玩家头顶事件图标表现；头顶事件图标节点为 `OverheadHealthBar.Root.BarBackground.Event`，与护盾 `Shield` 同级。
 17.`OnlineRewardService`
 - 管理 V4.3 本次在线会话奖励计时、状态同步、领取发奖、ClaimSuccessful 奖励弹框回传，以及 UnlockAll 开发者商品 `3599440996` 的收据处理；玩家离开后在线计时重置，不写入持久化会话进度。
 - 发经验奖励时走 `PlayerStateService:AddExperienceWithMultiplier`，其它奖励复用对应现有服务链路。
 18.`TaskService`
 - 管理 V5.3 每日/每周任务，任务配置由 `IO_BaseBalanceDraft.xlsx / 任务系统数据表` 同步生成 `TaskConfig`；每日按 UTC 0 点重置，每周按周一 UTC 0 点重置。
+- 任务领取必须由服务端做幂等保护：`RequestTaskClaim` 只携带 taskId，`TaskService` 对同玩家同周期同任务加领取锁，先写入 `ClaimedByTaskId` 再发奖；重复请求只同步状态，不重复发奖。
 - 服务端权威维护 `state.TaskState` 的周期 key、progress、claimed、weekly login days 和 completed reported；监听在线时长、真实玩家击杀、转盘使用、钻石获得、登录天数、邀请弹窗打开等进度来源。
 - 领奖时校验任务存在、周期有效、进度达标且未领取，再发放钻石、转盘次数、经验或药水；奖励反馈复用 `ShopRewardFeedback -> Main.ClaimSuccessful`，任务来源使用 0.8 秒后可点击关闭。
-19.归档服务：
+19.`ActivityRsvpPromptService`
+- 管理 Experience Event 活动预约系统弹窗触发：玩家加入后按 `GameConfig.ACTIVITY_RSVP_PROMPT.DelaySeconds` 延迟发送 `PromptActivityRsvp`，客户端执行 Roblox 官方 `SocialService:PromptRsvpToEventAsync`，并通过 `ActivityRsvpPromptStarted` / `ActivityRsvpPromptResult` 回传埋点结果；本次会话每名玩家最多请求一次，不新增自定义 UI。
+20.`FavoritePlacePromptService`
+- 管理 Roblox 系统收藏游戏弹窗触发：服务端按 `GameConfig.FAVORITE_PROMPT.DelaySeconds` 延迟发送 `PromptFavoritePlace`；客户端在打开系统收藏弹窗前先调用 `AvatarEditorService:GetFavoriteAsync(placeId, Enum.AvatarItemType.Asset)` 查询平台真实收藏状态，已收藏时直接回传 `AlreadyFavorite` 并跳过弹窗。服务端收到 `Success` 或 `AlreadyFavorite` 后写入 `FavoritePromptState.HasFavorited = true` 并立即保存，避免旧存档状态导致已收藏玩家重复弹窗。
+- `GameConfig.FAVORITE_PROMPT.DebugEnabled` 默认关闭；排查时打开可打印 `_shouldPromptPlayer` 的 `HasFavorited` / `LastPromptUtcDay` 判断、客户端结果回传和 `SavePlayerNow` 保存结果。
+21.归档服务：
 - `PickupService`：空实现，当前主线不初始化。
 
 五、数据与调试安全规则
@@ -171,13 +182,17 @@
 11.自动战斗：
 `AutoBattleController -> 只寻找客户端本地普通小怪 -> Humanoid:MoveTo 直线靠近 -> 卡住检测 -> PathfindingService 路径绕路 -> 路径失败时短暂排除当前小怪并重新寻敌`
 12.特殊事件：
-`SpecialEventService:_step -> 按权重生成当前事件和未来两场 -> 应用服务端 EventEffects 并刷新 PlayerStateService 派生属性 -> 刷新事件 Boss -> SpecialEventSync -> SpecialEventController 本地克隆 ReplicatedStorage/EventScene/<事件> 到 Workspace -> 更新 BattleSenceEventBoard / HomeEventBoard 倒计时 -> 事件结束后清除服务端效果并由客户端清理本地克隆`
+`SpecialEventService:_step -> 按权重生成当前事件和未来两场 -> 应用服务端 EventEffects 并刷新 PlayerStateService 派生属性与战场内头顶事件图标 -> 刷新事件 Boss -> SpecialEventSync -> SpecialEventController 本地克隆 ReplicatedStorage/EventScene/<事件> 到 Workspace -> 更新 BattleSenceEventBoard / HomeEventBoard 倒计时 -> 显示 Main.EventDescribe 图标/倒计时/效果描述并播放 Main.EventStart 开始弹窗 -> 事件结束后清除服务端效果并由客户端清理本地克隆和事件 UI`
 13.在线奖励：
 `PlayerAdded -> OnlineRewardService:OnPlayerAdded 记录 StartedAt -> OnlineRewardStateSync -> OnlineRewardController 更新 Main.Right.Online 倒计时/红点和 Main.OnlineReward 奖励列表 -> RequestOnlineRewardClaim -> OnlineRewardService 校验在线秒数和已领取状态 -> 发放奖励 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful；UnlockAll 购买成功由 RebirthService.ProcessReceipt 委托 OnlineRewardService 解锁本轮全部奖励。`
+13.1.七日登录奖励：
+`PlayerAdded -> SevenDayLoginRewardService:OnPlayerAdded 等待玩家数据加载 -> SevenDayLoginRewardStateSync(hasClaimableReward) -> SevenDayLoginRewardController 显示 TopRight.SevenDays 红点，并在本次会话内对新的 cycleId/dayIndex 可领奖励自动打开 Main.Sevendays 或 Main.SevendaysRepeat 一次 -> RequestSevenDayLoginRewardClaim -> SevenDayLoginRewardService 服务端校验并发奖。`
 14.好友邀请提示：
 `InviteTipsController -> 玩家在线 2 分钟后请求 FriendsRankingStateSync -> 客户端刷新 GetFriendsOnlineAsync -> 从“曾玩过本体验且当前在线”的好友中按 highestLevelReached 选择最高者 -> 显示 PlayerGui.Main.InviteTips 5 秒 -> 点击 InviteButton 后用 ExperienceInviteOptions.InviteUser 调起 SocialService:PromptGameInvite；本次登录已弹过的好友不再重复弹出，之后每 5 分钟继续检查剩余候选。`
-15.每日/每周任务：
-`TaskConfig -> TaskService 初始化并规范化 PlayerState.TaskState -> PlayerStateService/WheelService/InviteTipsController 等来源上报进度 -> TaskStateSync -> TaskController 渲染 Main.Right.Daily 红点、Main.TaskBg 列表和重置倒计时 -> RequestTaskClaim -> TaskService 校验并发奖 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful。Studio GM /taskprogress、/taskcomplete、/taskreset 仅在 RunService:IsStudio() 下可用。`
+15.活动预约提示：
+`PlayerAdded -> ActivityRsvpPromptService 延迟 90 秒 -> PromptActivityRsvp -> ActivityRsvpPromptController 查询 SocialService:GetEventRsvpStatusAsync("1601744394573185602") -> 未 Going 时调用 SocialService:PromptRsvpToEventAsync -> ActivityRsvpPromptStarted / ActivityRsvpPromptResult 回传服务端埋点；已 Going 时直接回传 AlreadyGoing 且不弹系统取消预约弹窗。`
+16.每日/每周任务：
+`TaskConfig -> TaskService 初始化并规范化 PlayerState.TaskState -> PlayerStateService/WheelService/InviteTipsController 等来源上报进度 -> TaskStateSync(shortTitle/shortDescription/rewards[]) -> TaskController 渲染 Main.Right.Daily 红点、Main.TaskBgNew 左侧任务列表、右侧任务详情和重置倒计时 -> RequestTaskClaim -> TaskService 校验并逐项发放奖励 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful。Studio GM /taskprogress、/taskcomplete、/taskreset 仅在 RunService:IsStudio() 下可用。`
 
 八、RemoteEvent
 1.SystemEvents：
@@ -198,6 +213,9 @@
 - RequestTaskStateSync
 - RequestTaskClaim
 - RequestInviteTaskProgress
+- PromptActivityRsvp
+- ActivityRsvpPromptStarted
+- ActivityRsvpPromptResult
 2.BattleEvents：
 - PickupFeedback
 - ExperienceFeedback
@@ -210,16 +228,16 @@
 3.当前保留但主线未使用：
 - PickupFeedback
 - StudioBotCommand
-4.V5.4 特殊事件基础效果复用既有同步链路，不新增 RemoteEvent；移速、经验、血量、回血和钻石奖励均以服务端计算为准。
+4.V5.4/V5.5 特殊事件基础效果和 UI 表现复用既有 `SpecialEventSync` 链路，不新增 RemoteEvent；移速、经验、血量、回血和钻石奖励均以服务端计算为准，客户端只消费事件图标、效果描述和倒计时表现。
 
 九、客户端约束
 1.客户端不决定经验、等级、伤害、击杀、死亡、武器胜负、Buff 是否生效。
 2.正式 HUD / 提示 / 面板 UI 应放在 StarterGui，客户端控制器只绑定既有节点、更新数据和播放动画。
 3.功能型面板打开时统一走模态 UI：隐藏 `PlayerGui.Main` 下除当前面板外的其他同级 `GuiObject`，开启 `Lighting.Blur`，关闭动效结束后恢复原始显示状态和 Blur 状态；打开和关闭都必须播放面板动效。
-4.`PlayerStateService` 负责角色头顶血条的创建和同步，只有 `Alive = true` 且 `IsInArena = true` 时显示；准备区、死亡或退出战斗状态时隐藏。
+4.`PlayerStateService` 负责角色头顶血条的创建和同步，血条主体和特殊事件图标都只有 `Alive = true` 且 `IsInArena = true` 时显示；准备区、大厅、死亡或退出战斗状态时隐藏 `OverheadHealthBar.Root.BarBackground.Event`。
 5.当前已实现客户端控制器为 `WeaponFxController`，负责隐藏真实玩家服务端武器视觉、按 `ownerUserId` 为本地和远端玩家创建本地视觉武器并按同步数据绕对应玩家旋转。
 6.`JoinGameController` 负责监听 `PortalJoinPrompt(Show/Hide)`，显示/隐藏 `StarterGui/Main/JoinGame`；显示时隐藏 `PlayerGui.Main` 下除 `JoinGame` 外的同级 UI 并开启 `Lighting.Blur`，关闭时恢复；绑定 `Join` 和 `Wait` 按钮缩放反馈，并在点击 Join/Wait 时分别发送 `RequestJoinBattle(Join/Cancel)`。服务端在 `PortalJoinPrompt(Show)` 后保留 8 秒入场确认资格，避免玩家轻微离开 Portal 范围后点击 Join 被误拦截。 `Join` 只有在服务端真正传送成功后才会关闭弹窗，失败则保留当前弹窗状态。
-7.`SpecialEventController` 负责监听 `SpecialEventSync`，按服务端状态在客户端本地复制/移除特殊事件场景，并同步 `Workspace.Map2.BattleSenceEventBoard` 与 `Workspace.Map2.HomeEventBoard` 的事件倒计时文本。
+7.`SpecialEventController` 负责监听 `SpecialEventSync`，按服务端状态在客户端本地复制/移除特殊事件场景，同步 `Workspace.Map2.BattleSenceEventBoard` 与 `Workspace.Map2.HomeEventBoard` 的事件倒计时文本，并维护 `Main.EventDescribe`、`Main.EventStart` 和废弃隐藏的 `Main.EventEnd`。
 8.`ArenaProgressController` 负责监听 `ArenaProgressSync` 和本地 `PlayerStateSync`，只有本地玩家在战场且存活时显示 `PlayerGui.Main.Progress`，并按服务端同步的场内玩家等级区间渲染头像位置。
 9.`TopStatsController` 负责监听 `PlayerStateSync`，以原始整数显示永久击杀数和钻石数，并在钻石增加时播放客户端飞入动画；客户端不决定数值增减。
 10.`ShopController` 负责商店页面打开/关闭、购买入口绑定、领奖弹框表现，以及商店 Skin 商品名称上 `Secret1` / `Secret2` 渐变的首尾衔接循环流动。
@@ -227,8 +245,9 @@
 12.`DefeatedController` 点击 FreeRespawn、Lobby、Close、Revive、Revenge 时只发送意图或触发购买；复活等级、复仇目标、离线快照和是否允许 Revenge 均由服务端判定。
 13.`LocalMonsterController` 负责普通小怪本地私有生成和显示：所有生成小怪均物化为所属客户端可见模型，Dormant 小怪保持静默可见，只有 CombatActive 小怪参与追击、攻击、动画和模拟预算。
 14.`InviteTipsController` 负责 V5.2 好友邀请提示，仅绑定既有 `StarterGui/Main/InviteTips`，复用 `FriendsRankingStateSync` 的历史好友数据和客户端 `GetFriendsOnlineAsync` 在线状态，不新增 RemoteEvent、不启用模态遮罩或 Blur。
-15.`TaskController` 负责 V5.3 任务面板，仅绑定既有 `StarterGui/Main/TaskBg` 和 `Main.Right.Daily`；面板打开/关闭使用本地 `UIScale + TweenService`，不走模态遮罩、不隐藏其它 HUD、不启用 Blur。任务列表按可领取、未完成、已领取排序，领取请求只发 taskId，最终发奖由服务端判定。
-16.Studio-only GM `/testinvite` / `/invitetips` 由 `GMCommandService` 随机抽取当前玩家好友，经 `FriendsRankingStateSync` 发送 `studioInviteTipsTest = true` 测试 payload，客户端仅在 `RunService:IsStudio()` 下直接弹出 `Main.InviteTips`；V5.3 额外提供 `/taskprogress <taskId> <amount>`、`/taskcomplete <taskId>`、`/taskreset daily|weekly|all` 便于编辑器测试任务进度和周期重置。
+15.`ActivityRsvpPromptController` 负责 Roblox 官方活动预约系统弹窗，不绑定或动态创建 `StarterGui` 节点；收到服务端 `PromptActivityRsvp` 后调用 `SocialService:GetEventRsvpStatusAsync` 和 `SocialService:PromptRsvpToEventAsync`，并将 started/result 回传给服务端。
+16.`TaskController` 负责 V5.8 任务面板，仅绑定既有 `StarterGui/Main/TaskBgNew` 和 `Main.Right.Daily`；面板打开/关闭使用本地 `UIScale + TweenService`，不走模态遮罩、不隐藏其它 HUD、不启用 Blur。正式任务内容使用 `TaskBgNew.Content.TaskList.ScrollingFrame.Template` 生成左侧任务入口，并用 `TaskBgNew.Content.TaskDetail` 显示选中任务详情、进度、领取按钮、完成状态和 `RewardList.RewardTemplate` 多奖励列表；旧 `TaskBg` 不再由正式 `TaskController` 驱动。领取请求仍只发 taskId，最终进度校验和 1 到多个奖励逐项发放均由服务端判定。
+17.Studio-only GM `/testinvite` / `/invitetips` 由 `GMCommandService` 随机抽取当前玩家好友，经 `FriendsRankingStateSync` 发送 `studioInviteTipsTest = true` 测试 payload，客户端仅在 `RunService:IsStudio()` 下直接弹出 `Main.InviteTips`；V5.3 额外提供 `/taskprogress <taskId> <amount>`、`/taskcomplete <taskId>`、`/taskreset daily|weekly|all` 便于编辑器测试任务进度和周期重置。
 
 =====================================================
 文档结束

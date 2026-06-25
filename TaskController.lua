@@ -3,7 +3,7 @@ Script: TaskController
 File: TaskController.lua
 Type: ModuleScript
 Studio path: StarterPlayer/StarterPlayerScripts/Controllers/TaskController
-Purpose: V5.3 daily and weekly task UI for Main.TaskBg.
+Purpose: V5.8 daily and weekly task UI for Main.TaskBgNew.
 ]]
 
 local Players = game:GetService("Players")
@@ -38,7 +38,9 @@ TaskController._localPlayer = nil
 TaskController._connections = {}
 TaskController._buttonBindings = {}
 TaskController._rowBindings = {}
+TaskController._detailBindings = {}
 TaskController._generatedRows = {}
+TaskController._generatedRewardRows = {}
 TaskController._mainGui = nil
 TaskController._entryRoot = nil
 TaskController._entryButton = nil
@@ -49,13 +51,18 @@ TaskController._tabsRoot = nil
 TaskController._dailyTabRoot = nil
 TaskController._weeklyTabRoot = nil
 TaskController._countdownLabel = nil
+TaskController._taskListRoot = nil
 TaskController._scrollingFrame = nil
 TaskController._template = nil
+TaskController._taskDetailRoot = nil
+TaskController._rewardList = nil
+TaskController._rewardTemplate = nil
 TaskController._requestStateSyncEvent = nil
 TaskController._stateSyncEvent = nil
 TaskController._requestClaimEvent = nil
 TaskController._state = nil
 TaskController._selectedPeriod = "daily"
+TaskController._selectedTaskIdByPeriod = {}
 TaskController._isOpen = false
 TaskController._bindRetryQueued = false
 TaskController._panelTweens = {}
@@ -64,6 +71,7 @@ TaskController._clockToken = 0
 TaskController._pendingClaimsByTaskId = {}
 
 local GENERATED_ROW_ATTRIBUTE = "GeneratedTaskRow"
+local GENERATED_REWARD_ATTRIBUTE = "GeneratedTaskReward"
 local OPEN_FROM_SCALE = 0.82
 local OPEN_OVERSHOOT_SCALE = 1.05
 local OPEN_OVERSHOOT_DURATION = 0.16
@@ -82,6 +90,7 @@ local BIND_RETRY_SECONDS = 0.5
 local BIND_RETRY_WARNING_SECONDS = 12
 local SELECTED_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
 local UNSELECTED_TEXT_COLOR = Color3.fromRGB(84, 95, 112)
+local DISABLED_TINT = Color3.fromRGB(155, 155, 155)
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -153,6 +162,48 @@ local function setButtonEnabled(button, enabled)
         button.Active = enabled == true
         button.AutoButtonColor = enabled == true
         button.Selectable = enabled == true
+    end
+end
+
+local function hideNamedGuiChildren(root, childName)
+    if not root then
+        return
+    end
+    for _, child in ipairs(root:GetChildren()) do
+        if child.Name == childName and child:IsA("GuiObject") then
+            child.Visible = false
+        end
+    end
+end
+
+local function tintGuiTree(root, enabled)
+    if not root then
+        return
+    end
+
+    local tint = enabled == true and nil or DISABLED_TINT
+    local nodes = { root }
+    for _, descendant in ipairs(root:GetDescendants()) do
+        table.insert(nodes, descendant)
+    end
+
+    for _, node in ipairs(nodes) do
+        if node:IsA("ImageLabel") or node:IsA("ImageButton") then
+            if node:GetAttribute("TaskBaseImageColor3") == nil then
+                node:SetAttribute("TaskBaseImageColor3", node.ImageColor3)
+            end
+            node.ImageColor3 = tint or node:GetAttribute("TaskBaseImageColor3")
+        elseif node:IsA("TextLabel") or node:IsA("TextButton") or node:IsA("TextBox") then
+            if node:GetAttribute("TaskBaseTextColor3") == nil then
+                node:SetAttribute("TaskBaseTextColor3", node.TextColor3)
+            end
+            node.TextColor3 = tint or node:GetAttribute("TaskBaseTextColor3")
+        elseif node:IsA("GuiObject") then
+            if node:GetAttribute("TaskBaseBackgroundColor3") == nil then
+                node:SetAttribute("TaskBaseBackgroundColor3", node.BackgroundColor3)
+            end
+            node.BackgroundColor3 = tint or node:GetAttribute("TaskBaseBackgroundColor3")
+        end
     end
 end
 
@@ -283,6 +334,27 @@ local function buildTaskDescription(task)
     return "Complete task"
 end
 
+local function buildTaskTitle(task)
+    local shortTitle = tostring(task and task.shortTitle or "")
+    if shortTitle ~= "" then
+        return shortTitle
+    end
+
+    local description = tostring(task and task.description or "")
+    if description ~= "" then
+        return description
+    end
+    return buildTaskDescription(task)
+end
+
+local function buildTaskSubtitle(task)
+    local shortDescription = tostring(task and task.shortDescription or "")
+    if shortDescription ~= "" then
+        return shortDescription
+    end
+    return buildTaskDescription(task)
+end
+
 local function buildProgressText(task)
     local progress = math.max(0, math.floor(tonumber(task and task.progress) or 0))
     local target = math.max(1, math.floor(tonumber(task and task.target) or 1))
@@ -292,13 +364,58 @@ local function buildProgressText(task)
     return formatInteger(progress) .. "/" .. formatInteger(target)
 end
 
+local function cloneReward(reward)
+    if type(reward) ~= "table" then
+        return nil
+    end
+
+    local copied = {
+        rewardType = tostring(reward.rewardType or reward.RewardType or ""),
+        potionId = math.max(0, math.floor(tonumber(reward.potionId or reward.PotionId) or 0)),
+        amount = math.max(1, math.floor(tonumber(reward.amount or reward.Amount) or 1)),
+        icon = tostring(reward.icon or reward.Icon or ""),
+        label = tostring(reward.label or reward.Label or ""),
+    }
+    if copied.rewardType == "" then
+        return nil
+    end
+    return copied
+end
+
+local function cloneRewards(task)
+    local result = {}
+    local sourceRewards = type(task) == "table" and (task.rewards or task.Rewards) or nil
+    if type(sourceRewards) == "table" then
+        for _, reward in ipairs(sourceRewards) do
+            local copied = cloneReward(reward)
+            if copied then
+                table.insert(result, copied)
+            end
+        end
+    end
+
+    if #result <= 0 and type(task) == "table" then
+        local fallback = cloneReward({
+            rewardType = task.rewardType or task.RewardType,
+            potionId = task.potionId or task.PotionId,
+            amount = task.amount or task.Amount,
+            icon = task.icon or task.Icon,
+        })
+        if fallback then
+            table.insert(result, fallback)
+        end
+    end
+    return result
+end
+
 local function cloneTask(task)
     if type(task) ~= "table" then
         return nil
     end
+
     return {
         taskId = math.max(0, math.floor(tonumber(task.taskId or task.TaskId) or 0)),
-        period = tostring(task.period or task.Period or ""),
+        period = string.lower(tostring(task.period or task.Period or "")) == "weekly" and "weekly" or "daily",
         taskType = tostring(task.taskType or task.TaskType or ""),
         target = math.max(1, math.floor(tonumber(task.target or task.Target) or 1)),
         progress = math.max(0, math.floor(tonumber(task.progress or task.Progress) or 0)),
@@ -306,7 +423,10 @@ local function cloneTask(task)
         potionId = math.max(0, math.floor(tonumber(task.potionId or task.PotionId) or 0)),
         amount = math.max(1, math.floor(tonumber(task.amount or task.Amount) or 1)),
         description = tostring(task.description or task.Description or ""),
+        shortTitle = tostring(task.shortTitle or task.ShortTitle or ""),
+        shortDescription = tostring(task.shortDescription or task.ShortDescription or ""),
         icon = tostring(task.icon or task.Icon or ""),
+        rewards = cloneRewards(task),
         isComplete = task.isComplete == true or task.IsComplete == true,
         isClaimed = task.isClaimed == true or task.IsClaimed == true,
         isClaimable = task.isClaimable == true or task.IsClaimable == true,
@@ -347,50 +467,6 @@ local function sortTasksForDisplay(tasks)
     end)
 end
 
-local function isUnderNamedAncestor(instance, names)
-    local current = instance
-    while current do
-        if names[current.Name] == true then
-            return true
-        end
-        current = current.Parent
-    end
-    return false
-end
-
-local function setTaskDescriptionText(row, text)
-    local direct = findFirstDescendantByNames(row, {
-        "TaskName",
-        "TaskTitle",
-        "TaskDesc",
-        "TaskDescription",
-        "Description",
-        "Desc",
-        "Content",
-    })
-    if direct and (direct:IsA("TextLabel") or direct:IsA("TextButton") or direct:IsA("TextBox")) then
-        setText(direct, text)
-        return
-    end
-
-    local excludedAncestors = {
-        ProgressBg = true,
-        RewardBg = true,
-        ClaimButton = true,
-        Complete = true,
-    }
-    for _, descendant in ipairs(row:GetDescendants()) do
-        if (descendant:IsA("TextLabel") or descendant:IsA("TextButton") or descendant:IsA("TextBox"))
-            and not isUnderNamedAncestor(descendant, excludedAncestors)
-            and descendant.Name ~= "Num"
-            and descendant.Name ~= "RewardNum"
-        then
-            setText(descendant, text)
-            return
-        end
-    end
-end
-
 local function setButtonText(buttonRoot, text)
     if not buttonRoot then
         return
@@ -399,7 +475,7 @@ local function setButtonText(buttonRoot, text)
         setText(buttonRoot, text)
         return
     end
-    local label = findFirstDescendantByNames(buttonRoot, { "Label", "Text", "Title" })
+    local label = findFirstDescendantByNames(buttonRoot, { "ButtonLabel", "Label", "Text", "Title", "ButtonText" })
     setText(label, text)
 end
 
@@ -487,6 +563,9 @@ function TaskController:_bindButton(button, onActivated, options, targetBindings
     end
 
     table.insert(binding.connections, button.MouseEnter:Connect(function()
+        if button.Active ~= true then
+            return
+        end
         binding.isHovered = true
         apply()
     end))
@@ -496,6 +575,9 @@ function TaskController:_bindButton(button, onActivated, options, targetBindings
         apply()
     end))
     table.insert(binding.connections, button.InputBegan:Connect(function(inputObject)
+        if button.Active ~= true then
+            return
+        end
         local inputType = inputObject.UserInputType
         if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
             binding.isPressed = true
@@ -516,6 +598,9 @@ function TaskController:_bindButton(button, onActivated, options, targetBindings
         end
     end))
     table.insert(binding.connections, button.Activated:Connect(function()
+        if button.Active ~= true then
+            return
+        end
         if type(onActivated) == "function" then
             onActivated()
         end
@@ -633,12 +718,32 @@ function TaskController:_getServerNow()
     return baseTimestamp + math.max(0, os.clock() - localSyncClock)
 end
 
+function TaskController:_getSelectedPeriodKey()
+    return self._selectedPeriod == "weekly" and "weekly" or "daily"
+end
+
 function TaskController:_getTasksForSelectedPeriod()
     local state = self:_getState()
-    local key = self._selectedPeriod == "weekly" and "weekly" or "daily"
+    local key = self:_getSelectedPeriodKey()
     local tasks = cloneTasks(state.tasks and state.tasks[key])
     sortTasksForDisplay(tasks)
     return tasks
+end
+
+function TaskController:_resolveSelectedTask(tasks)
+    local periodKey = self:_getSelectedPeriodKey()
+    local selectedTaskId = math.max(0, math.floor(tonumber(self._selectedTaskIdByPeriod[periodKey]) or 0))
+    if selectedTaskId > 0 then
+        for _, taskData in ipairs(tasks) do
+            if taskData.taskId == selectedTaskId then
+                return taskData
+            end
+        end
+    end
+
+    local firstTask = tasks[1]
+    self._selectedTaskIdByPeriod[periodKey] = firstTask and firstTask.taskId or nil
+    return firstTask
 end
 
 function TaskController:_hasClaimableTask()
@@ -647,8 +752,8 @@ function TaskController:_hasClaimableTask()
         return true
     end
     for _, periodKey in ipairs({ "daily", "weekly" }) do
-        for _, task in ipairs(state.tasks and state.tasks[periodKey] or {}) do
-            if task.isClaimable == true and task.isClaimed ~= true then
+        for _, taskData in ipairs(state.tasks and state.tasks[periodKey] or {}) do
+            if taskData.isClaimable == true and taskData.isClaimed ~= true then
                 return true
             end
         end
@@ -713,8 +818,25 @@ function TaskController:_clearRows()
     end
 end
 
-function TaskController:_renderProgress(row, task)
-    local progressBg = row and row:FindFirstChild("ProgressBg", true)
+function TaskController:_clearRewardRows()
+    for _, row in ipairs(self._generatedRewardRows) do
+        if row and row.Parent then
+            row:Destroy()
+        end
+    end
+    table.clear(self._generatedRewardRows)
+
+    if self._rewardList then
+        for _, child in ipairs(self._rewardList:GetChildren()) do
+            if child:GetAttribute(GENERATED_REWARD_ATTRIBUTE) == true then
+                child:Destroy()
+            end
+        end
+    end
+end
+
+function TaskController:_renderProgress(root, taskData, includeDescription)
+    local progressBg = root and root:FindFirstChild("ProgressBg", true)
     local progressFill = progressBg and (
         progressBg:FindFirstChild("Progress")
         or progressBg:FindFirstChild("Fill")
@@ -726,38 +848,64 @@ function TaskController:_renderProgress(row, task)
         or progressBg:FindFirstChild("Label")
     )
 
-    local ratio = math.clamp((tonumber(task.progress) or 0) / math.max(1, tonumber(task.target) or 1), 0, 1)
+    local ratio = math.clamp((tonumber(taskData and taskData.progress) or 0) / math.max(1, tonumber(taskData and taskData.target) or 1), 0, 1)
     if progressFill and progressFill:IsA("GuiObject") then
         progressFill.Size = UDim2.new(ratio, 0, progressFill.Size.Y.Scale, progressFill.Size.Y.Offset)
     end
-    setText(progressLabel, buildProgressText(task))
+
+    local progressText = buildProgressText(taskData)
+    if includeDescription == true then
+        progressText = buildTaskSubtitle(taskData) .. " " .. progressText
+    end
+    setText(progressLabel, progressText)
 end
 
-function TaskController:_renderReward(row, task)
-    local rewardBg = row and row:FindFirstChild("RewardBg", true)
-    local icon = rewardBg and (
-        rewardBg:FindFirstChild("Rewardicon")
-        or rewardBg:FindFirstChild("RewardIcon")
-        or rewardBg:FindFirstChild("Icon")
-    )
-    local amountLabel = rewardBg and (
-        rewardBg:FindFirstChild("RewardNum")
-        or rewardBg:FindFirstChild("Num")
-        or rewardBg:FindFirstChild("Number")
-    )
-    setImage(icon, task.icon)
-    setText(amountLabel, "x" .. formatCompactInteger(task.amount))
+function TaskController:_renderRewardList(taskData)
+    hideNamedGuiChildren(self._rewardList, "RewardTemplate")
+    if not (self._rewardList and self._rewardTemplate and taskData) then
+        self:_clearRewardRows()
+        return
+    end
+
+    self:_clearRewardRows()
+    for index, reward in ipairs(taskData.rewards or {}) do
+        local rewardRow = self._rewardTemplate:Clone()
+        rewardRow.Name = "Reward_" .. tostring(index)
+        rewardRow.Visible = true
+        rewardRow.LayoutOrder = index
+        rewardRow:SetAttribute(GENERATED_REWARD_ATTRIBUTE, true)
+        rewardRow.Parent = self._rewardList
+        table.insert(self._generatedRewardRows, rewardRow)
+
+        local icon = rewardRow:FindFirstChild("Rewardicon", true)
+            or rewardRow:FindFirstChild("RewardIcon", true)
+            or rewardRow:FindFirstChild("Icon", true)
+        local amountLabel = rewardRow:FindFirstChild("RewardNum", true)
+            or rewardRow:FindFirstChild("Num", true)
+            or rewardRow:FindFirstChild("Number", true)
+        setImage(icon, reward.icon)
+        setText(amountLabel, "x" .. formatCompactInteger(reward.amount))
+    end
 end
 
-function TaskController:_bindClaimButton(row, taskData)
-    local claimButton, claimRoot = findButtonByName(row, "ClaimButton")
-    local completeRoot = row and row:FindFirstChild("Complete", true)
+function TaskController:_bindDetailClaimButton(taskData)
+    self:_disconnectBindings(self._detailBindings)
+
+    local claimButton, claimRoot = findButtonByName(self._taskDetailRoot, "ClaimButton")
+    local completeRoot = self._taskDetailRoot and self._taskDetailRoot:FindFirstChild("Complete", true)
+    if not taskData then
+        setVisible(claimRoot or claimButton, false)
+        setVisible(completeRoot, false)
+        return
+    end
+
     local isPending = (tonumber(self._pendingClaimsByTaskId[taskData.taskId]) or 0) > os.clock()
     local canClaim = taskData.isClaimable == true and taskData.isClaimed ~= true and not isPending and self._requestClaimEvent ~= nil
 
     setVisible(claimRoot or claimButton, taskData.isClaimed ~= true)
     setVisible(completeRoot, taskData.isClaimed == true)
-    setButtonText(claimRoot or claimButton, canClaim and "Claim" or "Wait")
+    setButtonText(claimRoot or claimButton, isPending and "Claiming" or (canClaim and "Claim" or "Wait"))
+    tintGuiTree(claimRoot or claimButton, canClaim)
 
     if claimButton then
         self:_bindButton(claimButton, function()
@@ -765,7 +913,7 @@ function TaskController:_bindClaimButton(row, taskData)
                 return
             end
             self._pendingClaimsByTaskId[taskData.taskId] = os.clock() + CLAIM_PENDING_SECONDS
-            self:_renderRows()
+            self:_renderAll()
             if self._requestClaimEvent then
                 self._requestClaimEvent:FireServer({
                     taskId = taskData.taskId,
@@ -774,17 +922,26 @@ function TaskController:_bindClaimButton(row, taskData)
             task.delay(CLAIM_PENDING_SECONDS, function()
                 if (tonumber(self._pendingClaimsByTaskId[taskData.taskId]) or 0) <= os.clock() then
                     self._pendingClaimsByTaskId[taskData.taskId] = nil
-                    self:_renderRows()
+                    self:_renderAll()
                 end
             end)
         end, {
             ScaleTarget = claimRoot or claimButton,
-        }, self._rowBindings)
+        }, self._detailBindings)
         setButtonEnabled(claimButton, canClaim)
     end
 end
 
-function TaskController:_renderRows()
+function TaskController:_applyRowSelectedState(row, selected)
+    setVisible(row and row:FindFirstChild("SelectedBg"), selected == true)
+    setVisible(row and row:FindFirstChild("IdleBg"), selected ~= true)
+    local stroke = row and row:FindFirstChildWhichIsA("UIStroke", true)
+    if stroke then
+        stroke.Enabled = selected == true
+    end
+end
+
+function TaskController:_renderRows(tasks, selectedTask)
     if not (self._scrollingFrame and self._template) then
         return
     end
@@ -792,7 +949,8 @@ function TaskController:_renderRows()
     self:_clearRows()
     self._template.Visible = false
 
-    for index, taskData in ipairs(self:_getTasksForSelectedPeriod()) do
+    local selectedTaskId = selectedTask and selectedTask.taskId or 0
+    for index, taskData in ipairs(tasks) do
         local row = self._template:Clone()
         row.Name = "Task_" .. tostring(taskData.taskId)
         row.Visible = true
@@ -801,18 +959,58 @@ function TaskController:_renderRows()
         row.Parent = self._scrollingFrame
         table.insert(self._generatedRows, row)
 
-        setTaskDescriptionText(row, buildTaskDescription(taskData))
-        self:_renderProgress(row, taskData)
-        self:_renderReward(row, taskData)
-        self:_bindClaimButton(row, taskData)
+        setText(row:FindFirstChild("PeriodTag", true), taskData.period == "weekly" and "Weekly" or "Daily")
+        setText(row:FindFirstChild("TaskTitle", true), buildTaskTitle(taskData))
+        setText(row:FindFirstChild("TaskSubtitle", true), buildTaskSubtitle(taskData))
+        setVisible(row:FindFirstChild("RedPoint", true), taskData.isClaimable == true and taskData.isClaimed ~= true)
+        self:_applyRowSelectedState(row, taskData.taskId == selectedTaskId)
+
+        local clickTarget = resolveClickTarget(row, "TaskRowClickTarget")
+        self:_bindButton(clickTarget, function()
+            self:_selectTask(taskData.taskId)
+        end, {
+            ScaleTarget = row,
+            HoverScale = 1.02,
+            PressScale = 0.98,
+        }, self._rowBindings)
     end
+end
+
+function TaskController:_renderDetail(taskData)
+    if not self._taskDetailRoot then
+        return
+    end
+
+    local titleLabel = self._taskDetailRoot:FindFirstChild("TaskTitle", true)
+    if not taskData then
+        setText(titleLabel, "")
+        self:_renderRewardList(nil)
+        self:_bindDetailClaimButton(nil)
+        return
+    end
+
+    setText(titleLabel, buildTaskTitle(taskData))
+    local subtitleLabel = self._taskDetailRoot:FindFirstChild("TaskSubtitle", true)
+        or self._taskDetailRoot:FindFirstChild("TaskDescription", true)
+        or self._taskDetailRoot:FindFirstChild("Description", true)
+    setText(subtitleLabel, buildTaskSubtitle(taskData))
+    self:_renderProgress(self._taskDetailRoot, taskData, true)
+    self:_renderRewardList(taskData)
+    self:_bindDetailClaimButton(taskData)
+end
+
+function TaskController:_renderContent()
+    local tasks = self:_getTasksForSelectedPeriod()
+    local selectedTask = self:_resolveSelectedTask(tasks)
+    self:_renderRows(tasks, selectedTask)
+    self:_renderDetail(selectedTask)
 end
 
 function TaskController:_renderAll()
     self:_renderEntryState()
     self:_renderCountdown()
     self:_applyTabs()
-    self:_renderRows()
+    self:_renderContent()
 end
 
 function TaskController:_applyStatePayload(payload)
@@ -870,6 +1068,15 @@ function TaskController:_selectPeriod(period)
     self:_renderAll()
 end
 
+function TaskController:_selectTask(taskId)
+    local normalizedTaskId = math.max(0, math.floor(tonumber(taskId) or 0))
+    if normalizedTaskId <= 0 then
+        return
+    end
+    self._selectedTaskIdByPeriod[self:_getSelectedPeriodKey()] = normalizedTaskId
+    self:_renderContent()
+end
+
 function TaskController:_queueBindRetry()
     if self._bindRetryQueued then
         return
@@ -887,7 +1094,7 @@ function TaskController:_queueBindRetry()
             end
             if not warned and os.clock() >= warningClock then
                 warned = true
-                warn("[TaskController] Could not find PlayerGui/Main/TaskBg UI; waiting.")
+                warn("[TaskController] Could not find PlayerGui/Main/TaskBgNew UI; waiting.")
             end
             task.wait(BIND_RETRY_SECONDS)
         end
@@ -896,7 +1103,9 @@ end
 
 function TaskController:_bindUi(silent)
     self:_disconnectBindings(self._buttonBindings)
+    self:_disconnectBindings(self._detailBindings)
     self:_clearRows()
+    self:_clearRewardRows()
 
     self._mainGui = findMainGui(self._localPlayer)
     if not self._mainGui then
@@ -911,19 +1120,38 @@ function TaskController:_bindUi(silent)
     self._entryButton = resolveClickTarget(self._entryRoot, "TaskEntryClickTarget")
     self._entryRedPoint = self._entryRoot and self._entryRoot:FindFirstChild("RedPoint", true)
 
-    self._panel = self._mainGui:FindFirstChild("TaskBg")
+    self._panel = self._mainGui:FindFirstChild("TaskBgNew")
     self._tabsRoot = self._panel and self._panel:FindFirstChild("Tabs")
-    self._dailyTabRoot = self._tabsRoot and self._tabsRoot:FindFirstChild("Daily")
-    self._weeklyTabRoot = self._tabsRoot and self._tabsRoot:FindFirstChild("Week")
-    self._countdownLabel = self._panel and findNested(self._panel, "TitleBg/CountdownTime")
-    self._scrollingFrame = self._panel and (
-        findNested(self._panel, "Equipinfo/ScrollingFrame")
-        or self._panel:FindFirstChild("ScrollingFrame", true)
+    self._dailyTabRoot = self._tabsRoot and self._tabsRoot:FindFirstChild("DailyTab")
+    self._weeklyTabRoot = self._tabsRoot and self._tabsRoot:FindFirstChild("WeeklyTab")
+    self._countdownLabel = self._panel and (
+        self._panel:FindFirstChild("CountdownTime")
+        or findNested(self._panel, "TitleBg/CountdownTime")
+        or self._panel:FindFirstChild("CountdownTime", true)
+    )
+    self._closeButton = self._panel and resolveClickTarget(findNested(self._panel, "TitleBg/CloseButton"), "TaskCloseClickTarget")
+
+    self._taskListRoot = self._panel and (
+        findNested(self._panel, "Content/TaskList")
+        or self._panel:FindFirstChild("TaskList", true)
+    )
+    self._scrollingFrame = self._taskListRoot and (
+        findNested(self._taskListRoot, "ScrollingFrame")
+        or self._taskListRoot:FindFirstChild("ScrollingFrame", true)
     )
     self._template = self._scrollingFrame and self._scrollingFrame:FindFirstChild("Template")
-    self._closeButton = self._panel and select(1, findButtonByName(self._panel, "CloseButton"))
 
-    if not (self._entryRoot and self._panel and self._scrollingFrame and self._template) then
+    self._taskDetailRoot = self._panel and (
+        findNested(self._panel, "Content/TaskDetail")
+        or self._panel:FindFirstChild("TaskDetail", true)
+    )
+    self._rewardList = self._taskDetailRoot and (
+        findNested(self._taskDetailRoot, "RewardList")
+        or self._taskDetailRoot:FindFirstChild("RewardList", true)
+    )
+    self._rewardTemplate = self._rewardList and self._rewardList:FindFirstChild("RewardTemplate")
+
+    if not (self._entryRoot and self._panel and self._scrollingFrame and self._template and self._taskDetailRoot and self._rewardTemplate) then
         if not silent then
             self:_queueBindRetry()
         end
@@ -933,6 +1161,7 @@ function TaskController:_bindUi(silent)
     self._panel.Visible = self._isOpen == true
     ensureUiScale(self._panel)
     self._template.Visible = false
+    hideNamedGuiChildren(self._rewardList, "RewardTemplate")
 
     self:_bindButton(self._entryButton, function()
         self:_setOpen(true, false)
@@ -952,7 +1181,7 @@ function TaskController:_bindUi(silent)
     end
 
     local dailyTabButton = resolveClickTarget(self._dailyTabRoot, "DailyTabClickTarget")
-    local weeklyTabButton = resolveClickTarget(self._weeklyTabRoot, "WeekTabClickTarget")
+    local weeklyTabButton = resolveClickTarget(self._weeklyTabRoot, "WeeklyTabClickTarget")
     self:_bindButton(dailyTabButton, function()
         self:_selectPeriod("daily")
     end, {
@@ -1002,13 +1231,16 @@ function TaskController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._state = self:_newDefaultState()
     self._selectedPeriod = "daily"
+    self._selectedTaskIdByPeriod = {}
     self._isOpen = false
     self._pendingClaimsByTaskId = {}
 
     disconnectAll(self._connections)
     self:_disconnectBindings(self._buttonBindings)
     self:_disconnectBindings(self._rowBindings)
+    self:_disconnectBindings(self._detailBindings)
     self:_clearRows()
+    self:_clearRewardRows()
     self:_cancelPanelTweens()
     self._clockToken += 1
 
