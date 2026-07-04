@@ -29,14 +29,14 @@ ChestConfig.DropPools = {
         { RewardType = 'Potion', Amount = 2, Weight = 250.0, IsLimited = false, PotionId = 1001 },
         { RewardType = 'Potion', Amount = 2, Weight = 100.0, IsLimited = false, PotionId = 1002 },
         { RewardType = 'Potion', Amount = 2, Weight = 40.0, IsLimited = false, PotionId = 1003 },
-        { RewardType = 'Trail', Amount = 1, Weight = 7.0, IsLimited = true, TrailId = 1009 },
+        { RewardType = 'Trail', Amount = 1, Weight = 7.0, IsLimited = true, TrailId = 1008 },
         { RewardType = 'Diamonds', Amount = 20000, Weight = 3.0, IsLimited = false },
     },
     [2] = {
         { RewardType = 'WheelSpins', Amount = 5, Weight = 200.0, IsLimited = false },
         { RewardType = 'Diamonds', Amount = 500, Weight = 400.0, IsLimited = false },
         { RewardType = 'Potion', Amount = 2, Weight = 100.0, IsLimited = false, PotionId = 1003 },
-        { RewardType = 'Trail', Amount = 1, Weight = 50.0, IsLimited = true, TrailId = 1009 },
+        { RewardType = 'Trail', Amount = 1, Weight = 50.0, IsLimited = true, TrailId = 1008 },
         { RewardType = 'Diamonds', Amount = 10000, Weight = 30.0, IsLimited = false },
     },
 }
