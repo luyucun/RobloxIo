@@ -78,12 +78,14 @@ local GMCommandService = requireServerModule("GMCommandService")
 local GroupRewardService = requireServerModule("GroupRewardService")
 local WeaponUnlockRewardService = requireServerModule("WeaponUnlockRewardService")
 local FavoritePlacePromptService = requireServerModule("FavoritePlacePromptService")
+local ActivityRsvpPromptService = requireServerModule("ActivityRsvpPromptService")
 local BadgeAwardService = requireServerModule("BadgeAwardService")
 local ArenaProgressService = requireServerModule("ArenaProgressService")
 local WheelService = requireServerModule("WheelService")
 local SkinService = requireServerModule("SkinService")
 local SubscriptionService = requireServerModule("SubscriptionService")
 local ShopService = requireServerModule("ShopService")
+local ChestService = requireServerModule("ChestService")
 local CodeService = requireServerModule("CodeService")
 local OnlineRewardService = requireServerModule("OnlineRewardService")
 local SevenDayLoginRewardService = requireServerModule("SevenDayLoginRewardService")
@@ -317,6 +319,14 @@ ShopService:Init({
     PotionService = PotionService,
     GameAnalyticsService = GameAnalyticsService,
 })
+ChestService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+    SkinService = SkinService,
+    GameAnalyticsService = GameAnalyticsService,
+})
 CodeService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
@@ -354,6 +364,10 @@ FavoritePlacePromptService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
+})
+ActivityRsvpPromptService:Init({
+    RemoteEventService = RemoteEventService,
+    GameAnalyticsService = GameAnalyticsService,
 })
 BotService:Init({
     RemoteEventService = RemoteEventService,
@@ -464,6 +478,7 @@ SpecialEventService:Init({
     RemoteEventService = RemoteEventService,
     BossService = BossService,
     PlayerStateService = PlayerStateService,
+    HealthService = HealthService,
 })
 GMCommandService:Init({
     SpecialEventService = SpecialEventService,
@@ -474,6 +489,7 @@ GMCommandService:Init({
     RevengeService = RevengeService,
     GameAnalyticsService = GameAnalyticsService,
     TaskService = TaskService,
+    ChestService = ChestService,
 })
 PlayerStateService:BindSystems({
     WeaponService = WeaponService,
@@ -549,6 +565,13 @@ ShopService:BindSystems({
     PotionService = PotionService,
     GameAnalyticsService = GameAnalyticsService,
 })
+ChestService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+    PotionService = PotionService,
+    SkinService = SkinService,
+    GameAnalyticsService = GameAnalyticsService,
+})
 CodeService:BindSystems({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
@@ -606,11 +629,14 @@ local function onPlayerAdded(player)
     SkinService:OnPlayerAdded(player)
     SubscriptionService:OnPlayerAdded(player)
     ShopService:OnPlayerAdded(player)
+    SevenDayLoginRewardService:OnPlayerAdded(player)
     OnlineRewardService:OnPlayerAdded(player)
     LeaderboardService:OnPlayerAdded(player)
     SpecialEventService:OnPlayerAdded(player)
+    ChestService:OnPlayerAdded(player)
     ArenaProgressService:OnPlayerAdded(player)
     FavoritePlacePromptService:OnPlayerAdded(player)
+    ActivityRsvpPromptService:OnPlayerAdded(player)
 
     local function handleCharacterAdded()
         local shouldReviveInArena = RespawnService:ConsumeArenaReviveRequest(player)
@@ -659,8 +685,11 @@ local function onPlayerRemoving(player)
     SkinService:OnPlayerRemoving(player)
     SubscriptionService:OnPlayerRemoving(player)
     ShopService:OnPlayerRemoving(player)
+    ChestService:OnPlayerRemoving(player)
+    SevenDayLoginRewardService:OnPlayerRemoving(player)
     OnlineRewardService:OnPlayerRemoving(player)
     FavoritePlacePromptService:OnPlayerRemoving(player)
+    ActivityRsvpPromptService:OnPlayerRemoving(player)
     BadgeAwardService:OnPlayerRemoving(player)
     RebirthService:OnPlayerRemoving(player)
     LeaderboardService:OnPlayerRemoving(player)

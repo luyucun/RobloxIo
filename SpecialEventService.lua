@@ -9,6 +9,7 @@ Studio放置路径: ServerScriptService/Services/SpecialEventService
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -46,8 +47,10 @@ SpecialEventService._recentEventIds = {}
 SpecialEventService._sequenceIndex = 0
 SpecialEventService._bossService = nil
 SpecialEventService._playerStateService = nil
+SpecialEventService._healthService = nil
 SpecialEventService._activeEffect = nil
 SpecialEventService._nextPeriodicDiamondClock = 0
+SpecialEventService._nextShieldRefreshClock = 0
 
 local function cloneEventConfig(eventConfig, startClock)
     if not eventConfig then
@@ -60,6 +63,8 @@ local function cloneEventConfig(eventConfig, startClock)
         id = eventConfig.Id,
         name = eventConfig.Name,
         scenePath = eventConfig.ScenePath,
+        iconImage = eventConfig.IconImage,
+        effectDescription = eventConfig.EffectDescription,
         textLabelName = eventConfig.TextLabelName,
         durationSeconds = durationSeconds,
         bossSourceId = eventConfig.BossSourceId,
@@ -166,20 +171,100 @@ function SpecialEventService:_getEventEffect(eventId)
     return nil
 end
 
+function SpecialEventService:_grantEventShield(player)
+    local activeEvent = self._activeEvent
+    local effect = self._activeEffect
+    if not (activeEvent and effect and effect.ShieldUntilEventEnd == true) then
+        return false
+    end
+    if not (self._healthService and player and player.Parent) then
+        return false
+    end
+
+    local endClock = tonumber(activeEvent.endClock) or 0
+    if endClock <= os.clock() then
+        return false
+    end
+    if self._healthService.EnsureShieldUntil then
+        return self._healthService:EnsureShieldUntil(player, endClock, "SpecialEvent")
+    end
+    if self._healthService.GrantShield then
+        return self._healthService:GrantShield(player, math.ceil(endClock - os.clock()), "SpecialEvent")
+    end
+    return false
+end
+
+function SpecialEventService:_grantEventShieldForAll()
+    for _, player in ipairs(Players:GetPlayers()) do
+        self:_grantEventShield(player)
+    end
+end
+
+local function findWorkspacePath(pathSegments)
+    if type(pathSegments) ~= "table" then
+        return nil
+    end
+
+    local current = Workspace
+    for _, segment in ipairs(pathSegments) do
+        local childName = tostring(segment or "")
+        if childName == "" then
+            return nil
+        end
+        current = current and current:FindFirstChild(childName)
+        if not current then
+            return nil
+        end
+    end
+    return current
+end
+
+function SpecialEventService:_setEventBattlePartTransparency(effect, isActive)
+    if type(effect) ~= "table" then
+        return false
+    end
+
+    local part = findWorkspacePath(effect.BattlePartTransparencyPath)
+    if not (part and part:IsA("BasePart")) then
+        return false
+    end
+
+    local targetTransparency = if isActive == true
+        then effect.BattlePartActiveTransparency
+        else effect.BattlePartInactiveTransparency
+    local transparency = tonumber(targetTransparency)
+    if transparency == nil then
+        transparency = if isActive == true then 1 else 0
+    end
+
+    part.Transparency = math.clamp(transparency, 0, 1)
+    return true
+end
+
 function SpecialEventService:_applyActiveEffect(activeEvent)
     local effect = self:_getEventEffect(activeEvent and activeEvent.id)
     self._activeEffect = effect
     local nowClock = os.clock()
     self._nextPeriodicDiamondClock = nowClock + math.max(1, math.floor(tonumber(effect and effect.PeriodicDiamondIntervalSeconds) or 0))
+    self._nextShieldRefreshClock = 0
+    self:_setEventBattlePartTransparency(effect, true)
 
     if self._playerStateService and self._playerStateService.RefreshSpecialEventEffectsForAll then
         self._playerStateService:RefreshSpecialEventEffectsForAll()
     end
+
+    if effect and effect.ShieldUntilEventEnd == true then
+        self:_grantEventShieldForAll()
+        self._nextShieldRefreshClock = nowClock + 1
+    end
 end
 
 function SpecialEventService:_clearActiveEffect()
+    local effect = self._activeEffect
+    self:_setEventBattlePartTransparency(effect, false)
     self._activeEffect = nil
     self._nextPeriodicDiamondClock = 0
+    self._nextShieldRefreshClock = 0
 
     if self._playerStateService and self._playerStateService.RefreshSpecialEventEffectsForAll then
         self._playerStateService:RefreshSpecialEventEffectsForAll()
@@ -195,6 +280,27 @@ function SpecialEventService:GetActiveEffect()
         result[key] = value
     end
     return result
+end
+
+function SpecialEventService:GetActiveEventVisualInfo()
+    local activeEvent = self._activeEvent
+    if type(activeEvent) ~= "table" then
+        return nil
+    end
+
+    if os.clock() >= (tonumber(activeEvent.endClock) or 0) then
+        return nil
+    end
+
+    return {
+        id = activeEvent.id,
+        name = activeEvent.name,
+        textLabelName = activeEvent.textLabelName,
+        iconImage = activeEvent.iconImage,
+        effectDescription = activeEvent.effectDescription,
+        sequenceIndex = activeEvent.sequenceIndex,
+        endClock = activeEvent.endClock,
+    }
 end
 
 function SpecialEventService:_ensureFutureEvents()
@@ -258,11 +364,12 @@ function SpecialEventService:_step()
         return
     end
     if self._activeEvent then
+        local nowClock = os.clock()
         local effect = self._activeEffect
         local diamondInterval = math.max(1, math.floor(tonumber(effect and effect.PeriodicDiamondIntervalSeconds) or 0))
         local diamondAmount = math.max(0, math.floor(tonumber(effect and effect.PeriodicDiamondAmount) or 0))
-        if diamondAmount > 0 and effect and self._playerStateService and os.clock() >= (self._nextPeriodicDiamondClock or 0) then
-            self._nextPeriodicDiamondClock = os.clock() + diamondInterval
+        if diamondAmount > 0 and effect and self._playerStateService and nowClock >= (self._nextPeriodicDiamondClock or 0) then
+            self._nextPeriodicDiamondClock = nowClock + diamondInterval
             for _, player in ipairs(Players:GetPlayers()) do
                 if player and player.Parent then
                     self._playerStateService:AddDiamonds(player, diamondAmount, {
@@ -272,6 +379,10 @@ function SpecialEventService:_step()
                     })
                 end
             end
+        end
+        if effect and effect.ShieldUntilEventEnd == true and nowClock >= (self._nextShieldRefreshClock or 0) then
+            self._nextShieldRefreshClock = nowClock + 1
+            self:_grantEventShieldForAll()
         end
         return
     end
@@ -345,6 +456,7 @@ function SpecialEventService:OnPlayerAdded(player)
         if self._playerStateService and self._playerStateService.RefreshSpecialEventEffectForPlayer then
             self._playerStateService:RefreshSpecialEventEffectForPlayer(player)
         end
+        self:_grantEventShield(player)
     end)
 end
 
@@ -353,6 +465,7 @@ function SpecialEventService:Init(dependencies)
     self._requestSpecialEventSyncEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestSpecialEventSync") or nil
     self._bossService = dependencies and dependencies.BossService or nil
     self._playerStateService = dependencies and dependencies.PlayerStateService or nil
+    self._healthService = dependencies and dependencies.HealthService or nil
     self._startedAtClock = os.clock()
     self._nextStartClock = self._startedAtClock + self:_getSpawnIntervalSeconds()
     self._activeEvent = nil
@@ -361,6 +474,7 @@ function SpecialEventService:Init(dependencies)
     self._sequenceIndex = 0
     self._activeEffect = nil
     self._nextPeriodicDiamondClock = 0
+    self._nextShieldRefreshClock = 0
     self:_ensureFutureEvents()
 
     if self._requestConnection then

@@ -673,6 +673,37 @@ function HealthService:GrantShield(player, durationSeconds, source)
     return true, "Granted", expiresAt
 end
 
+function HealthService:EnsureShieldUntil(player, expiresAt, source)
+    if not (ActorUtils.IsPlayer(player) and player.Parent) then
+        return false, "InvalidPlayer"
+    end
+
+    local targetExpiresAt = tonumber(expiresAt)
+    if not targetExpiresAt then
+        return false, "InvalidExpiresAt"
+    end
+    if targetExpiresAt <= os.clock() then
+        return false, "Expired"
+    end
+
+    local currentExpiresAt = tonumber(self._shieldExpiresAtByUserId[player.UserId]) or 0
+    if currentExpiresAt < targetExpiresAt then
+        self._shieldExpiresAtByUserId[player.UserId] = targetExpiresAt
+    end
+    if self:_shouldShowShieldEffect(player) then
+        self:_ensureShieldEffect(player)
+    else
+        self:_removeShieldEffect(player)
+    end
+    self:_updateShieldOverheadUi(player)
+
+    if self._playerStateService then
+        self._playerStateService:PushState(player)
+    end
+
+    return true, "Ensured", math.max(currentExpiresAt, targetExpiresAt)
+end
+
 function HealthService:_getHealthRegenConfig()
     local config = GameConfig.HEALTH_REGEN or {}
     return {

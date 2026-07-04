@@ -58,6 +58,19 @@ function FavoritePlacePromptService:_getConfig()
     return GameConfig.FAVORITE_PROMPT or {}
 end
 
+function FavoritePlacePromptService:_isDebugEnabled()
+    return self:_getConfig().DebugEnabled == true
+end
+
+function FavoritePlacePromptService:_debugLog(message, ...)
+    if not self:_isDebugEnabled() then
+        return
+    end
+
+    local ok, formatted = pcall(string.format, tostring(message or ""), ...)
+    print("[FavoritePlacePromptService] " .. (ok and formatted or tostring(message or "")))
+end
+
 function FavoritePlacePromptService:_buildRequestId(player)
     return string.format(
         "FavoritePlace:%d:%d:%d",
@@ -103,13 +116,20 @@ function FavoritePlacePromptService:_flushPlayer(player)
         return false
     end
 
-    if self._rebirthService.SavePlayerNow then
-        return self._rebirthService:SavePlayerNow(player)
+    local ok, saved = pcall(function()
+        if self._rebirthService.SavePlayerNow then
+            return self._rebirthService:SavePlayerNow(player)
+        end
+        if self._rebirthService.FlushPlayer then
+            return self._rebirthService:FlushPlayer(player)
+        end
+        return false
+    end)
+    if not ok then
+        warn("[FavoritePlacePromptService] SavePlayerNow error: " .. tostring(saved))
+        return false
     end
-    if self._rebirthService.FlushPlayer then
-        return self._rebirthService:FlushPlayer(player)
-    end
-    return false
+    return saved == true
 end
 
 function FavoritePlacePromptService:_isPlayerDataReady(player)
@@ -140,28 +160,44 @@ end
 
 function FavoritePlacePromptService:_shouldPromptPlayer(player)
     if not (player and player.Parent) then
+        self:_debugLog("skip prompt: player missing")
         return false
     end
 
     local config = self:_getConfig()
     if config.Enabled == false then
+        self:_debugLog("skip prompt userId=%d reason=disabled", getPlayerUserId(player))
         return false
     end
 
     if asNonNegativeInteger(game.PlaceId) <= 0 then
+        self:_debugLog("skip prompt userId=%d reason=invalidPlaceId placeId=%s", getPlayerUserId(player), tostring(game.PlaceId))
         return false
     end
 
     local favoritePromptState = self:_getFavoritePromptState(player)
     if type(favoritePromptState) ~= "table" then
+        self:_debugLog("skip prompt userId=%d reason=missingState", getPlayerUserId(player))
         return false
     end
 
     if favoritePromptState.HasFavorited == true then
+        self:_debugLog("skip prompt userId=%d reason=hasFavorited", getPlayerUserId(player))
         return false
     end
 
-    return asNonNegativeInteger(favoritePromptState.LastPromptUtcDay) < getUtcDayKey(os.time())
+    local lastPromptUtcDay = asNonNegativeInteger(favoritePromptState.LastPromptUtcDay)
+    local currentUtcDay = getUtcDayKey(os.time())
+    local shouldPrompt = lastPromptUtcDay < currentUtcDay
+    self:_debugLog(
+        "shouldPrompt userId=%d hasFavorited=%s lastPromptUtcDay=%d currentUtcDay=%d result=%s",
+        getPlayerUserId(player),
+        tostring(favoritePromptState.HasFavorited == true),
+        lastPromptUtcDay,
+        currentUtcDay,
+        tostring(shouldPrompt)
+    )
+    return shouldPrompt
 end
 
 function FavoritePlacePromptService:_sendPromptRequest(player)
@@ -174,6 +210,7 @@ function FavoritePlacePromptService:_sendPromptRequest(player)
     self._pendingRequestIdByUserId[userId] = requestId
     self._startedRequestIdByUserId[userId] = nil
 
+    self:_debugLog("send prompt userId=%d requestId=%s placeId=%d", userId, requestId, asNonNegativeInteger(game.PlaceId))
     self._promptFavoritePlaceEvent:FireClient(player, {
         requestId = requestId,
         placeId = asNonNegativeInteger(game.PlaceId),
@@ -220,11 +257,13 @@ function FavoritePlacePromptService:_handlePromptStarted(player, payload)
     local requestId = type(payload) == "table" and tostring(payload.requestId or "") or ""
     local userId = getPlayerUserId(player)
     if requestId == "" or self._pendingRequestIdByUserId[userId] ~= requestId then
+        self:_debugLog("ignore started userId=%d requestId=%s pending=%s", userId, requestId, tostring(self._pendingRequestIdByUserId[userId] or ""))
         return
     end
 
     local favoritePromptState = self:_getFavoritePromptState(player)
     if type(favoritePromptState) ~= "table" then
+        self:_debugLog("ignore started userId=%d requestId=%s reason=missingState", userId, requestId)
         return
     end
 
@@ -233,6 +272,7 @@ function FavoritePlacePromptService:_handlePromptStarted(player, payload)
     favoritePromptState.LastPromptUtcDay = getUtcDayKey(nowTimestamp)
     self._startedRequestIdByUserId[userId] = requestId
     self:_markDirty(player)
+    self:_debugLog("started prompt userId=%d requestId=%s lastPromptUtcDay=%d", userId, requestId, favoritePromptState.LastPromptUtcDay)
 end
 
 function FavoritePlacePromptService:_handlePromptResult(player, payload)
@@ -246,12 +286,21 @@ function FavoritePlacePromptService:_handlePromptResult(player, payload)
     local pendingRequestId = tostring(self._pendingRequestIdByUserId[userId] or "")
     local startedRequestId = tostring(self._startedRequestIdByUserId[userId] or "")
     if requestId == "" or (requestId ~= pendingRequestId and requestId ~= startedRequestId) then
+        self:_debugLog(
+            "ignore result userId=%d requestId=%s pending=%s started=%s result=%s",
+            userId,
+            requestId,
+            pendingRequestId,
+            startedRequestId,
+            result
+        )
         return
     end
 
     local favoritePromptState = self:_getFavoritePromptState(player)
     if type(favoritePromptState) == "table" then
         local nowTimestamp = asNonNegativeInteger(os.time())
+        local previousHasFavorited = favoritePromptState.HasFavorited == true
         if favoritePromptState.PromptedAt <= 0 then
             favoritePromptState.PromptedAt = nowTimestamp
         end
@@ -264,9 +313,21 @@ function FavoritePlacePromptService:_handlePromptResult(player, payload)
             favoritePromptState.HasFavorited = true
         end
         self:_markDirty(player)
+        local flushSucceeded = false
         if favoritePromptState.HasFavorited == true then
-            self:_flushPlayer(player)
+            flushSucceeded = self:_flushPlayer(player)
         end
+        self:_debugLog(
+            "result userId=%d requestId=%s result=%s previousHasFavorited=%s hasFavorited=%s flushed=%s",
+            userId,
+            requestId,
+            result,
+            tostring(previousHasFavorited),
+            tostring(favoritePromptState.HasFavorited == true),
+            tostring(flushSucceeded)
+        )
+    else
+        self:_debugLog("ignore result userId=%d requestId=%s reason=missingState", userId, requestId)
     end
 
     self._pendingRequestIdByUserId[userId] = nil

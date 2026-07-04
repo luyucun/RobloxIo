@@ -67,6 +67,7 @@ PotionController._latestState = {
     subscriptionExperienceBonus = 0,
     potionExperienceBonus = 0,
     rebirthExperienceBonus = 0,
+    trailExperienceBonus = 0,
     totalExperienceMultiplier = 1,
 }
 PotionController._buffBindings = {}
@@ -91,6 +92,7 @@ local TOOLTIP_BONUS_LABELS = {
     Friend = "Friend Bouns:",
     Potion = "Potion Bouns:",
     Rebirth = "Rebirth Bouns:",
+    Trail = "Trail:",
 }
 
 local HOVER_SCALE = 1.05
@@ -930,6 +932,7 @@ function PotionController:_updateTooltipUi()
     setText(self:_findLuckTooltipLabel("Friend"), TOOLTIP_BONUS_LABELS.Friend .. formatBonusMultiplier(self._latestState.friendExperienceBonus))
     setText(self:_findLuckTooltipLabel("Potion"), TOOLTIP_BONUS_LABELS.Potion .. formatBonusMultiplier(self._latestState.potionExperienceBonus))
     setText(self:_findLuckTooltipLabel("Rebirth"), TOOLTIP_BONUS_LABELS.Rebirth .. formatBonusMultiplier(self._latestState.rebirthExperienceBonus))
+    setText(self:_findLuckTooltipLabel("Trail"), TOOLTIP_BONUS_LABELS.Trail .. "Exp*" .. formatBonusMultiplier(self._latestState.trailExperienceBonus))
 end
 
 function PotionController:_updateUi()
@@ -992,6 +995,7 @@ function PotionController:_applyPayload(payload)
     self._latestState.subscriptionExperienceBonus = tonumber(payload.subscriptionExperienceBonus or payload.SubscriptionExperienceBonus) or self._latestState.subscriptionExperienceBonus or 0
     self._latestState.potionExperienceBonus = tonumber(payload.potionExperienceBonus or payload.PotionExperienceBonus) or self._latestState.potionExperienceBonus or 0
     self._latestState.rebirthExperienceBonus = tonumber(payload.rebirthExperienceBonus or payload.RebirthExperienceBonus) or self._latestState.rebirthExperienceBonus or 0
+    self._latestState.trailExperienceBonus = tonumber(payload.trailExperienceBonus or payload.TrailExperienceBonus) or self._latestState.trailExperienceBonus or 0
     self._latestState.friendBonusPercent = math.max(0, math.floor(tonumber(payload.friendBonusPercent or payload.FriendBonusPercent) or ((self._latestState.friendExperienceBonus or 0) * 100) or 0))
     self._latestState.totalExperienceMultiplier = tonumber(payload.totalExperienceMultiplier or payload.TotalExperienceMultiplier) or self._latestState.totalExperienceMultiplier or 1
     self:_updateUi()

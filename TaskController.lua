@@ -88,9 +88,9 @@ local RESET_TWEEN_INFO = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingD
 local CLAIM_PENDING_SECONDS = 1.2
 local BIND_RETRY_SECONDS = 0.5
 local BIND_RETRY_WARNING_SECONDS = 12
-local SELECTED_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
-local UNSELECTED_TEXT_COLOR = Color3.fromRGB(84, 95, 112)
 local DISABLED_TINT = Color3.fromRGB(155, 155, 155)
+local SELECTED_TAB_BACKGROUND_COLOR = Color3.fromRGB(255, 170, 0)
+local DEFAULT_IDLE_TAB_BACKGROUND_COLOR = Color3.fromRGB(100, 100, 100)
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -151,10 +151,58 @@ local function setImage(instance, image)
     end
 end
 
-local function setTextColor(instance, color)
-    if instance and (instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox")) then
-        instance.TextColor3 = color
+local function restoreDefaultSize(guiObject)
+    if not (guiObject and guiObject:IsA("GuiObject")) then
+        return
     end
+
+    local defaultXScale = guiObject:GetAttribute("TaskDefaultSizeXScale")
+    local defaultXOffset = guiObject:GetAttribute("TaskDefaultSizeXOffset")
+    local defaultYScale = guiObject:GetAttribute("TaskDefaultSizeYScale")
+    local defaultYOffset = guiObject:GetAttribute("TaskDefaultSizeYOffset")
+    if defaultXScale == nil or defaultXOffset == nil or defaultYScale == nil or defaultYOffset == nil then
+        local size = guiObject.Size
+        guiObject:SetAttribute("TaskDefaultSizeXScale", size.X.Scale)
+        guiObject:SetAttribute("TaskDefaultSizeXOffset", size.X.Offset)
+        guiObject:SetAttribute("TaskDefaultSizeYScale", size.Y.Scale)
+        guiObject:SetAttribute("TaskDefaultSizeYOffset", size.Y.Offset)
+        return
+    end
+
+    guiObject.Size = UDim2.new(defaultXScale, defaultXOffset, defaultYScale, defaultYOffset)
+end
+
+local function colorsAlmostEqual(left, right)
+    return math.abs(left.R - right.R) < 0.01
+        and math.abs(left.G - right.G) < 0.01
+        and math.abs(left.B - right.B) < 0.01
+end
+
+local function getIdleTabBackgroundColor(guiObject)
+    if not (guiObject and guiObject:IsA("GuiObject")) then
+        return DEFAULT_IDLE_TAB_BACKGROUND_COLOR
+    end
+
+    local storedColor = guiObject:GetAttribute("TaskIdleTabBackgroundColor3")
+    if typeof(storedColor) == "Color3" then
+        return storedColor
+    end
+
+    local currentColor = guiObject.BackgroundColor3
+    local idleColor = colorsAlmostEqual(currentColor, SELECTED_TAB_BACKGROUND_COLOR)
+        and DEFAULT_IDLE_TAB_BACKGROUND_COLOR
+        or currentColor
+    guiObject:SetAttribute("TaskIdleTabBackgroundColor3", idleColor)
+    return idleColor
+end
+
+local function applyTabButtonStyle(root, selected)
+    if not (root and root:IsA("GuiObject")) then
+        return
+    end
+
+    local idleColor = getIdleTabBackgroundColor(root)
+    root.BackgroundColor3 = selected == true and SELECTED_TAB_BACKGROUND_COLOR or idleColor
 end
 
 local function setButtonEnabled(button, enabled)
@@ -302,6 +350,14 @@ local function formatCountdown(seconds)
     return string.format("%02d:%02d:%02d", hours, minutes, remainingSeconds)
 end
 
+local function secondsToDisplayMinutes(seconds)
+    local safeSeconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    if safeSeconds <= 0 then
+        return 0
+    end
+    return math.max(1, math.ceil(safeSeconds / 60))
+end
+
 local function pluralize(noun, amount)
     if math.max(0, math.floor(tonumber(amount) or 0)) == 1 then
         return noun
@@ -359,7 +415,9 @@ local function buildProgressText(task)
     local progress = math.max(0, math.floor(tonumber(task and task.progress) or 0))
     local target = math.max(1, math.floor(tonumber(task and task.target) or 1))
     if tostring(task and task.taskType or "") == "OnlineSeconds" then
-        return formatDuration(progress) .. "/" .. formatDuration(target)
+        local targetMinutes = math.max(1, secondsToDisplayMinutes(target))
+        local progressMinutes = math.min(targetMinutes, secondsToDisplayMinutes(progress))
+        return formatInteger(progressMinutes) .. "/" .. formatInteger(targetMinutes)
     end
     return formatInteger(progress) .. "/" .. formatInteger(target)
 end
@@ -786,14 +844,7 @@ function TaskController:_applyTabs()
         end
         setVisible(root:FindFirstChild("SelectedBg"), selected)
         setVisible(root:FindFirstChild("IdleBg"), not selected)
-        for _, descendant in ipairs(root:GetDescendants()) do
-            if descendant:IsA("TextLabel") or descendant:IsA("TextButton") or descendant:IsA("TextBox") then
-                setTextColor(descendant, selected and SELECTED_TEXT_COLOR or UNSELECTED_TEXT_COLOR)
-            end
-        end
-        if root:IsA("TextLabel") or root:IsA("TextButton") or root:IsA("TextBox") then
-            setTextColor(root, selected and SELECTED_TEXT_COLOR or UNSELECTED_TEXT_COLOR)
-        end
+        applyTabButtonStyle(root, selected)
     end
 
     applyTab(self._dailyTabRoot, dailySelected)
@@ -850,12 +901,15 @@ function TaskController:_renderProgress(root, taskData, includeDescription)
 
     local ratio = math.clamp((tonumber(taskData and taskData.progress) or 0) / math.max(1, tonumber(taskData and taskData.target) or 1), 0, 1)
     if progressFill and progressFill:IsA("GuiObject") then
-        progressFill.Size = UDim2.new(ratio, 0, progressFill.Size.Y.Scale, progressFill.Size.Y.Offset)
+        restoreDefaultSize(progressFill)
+        if includeDescription ~= true then
+            progressFill.Size = UDim2.new(ratio, 0, progressFill.Size.Y.Scale, progressFill.Size.Y.Offset)
+        end
     end
 
     local progressText = buildProgressText(taskData)
     if includeDescription == true then
-        progressText = buildTaskSubtitle(taskData) .. " " .. progressText
+        progressText = buildTaskSubtitle(taskData) .. " (" .. progressText .. ")"
     end
     setText(progressLabel, progressText)
 end
@@ -904,8 +958,8 @@ function TaskController:_bindDetailClaimButton(taskData)
 
     setVisible(claimRoot or claimButton, taskData.isClaimed ~= true)
     setVisible(completeRoot, taskData.isClaimed == true)
-    setButtonText(claimRoot or claimButton, isPending and "Claiming" or (canClaim and "Claim" or "Wait"))
-    tintGuiTree(claimRoot or claimButton, canClaim)
+    setButtonText(claimRoot or claimButton, isPending and "Claiming" or "Claim")
+    tintGuiTree(claimRoot or claimButton, not isPending)
 
     if claimButton then
         self:_bindButton(claimButton, function()
@@ -928,7 +982,7 @@ function TaskController:_bindDetailClaimButton(taskData)
         end, {
             ScaleTarget = claimRoot or claimButton,
         }, self._detailBindings)
-        setButtonEnabled(claimButton, canClaim)
+        setButtonEnabled(claimButton, true)
     end
 end
 

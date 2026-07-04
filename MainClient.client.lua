@@ -107,14 +107,17 @@ local TrailFxController = requireLocalModule("TrailFxController")
 local SubscriptionController = requireLocalModule("SubscriptionController")
 local ShopController = requireLocalModule("ShopController")
 local CodeController = requireLocalModule("CodeController")
+local GameNewsController = requireLocalModule("GameNewsController")
 local OnlineRewardController = requireLocalModule("OnlineRewardController")
 local SevenDayLoginRewardController = requireLocalModule("SevenDayLoginRewardController")
 local TaskController = requireLocalModule("TaskController")
+local ChestController = requireLocalModule("ChestController")
 local OptionController = requireLocalModule("OptionController")
 local BossHitFeedbackController = requireLocalModule("BossHitFeedbackController")
 local NoobMachineController = requireLocalModule("NoobMachineController")
 local GuideController = requireLocalModule("GuideController")
 local FavoritePlacePromptController = requireLocalModule("FavoritePlacePromptController")
+local ActivityRsvpPromptController = requireLocalModule("ActivityRsvpPromptController")
 
 initController("AudioSettingsController", AudioSettingsController, {
     LocalPlayer = localPlayer,
@@ -292,11 +295,17 @@ initController("TaskController", TaskController, {
     RootScript = script,
 })
 
+initController("ChestController", ChestController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
 initController("SkinController", SkinController, {
     LocalPlayer = localPlayer,
     RootScript = script,
     WheelController = WheelController,
     SevenDayLoginRewardController = SevenDayLoginRewardController,
+    ChestController = ChestController,
 })
 
 initController("TrailFxController", TrailFxController, {
@@ -310,9 +319,16 @@ initController("ShopController", ShopController, {
     WheelController = WheelController,
     SubscriptionController = SubscriptionController,
     SevenDayLoginRewardController = SevenDayLoginRewardController,
+    ChestController = ChestController,
+    AudioSettingsController = AudioSettingsController,
 })
 
 initController("CodeController", CodeController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
+initController("GameNewsController", GameNewsController, {
     LocalPlayer = localPlayer,
     RootScript = script,
 })
@@ -340,6 +356,11 @@ initController("GuideController", GuideController, {
 })
 
 initController("FavoritePlacePromptController", FavoritePlacePromptController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+})
+
+initController("ActivityRsvpPromptController", ActivityRsvpPromptController, {
     LocalPlayer = localPlayer,
     RootScript = script,
 })

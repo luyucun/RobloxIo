@@ -47,6 +47,27 @@ local function asNonNegativeInteger(value)
     return math.max(0, math.floor(tonumber(value) or 0))
 end
 
+function FavoritePlacePromptController:_getFavoriteState(placeId)
+    local resolvedPlaceId = asNonNegativeInteger(placeId)
+    if resolvedPlaceId <= 0 then
+        return nil, "InvalidPlaceId"
+    end
+
+    local ok, isFavoriteOrError = pcall(function()
+        return AvatarEditorService:GetFavoriteAsync(resolvedPlaceId, Enum.AvatarItemType.Asset)
+    end)
+    if not ok then
+        return nil, tostring(isFavoriteOrError or "")
+    end
+
+    return isFavoriteOrError == true, ""
+end
+
+function FavoritePlacePromptController:_isFavorite(placeId)
+    local isFavorite = self:_getFavoriteState(placeId)
+    return isFavorite == true
+end
+
 function FavoritePlacePromptController:_bindRemoteEvents()
     local eventsRoot = ReplicatedStorage:FindFirstChild(RemoteNames.RootFolder)
         or ReplicatedStorage:WaitForChild(RemoteNames.RootFolder, 10)
@@ -84,6 +105,10 @@ function FavoritePlacePromptController:_reportPromptResult(result)
     end
 
     local resultName = typeof(result) == "EnumItem" and result.Name or tostring(result or "")
+    if self:_isFavorite(self._activePlaceId) then
+        resultName = "AlreadyFavorite"
+    end
+
     if self._favoritePlacePromptResultEvent then
         self._favoritePlacePromptResultEvent:FireServer({
             requestId = requestId,
@@ -113,6 +138,12 @@ function FavoritePlacePromptController:_promptFavoritePlace(requestId, placeId)
     self._didPromptThisSession = true
     self._activeRequestId = resolvedRequestId
     self._activePlaceId = resolvedPlaceId
+
+    if self:_isFavorite(resolvedPlaceId) then
+        self:_reportPromptResult("AlreadyFavorite")
+        return
+    end
+
     local okPrompt, promptError = pcall(function()
         AvatarEditorService:PromptSetFavorite(resolvedPlaceId, Enum.AvatarItemType.Asset, true)
     end)

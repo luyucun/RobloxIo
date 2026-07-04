@@ -303,6 +303,18 @@ function CodeService:_grantRewards(player, entry)
                 productGroup = "RedeemCode",
                 itemSku = tostring(entry.CodeText or entry.CodeId or "Code") .. "_Diamonds",
             })
+        elseif rewardType == "Chest" then
+            if not (self._playerStateService and self._playerStateService.AddChest) then
+                return false, "ChestServiceUnavailable"
+            end
+            local success, reason = self._playerStateService:AddChest(player, reward.ChestId, amount, {
+                source = "code",
+                productGroup = "RedeemCode",
+                itemSku = tostring(entry.CodeText or entry.CodeId or "Code") .. "_Chest_" .. tostring(reward.ChestId or ""),
+            })
+            if not success then
+                return false, reason or "ChestGrantFailed"
+            end
         else
             self:_warnInvalidAuthorConfig(entry, "跳过不支持的奖励类型: " .. rewardType)
             continue

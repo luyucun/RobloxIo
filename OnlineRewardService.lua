@@ -273,6 +273,12 @@ function OnlineRewardService:_grantReward(player, reward)
         local durationSeconds = math.max(1, math.floor(tonumber(reward.DurationSeconds) or amount))
         local success, reason = self._healthService:GrantShield(player, durationSeconds, "OnlineReward")
         return success == true, reason
+    elseif rewardType == "Chest" then
+        if not (self._playerStateService and self._playerStateService.AddChest) then
+            return false, "ChestServiceUnavailable"
+        end
+        local success, reason = self._playerStateService:AddChest(player, reward.ChestId, amount, context)
+        return success == true, reason
     end
 
     return false, "UnsupportedRewardType"

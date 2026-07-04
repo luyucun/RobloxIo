@@ -20,6 +20,23 @@ TrailConfig.Trails = {
         RobuxPrice = 19,
         ProductId = 3601859594,
         IsDefaultUnlocked = true,
+        SortOrder = 1,
+        IsBoxOnly = false,
+        ExperienceBonus = 0.0,
+    },
+    {
+        Id = 1009,
+        Name = 'Bubble Pop',
+        TemplateName = 'Trail009',
+        TemplatePath = 'ReplicatedStorage/Model/Trail/Trail009',
+        IconImage = 'rbxassetid://130952449390741',
+        DiamondPrice = 0,
+        RobuxPrice = 0,
+        ProductId = 0,
+        IsDefaultUnlocked = false,
+        SortOrder = 2,
+        IsBoxOnly = true,
+        ExperienceBonus = 0.4,
     },
     {
         Id = 1002,
@@ -31,6 +48,9 @@ TrailConfig.Trails = {
         RobuxPrice = 59,
         ProductId = 3601859651,
         IsDefaultUnlocked = false,
+        SortOrder = 3,
+        IsBoxOnly = false,
+        ExperienceBonus = 0.1,
     },
     {
         Id = 1003,
@@ -42,6 +62,9 @@ TrailConfig.Trails = {
         RobuxPrice = 99,
         ProductId = 3602015249,
         IsDefaultUnlocked = false,
+        SortOrder = 4,
+        IsBoxOnly = false,
+        ExperienceBonus = 0.15,
     },
     {
         Id = 1004,
@@ -53,6 +76,9 @@ TrailConfig.Trails = {
         RobuxPrice = 169,
         ProductId = 3602015327,
         IsDefaultUnlocked = false,
+        SortOrder = 5,
+        IsBoxOnly = false,
+        ExperienceBonus = 0.2,
     },
     {
         Id = 1005,
@@ -64,6 +90,9 @@ TrailConfig.Trails = {
         RobuxPrice = 299,
         ProductId = 3602015404,
         IsDefaultUnlocked = false,
+        SortOrder = 6,
+        IsBoxOnly = false,
+        ExperienceBonus = 0.25,
     },
     {
         Id = 1006,
@@ -75,6 +104,9 @@ TrailConfig.Trails = {
         RobuxPrice = 399,
         ProductId = 3602015478,
         IsDefaultUnlocked = false,
+        SortOrder = 7,
+        IsBoxOnly = false,
+        ExperienceBonus = 0.3,
     },
     {
         Id = 1007,
@@ -86,6 +118,9 @@ TrailConfig.Trails = {
         RobuxPrice = 499,
         ProductId = 3602015534,
         IsDefaultUnlocked = false,
+        SortOrder = 8,
+        IsBoxOnly = false,
+        ExperienceBonus = 0.35,
     },
     {
         Id = 1008,
@@ -97,6 +132,9 @@ TrailConfig.Trails = {
         RobuxPrice = 599,
         ProductId = 3602015590,
         IsDefaultUnlocked = false,
+        SortOrder = 9,
+        IsBoxOnly = false,
+        ExperienceBonus = 0.4,
     },
 }
 -- END GENERATED TRAIL ROWS
@@ -107,7 +145,6 @@ TrailConfig.ByProductId = {}
 
 for index, trail in ipairs(TrailConfig.Trails) do
     trail.Id = math.floor(tonumber(trail.Id) or 0)
-    trail.SortOrder = index
     trail.TemplateName = tostring(trail.TemplateName or "")
     trail.TemplatePath = tostring(trail.TemplatePath or "")
     trail.IconImage = tostring(trail.IconImage or "")
@@ -115,6 +152,9 @@ for index, trail in ipairs(TrailConfig.Trails) do
     trail.RobuxPrice = math.max(0, math.floor(tonumber(trail.RobuxPrice) or 0))
     trail.ProductId = math.max(0, math.floor(tonumber(trail.ProductId) or 0))
     trail.IsDefaultUnlocked = trail.IsDefaultUnlocked == true or tonumber(trail.IsDefaultUnlocked) == 1
+    trail.SortOrder = math.max(0, math.floor(tonumber(trail.SortOrder) or index))
+    trail.IsBoxOnly = trail.IsBoxOnly == true or tonumber(trail.IsBoxOnly) == 1
+    trail.ExperienceBonus = math.max(0, tonumber(trail.ExperienceBonus) or 0)
     TrailConfig.ById[trail.Id] = trail
     TrailConfig.ByTemplateName[trail.TemplateName] = trail
     if trail.ProductId > 0 then
@@ -152,6 +192,9 @@ function TrailConfig.CopyForClient(trail)
         robuxPrice = trail.RobuxPrice,
         productId = trail.ProductId,
         isDefaultUnlocked = trail.IsDefaultUnlocked == true,
+        sortOrder = trail.SortOrder,
+        isBoxOnly = trail.IsBoxOnly == true,
+        experienceBonus = trail.ExperienceBonus,
     }
 end
 

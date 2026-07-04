@@ -419,6 +419,12 @@ function SevenDayLoginRewardService:_grantReward(player, reward)
         local durationSeconds = math.max(1, math.floor(tonumber(reward.DurationSeconds) or amount))
         local success, reason = self._healthService:GrantShield(player, durationSeconds, "SevenDayLoginReward")
         return success == true, reason
+    elseif rewardType == "Chest" then
+        if not (self._playerStateService and self._playerStateService.AddChest) then
+            return false, "ChestServiceUnavailable"
+        end
+        local success, reason = self._playerStateService:AddChest(player, reward.ChestId, amount, context)
+        return success == true, reason
     end
 
     return false, "UnsupportedRewardType"
@@ -582,7 +588,11 @@ function SevenDayLoginRewardService:OnPlayerAdded(player)
     if not ActorUtils.IsPlayer(player) then
         return
     end
-    task.defer(function()
+    task.spawn(function()
+        local deadline = os.clock() + 12
+        while player.Parent and not self:_isPlayerLoaded(player) and os.clock() < deadline do
+            task.wait(0.25)
+        end
         self:PushState(player)
     end)
 end

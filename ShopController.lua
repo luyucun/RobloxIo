@@ -9,6 +9,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
@@ -66,9 +67,12 @@ ShopController._requestStarterPackClaimEvent = nil
 ShopController._requestPurchaseContextEvent = nil
 ShopController._rewardFeedbackEvent = nil
 ShopController._requestSkinPurchaseEvent = nil
+ShopController._requestChestRewardClaimEvent = nil
 ShopController._wheelController = nil
 ShopController._subscriptionController = nil
 ShopController._sevenDayLoginRewardController = nil
+ShopController._chestController = nil
+ShopController._audioSettings = nil
 ShopController._bindRetryQueued = false
 ShopController._isOpen = false
 ShopController._panelTweens = {}
@@ -76,7 +80,11 @@ ShopController._panelAnimationSerial = 0
 ShopController._rewardPopupSerial = 0
 ShopController._rewardPopupInputConnection = nil
 ShopController._rewardPopupCanClose = false
+ShopController._rewardPopupOriginalZIndexes = nil
+ShopController._chestRewardFeedbackSerial = 0
 ShopController._lastRewardSource = nil
+ShopController._lastRewardKeepSourceOpen = false
+ShopController._lastRewardClaimId = nil
 ShopController._starterPackClaimed = false
 ShopController._featuredSkinOwned = false
 ShopController._marketStallBindRetryQueued = false
@@ -101,6 +109,11 @@ local POPUP_OPEN_DURATION = 0.24
 local POPUP_ITEM_STAGGER = 0.08
 local POPUP_CLOSE_DELAY = 1.5
 local MIN_POPUP_CLOSE_DELAY = 0.1
+local CHEST_REWARD_POPUP_MIN_DELAY = 2.1
+local CLAIM_POPUP_TOP_Z_INDEX = 9500
+local CHEST_REWARD_SOUND_ID = "rbxassetid://104644728934074"
+local CHEST_REWARD_SOUND_FOLDER = "Audio"
+local CHEST_REWARD_SOUND_NAME = "Claimbox"
 local SECRET_GRADIENT_OFFSET_RANGE = 1
 local SECRET_GRADIENT_ONE_WAY_DURATION = 2.4
 local SECRET_GRADIENT_UPDATE_INTERVAL = 0.033
@@ -269,6 +282,25 @@ local function setImage(imageObject, image)
     if imageObject and (imageObject:IsA("ImageLabel") or imageObject:IsA("ImageButton")) then
         imageObject.Image = tostring(image or "")
     end
+end
+
+local function findSoundByName(folderName, soundName)
+    local folder = SoundService:FindFirstChild(folderName) or SoundService:FindFirstChild(folderName, true)
+    if not folder then
+        return nil
+    end
+
+    local direct = folder:FindFirstChild(soundName)
+    if direct and direct:IsA("Sound") then
+        return direct
+    end
+
+    for _, descendant in ipairs(folder:GetDescendants()) do
+        if descendant:IsA("Sound") and descendant.Name == soundName then
+            return descendant
+        end
+    end
+    return nil
 end
 
 local function cloneColorSequence(colorSequence)
@@ -1079,7 +1111,55 @@ function ShopController:_disconnectPopupInput()
     self._rewardPopupInputConnection = nil
 end
 
+function ShopController:_raiseRewardPopupZIndex()
+    if not (self._claimPopup and self._claimPopup:IsA("GuiObject")) then
+        return
+    end
+
+    self:_restoreRewardPopupZIndex()
+    self._rewardPopupOriginalZIndexes = {}
+
+    local minZIndex = self._claimPopup.ZIndex
+    for _, descendant in ipairs(self._claimPopup:GetDescendants()) do
+        if descendant:IsA("GuiObject") then
+            minZIndex = math.min(minZIndex, descendant.ZIndex)
+        end
+    end
+    local offset = math.max(0, CLAIM_POPUP_TOP_Z_INDEX - minZIndex)
+
+    local function raiseNode(node)
+        if not (node and node:IsA("GuiObject")) then
+            return
+        end
+        self._rewardPopupOriginalZIndexes[node] = node.ZIndex
+        node.ZIndex = node.ZIndex + offset
+    end
+
+    raiseNode(self._claimPopup)
+    for _, descendant in ipairs(self._claimPopup:GetDescendants()) do
+        raiseNode(descendant)
+    end
+end
+
+function ShopController:_restoreRewardPopupZIndex()
+    if type(self._rewardPopupOriginalZIndexes) ~= "table" then
+        self._rewardPopupOriginalZIndexes = nil
+        return
+    end
+
+    for node, zIndex in pairs(self._rewardPopupOriginalZIndexes) do
+        if node and node.Parent and node:IsA("GuiObject") then
+            node.ZIndex = zIndex
+        end
+    end
+    self._rewardPopupOriginalZIndexes = nil
+end
+
 function ShopController:_returnToRewardSource()
+    if self._lastRewardKeepSourceOpen == true then
+        return
+    end
+
     local source = tostring(self._lastRewardSource or "")
     if source == "Shop" then
         self:_setOpen(true)
@@ -1088,6 +1168,65 @@ function ShopController:_returnToRewardSource()
     elseif source == "SevenDayLoginReward" and self._sevenDayLoginRewardController and self._sevenDayLoginRewardController.OpenSevenDayLoginReward then
         self._sevenDayLoginRewardController:OpenSevenDayLoginReward()
     end
+end
+
+function ShopController:_claimPendingChestReward()
+    if self._lastRewardSource ~= "Chest" then
+        self._lastRewardClaimId = nil
+        return
+    end
+
+    local rewardClaimId = self._lastRewardClaimId
+    self._lastRewardClaimId = nil
+    if tostring(rewardClaimId or "") == "" then
+        return
+    end
+    if not self._requestChestRewardClaimEvent then
+        warn("[ShopController] Missing RequestChestRewardClaim remote; pending chest reward was not claimed.")
+        return
+    end
+
+    self._requestChestRewardClaimEvent:FireServer({
+        rewardClaimId = rewardClaimId,
+    })
+end
+
+function ShopController:_getRewardSourcePanel(source)
+    local sourceName = tostring(source or "")
+    if sourceName == "Chest" and self._mainGui then
+        local panel = self._mainGui:FindFirstChild("ChestRewards")
+        if panel and panel:IsA("GuiObject") then
+            return panel
+        end
+    end
+    return nil
+end
+
+function ShopController:_playChestRewardPopupSound()
+    if self._audioSettings then
+        if type(self._audioSettings.PlaySfxByPath) == "function" then
+            if self._audioSettings:PlaySfxByPath(CHEST_REWARD_SOUND_FOLDER, CHEST_REWARD_SOUND_NAME, true) then
+                return
+            end
+        end
+        if type(self._audioSettings.IsSfxEnabled) == "function" and self._audioSettings:IsSfxEnabled() ~= true then
+            return
+        end
+    end
+
+    local sound = findSoundByName(CHEST_REWARD_SOUND_FOLDER, CHEST_REWARD_SOUND_NAME)
+    if not sound then
+        return
+    end
+
+    pcall(function()
+        if tostring(sound.SoundId or "") == "" then
+            sound.SoundId = CHEST_REWARD_SOUND_ID
+        end
+        sound:Stop()
+        sound.TimePosition = 0
+        sound:Play()
+    end)
 end
 
 function ShopController:_closeRewardPopup()
@@ -1103,7 +1242,9 @@ function ShopController:_closeRewardPopup()
     self._rewardPopupSerial += 1
     self._claimPopup.Visible = false
     self:_clearPopupItems()
+    self:_restoreRewardPopupZIndex()
     ModalUiController:Release("ClaimSuccessful")
+    self:_claimPendingChestReward()
     self:_returnToRewardSource()
 end
 
@@ -1153,19 +1294,40 @@ function ShopController:_playRewardPopup(payload)
     end
 
     self._lastRewardSource = tostring(payload and payload.source or "Shop")
+    self._lastRewardKeepSourceOpen = type(payload) == "table" and payload.keepSourceOpen == true or false
+    if self._lastRewardSource == "Chest" and type(payload) == "table" and payload.requiresClaim == true then
+        self._lastRewardClaimId = payload.rewardClaimId
+    else
+        self._lastRewardClaimId = nil
+    end
     self:_disconnectPopupInput()
     self._rewardPopupCanClose = false
     self._rewardPopupSerial += 1
     local serial = self._rewardPopupSerial
 
-    self:_setOpen(false, true)
-    if self._lastRewardSource == "Wheel" and self._wheelController and self._wheelController.Close then
-        self._wheelController:Close(true)
+    if self._lastRewardKeepSourceOpen ~= true then
+        self:_setOpen(false, true)
+        if self._lastRewardSource == "Wheel" and self._wheelController and self._wheelController.Close then
+            self._wheelController:Close(true)
+        end
     end
 
-    ModalUiController:Acquire("ClaimSuccessful", self._claimPopup)
+    local modalOptions = nil
+    if self._lastRewardKeepSourceOpen == true then
+        local sourcePanel = self:_getRewardSourcePanel(self._lastRewardSource)
+        if sourcePanel then
+            modalOptions = {
+                SuppressExclusions = { sourcePanel },
+                SkipBlur = true,
+            }
+        end
+    end
+    ModalUiController:Acquire("ClaimSuccessful", self._claimPopup, modalOptions)
     self._claimPopup.Visible = true
     self:_clearPopupItems()
+    if self._lastRewardSource == "Chest" then
+        self:_playChestRewardPopupSound()
+    end
 
     local uiScale = ensureUiScale(self._claimPopup)
     local originalPosition = self._claimPopup.Position
@@ -1201,6 +1363,7 @@ function ShopController:_playRewardPopup(payload)
             end)
         end
     end
+    self:_raiseRewardPopupZIndex()
 
     local closeDelay = math.max(MIN_POPUP_CLOSE_DELAY, tonumber(payload and payload.closeDelay) or POPUP_CLOSE_DELAY)
     task.delay(closeDelay, function()
@@ -1216,6 +1379,61 @@ function ShopController:_playRewardPopup(payload)
             end
         end)
     end)
+end
+
+function ShopController:_playRewardFeedback(payload)
+    local source = tostring(type(payload) == "table" and payload.source or "Shop")
+    if source ~= "Chest" then
+        self:_playRewardPopup(payload)
+        return
+    end
+
+    if not (self._claimPopup and self._claimPopup:IsA("GuiObject")) then
+        self:_bindUi(true)
+    end
+    self:_disconnectPopupInput()
+    self._rewardPopupCanClose = false
+    if self._claimPopup and self._claimPopup:IsA("GuiObject") then
+        self._claimPopup.Visible = false
+    end
+    self:_clearPopupItems()
+    self:_restoreRewardPopupZIndex()
+    ModalUiController:Release("ClaimSuccessful")
+
+    self._chestRewardFeedbackSerial += 1
+    local serial = self._chestRewardFeedbackSerial
+    local completed = false
+    local startedAt = os.clock()
+
+    local function playPopupAfterAnimation()
+        if completed or self._chestRewardFeedbackSerial ~= serial then
+            return
+        end
+        completed = true
+        local elapsed = os.clock() - startedAt
+        local delaySeconds = math.max(0, CHEST_REWARD_POPUP_MIN_DELAY - elapsed)
+        task.delay(delaySeconds, function()
+            if self._chestRewardFeedbackSerial == serial then
+                self:_playRewardPopup(payload)
+            end
+        end)
+    end
+
+    local chestController = self._chestController
+    if not (chestController and type(chestController.PlayOpenAnimation) == "function") then
+        playPopupAfterAnimation()
+        return
+    end
+
+    local ok, played = pcall(function()
+        return chestController:PlayOpenAnimation(playPopupAfterAnimation)
+    end)
+    if not ok then
+        warn("[ShopController] Chest open animation failed: " .. tostring(played))
+    end
+    if ok ~= true or played ~= true then
+        playPopupAfterAnimation()
+    end
 end
 
 function ShopController:_bindUi(silent)
@@ -1400,6 +1618,7 @@ function ShopController:_connectRemotes()
     self._requestPurchaseContextEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestShopPurchaseContext, 10)
     self._rewardFeedbackEvent = systemEventsFolder:WaitForChild(RemoteNames.System.ShopRewardFeedback, 10)
     self._requestSkinPurchaseEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestSkinPurchase, 10)
+    self._requestChestRewardClaimEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestChestRewardClaim, 10)
 
     if self._stateSyncEvent then
         table.insert(self._connections, self._stateSyncEvent.OnClientEvent:Connect(function(payload)
@@ -1408,7 +1627,7 @@ function ShopController:_connectRemotes()
     end
     if self._rewardFeedbackEvent then
         table.insert(self._connections, self._rewardFeedbackEvent.OnClientEvent:Connect(function(payload)
-            self:_playRewardPopup(payload)
+            self:_playRewardFeedback(payload)
         end))
     end
 end
@@ -1436,12 +1655,18 @@ function ShopController:Init(dependencies)
     self._wheelController = dependencies and dependencies.WheelController or nil
     self._subscriptionController = dependencies and dependencies.SubscriptionController or nil
     self._sevenDayLoginRewardController = dependencies and dependencies.SevenDayLoginRewardController or nil
+    self._chestController = dependencies and dependencies.ChestController or nil
+    self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
+    self._lastRewardKeepSourceOpen = false
+    self._lastRewardClaimId = nil
+    self._chestRewardFeedbackSerial += 1
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
     self:_disconnectMarketStallBindings()
     self:_disconnectPopupInput()
     self:_stopSkinSecretGradientLoop()
     self:_clearPopupItems()
+    self:_restoreRewardPopupZIndex()
 
     self:_connectRemotes()
     if not self:_bindUi(true) then

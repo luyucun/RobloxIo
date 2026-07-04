@@ -335,6 +335,18 @@ local function normalizeSavedData(data)
         equippedTrailId = nil
     end
 
+    local chests = {}
+    local savedChests = type(data.chests) == "table" and data.chests or data.Chests
+    if type(savedChests) == "table" then
+        for chestKey, count in pairs(savedChests) do
+            local chestId = math.floor(tonumber(chestKey) or 0)
+            local amount = math.max(0, math.floor(tonumber(count) or 0))
+            if chestId > 0 and amount > 0 then
+                chests[tostring(chestId)] = amount
+            end
+        end
+    end
+
     local ownedTitles = {}
     local savedOwnedTitles = type(data.ownedTitles) == "table" and data.ownedTitles or data.OwnedTitles
     if type(savedOwnedTitles) == "table" then
@@ -470,6 +482,7 @@ local function normalizeSavedData(data)
         equippedSkinId = equippedSkinId,
         ownedTrails = ownedTrails,
         equippedTrailId = equippedTrailId,
+        chests = chests,
         ownedTitles = ownedTitles,
         equippedTitleId = equippedTitleId,
         attributeCaps = attributeCaps,
@@ -671,6 +684,7 @@ function RebirthService:_buildSavePayload(player, options)
         equippedSkinId = state.EquippedSkinId,
         ownedTrails = state.OwnedTrails or {},
         equippedTrailId = state.EquippedTrailId,
+        chests = state.Chests or {},
         ownedTitles = state.OwnedTitles or {},
         equippedTitleId = state.EquippedTitleId,
         attributeCaps = AttributeConfig.CopyNumberMap(state.AttributeCaps),
@@ -717,6 +731,7 @@ function RebirthService:_savePlayer(player, options)
                 equippedSkinId = payload.equippedSkinId,
                 ownedTrails = payload.ownedTrails,
                 equippedTrailId = payload.equippedTrailId,
+                chests = payload.chests,
                 ownedTitles = payload.ownedTitles,
                 equippedTitleId = payload.equippedTitleId,
                 attributeCaps = payload.attributeCaps,

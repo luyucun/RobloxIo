@@ -20,6 +20,7 @@ GMCommandService._healthService = nil
 GMCommandService._revengeService = nil
 GMCommandService._gameAnalyticsService = nil
 GMCommandService._taskService = nil
+GMCommandService._chestService = nil
 GMCommandService._connections = {}
 
 local function requireSharedModule(moduleName)
@@ -156,6 +157,62 @@ local function parseTaskResetCommand(message)
         return nil, "InvalidScope"
     end
     return scope
+end
+
+local function parseChestAddCommand(message)
+    local text = tostring(message or "")
+    local trimmed = text:match("^%s*(.-)%s*$")
+    local command, chestIdText, amountText = trimmed:match("^/(%S+)%s+(%S+)%s+(%S+)%s*$")
+    if not command or string.lower(command) ~= "chestadd" then
+        return nil
+    end
+
+    local chestId = math.floor(tonumber(chestIdText) or 0)
+    local amount = math.floor(tonumber(amountText) or 0)
+    if chestId <= 0 then
+        return nil, "InvalidChestId"
+    end
+    if amount <= 0 then
+        return nil, "InvalidAmount"
+    end
+    return chestId, amount
+end
+
+local function parseChestClearCommand(message)
+    local text = tostring(message or "")
+    local trimmed = text:match("^%s*(.-)%s*$")
+    local command, chestIdText = trimmed:match("^/(%S+)%s*(%S*)%s*$")
+    if not command or string.lower(command) ~= "chestclear" then
+        return nil
+    end
+
+    if tostring(chestIdText or "") == "" then
+        return false
+    end
+    local chestId = math.floor(tonumber(chestIdText) or 0)
+    if chestId <= 0 then
+        return nil, "InvalidChestId"
+    end
+    return chestId
+end
+
+local function parseChestOpenCommand(message)
+    local text = tostring(message or "")
+    local trimmed = text:match("^%s*(.-)%s*$")
+    local command, chestIdText, modeText = trimmed:match("^/(%S+)%s+(%S+)%s+(%S+)%s*$")
+    if not command or string.lower(command) ~= "chestopen" then
+        return nil
+    end
+
+    local chestId = math.floor(tonumber(chestIdText) or 0)
+    if chestId <= 0 then
+        return nil, "InvalidChestId"
+    end
+    local mode = string.lower(tostring(modeText or "one"))
+    if mode ~= "one" and mode ~= "all" then
+        return nil, "InvalidMode"
+    end
+    return chestId, mode == "all" and "All" or "One"
 end
 
 local function parseAttributeCapAmountCommand(message, expectedCommandName)
@@ -386,6 +443,57 @@ function GMCommandService:_handleChatCommand(player, message)
         local killCount, totalPlayerKills = addKillsForPlayer(self._playerStateService, player, amount)
         print(string.format("[GMCommandService] %s added %d kills, round=%d, total=%d", player.Name, amount, killCount, totalPlayerKills))
         return true, totalPlayerKills
+    end
+
+    if commandName == "chestadd" or commandName == "addbox101" or commandName == "chestclear" or commandName == "chestopen" then
+        if not self._chestService then
+            warn("[GMCommandService] ChestService is unavailable")
+            return false, "ServiceUnavailable"
+        end
+
+        if commandName == "addbox101" then
+            local amount, errorCode = parsePositiveAmountCommand(message, commandName)
+            if not amount then
+                warn(string.format("[GMCommandService] Invalid /addbox101 command from %s: %s", player.Name, tostring(message)))
+                return false, errorCode or "InvalidAmount"
+            end
+            local chestId = 101
+            local success, result = self._chestService:AddChestForStudio(player, chestId, amount)
+            print(string.format("[GMCommandService] %s added chest via /addbox101 chestId=%d amount=%d: success=%s, result=%s", player.Name, chestId, amount, tostring(success), tostring(result)))
+            return success == true, result
+        end
+
+        if commandName == "chestadd" then
+            local chestId, amountOrError = parseChestAddCommand(message)
+            if not chestId then
+                warn(string.format("[GMCommandService] Invalid /chestadd command from %s: %s", player.Name, tostring(message)))
+                return false, amountOrError or "InvalidChestAdd"
+            end
+            local success, result = self._chestService:AddChestForStudio(player, chestId, amountOrError)
+            print(string.format("[GMCommandService] %s added chest chestId=%d amount=%d: success=%s, result=%s", player.Name, chestId, amountOrError, tostring(success), tostring(result)))
+            return success == true, result
+        end
+
+        if commandName == "chestclear" then
+            local chestId, errorCode = parseChestClearCommand(message)
+            if chestId == nil then
+                warn(string.format("[GMCommandService] Invalid /chestclear command from %s: %s", player.Name, tostring(message)))
+                return false, errorCode or "InvalidChestClear"
+            end
+            local normalizedChestId = chestId == false and nil or chestId
+            local success, result = self._chestService:ClearChestsForStudio(player, normalizedChestId)
+            print(string.format("[GMCommandService] %s cleared chest chestId=%s: success=%s, result=%s", player.Name, tostring(normalizedChestId or "all"), tostring(success), tostring(result)))
+            return success == true, result
+        end
+
+        local chestId, modeOrError = parseChestOpenCommand(message)
+        if not chestId then
+            warn(string.format("[GMCommandService] Invalid /chestopen command from %s: %s", player.Name, tostring(message)))
+            return false, modeOrError or "InvalidChestOpen"
+        end
+        local success, result = self._chestService:OpenChest(player, chestId, modeOrError)
+        print(string.format("[GMCommandService] %s opened chest chestId=%d mode=%s: success=%s, result=%s", player.Name, chestId, tostring(modeOrError), tostring(success), tostring(result)))
+        return success == true, result
     end
 
     if commandName == "setcap" or commandName == "addcap" or commandName == "setcaps" or commandName == "setallcaps" or commandName == "allcaps" or commandName == "resetcaps" or commandName == "maxcaps" then
@@ -760,6 +868,7 @@ function GMCommandService:Init(dependencies)
     self._revengeService = dependencies and dependencies.RevengeService or self._revengeService
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
     self._taskService = dependencies and dependencies.TaskService or self._taskService
+    self._chestService = dependencies and dependencies.ChestService or self._chestService
 
     disconnectAll(self._connections)
 

@@ -36,6 +36,10 @@ ReplicatedStorage
     - RequestTaskStateSync
     - RequestTaskClaim
     - RequestInviteTaskProgress
+    - ChestStateSync
+    - RequestChestStateSync
+    - RequestChestOpen
+    - RequestChestRewardClaim
     - PromptFavoritePlace
     - FavoritePlacePromptStarted
     - FavoritePlacePromptResult
@@ -87,6 +91,8 @@ ReplicatedStorage
 - activePotion
 - potionExperienceBonus
 - potionMoveSpeedBonus
+- chests
+- trailExperienceBonus
 - totalExperienceMultiplier
 - isInArena
 - alive
@@ -96,6 +102,8 @@ ReplicatedStorage
 - `killCount` 为局内击杀数，死亡重置战斗状态时可清零。
 - `totalPlayerKills` 为 V2.5 顶部 HUD 显示的永久玩家击杀数。
 - `diamonds` 为 V2.5 顶部 HUD 显示的钻石货币数量。
+- `chests` 为 V5.9 宝箱持久化数量表，key 为宝箱 ID 字符串。
+- `trailExperienceBonus` 为当前装备尾迹带来的额外经验加成，不装备尾迹时为 0。
 
 三、RequestPlayerStateSync（C -> S）
 接收方：`PlayerStateService:Init`
@@ -204,6 +212,55 @@ RequestInviteTaskProgress（C -> S）
 用途：V5.2 邀请弹窗成功调用 Roblox 官方 `PromptGameInvite` 后，给邀请好友任务增加一次进度；服务端仍按任务目标上限截断。
 字段：无。
 
+三-补5、宝箱系统与尾迹扩展 RemoteEvent（V5.9）
+
+ChestStateSync（S -> C）
+发送方：`ChestService:PushState`
+接收方：`ChestController`
+用途：同步服务端权威宝箱数量、当前首版展示宝箱 ID 和宝箱掉落配置；首版客户端固定展示并开启 `101`，`102` 仅完成配置与服务端能力。
+字段：
+- chests：宝箱数量表，key 为宝箱 ID 字符串，value 为数量。
+- selectedChestId：首版固定为 101。
+- chestConfigs：客户端展示用宝箱配置数组，每项包含 id、icon、dropPoolId、rewards；rewards 每项包含 rewardType、potionId、trailId、amount、weight、isLimited。
+- timestamp
+
+RequestChestStateSync（C -> S）
+发送方：`ChestController`
+接收方：`ChestService`
+用途：客户端初始化、打开 `Main.ChestRewards` 或重建 UI 后请求刷新宝箱数量与掉落配置。
+字段：无。客户端可传 chestId，但服务端不信任该字段做状态裁剪。
+
+RequestChestOpen（C -> S）
+发送方：`ChestController`
+接收方：`ChestService`
+用途：玩家点击 `OpenOneButton` 或 `OpenAllButton` 后请求开宝箱；服务端只信任 `chestId` 和 `mode`，自行校验数量、抽奖、扣除宝箱并记录待领取奖励。
+字段：
+- chestId：首版客户端发送 101。
+- mode：`One` 或 `All`。
+说明：
+- 开箱奖励支持 `Diamonds`、`WheelSpins`、`Potion`、`Trail`。
+- 宝箱数量和开箱结果都由服务端校验并同步，不复用 Shop/Skin/Task 远程。
+- 奖励展示反馈继续复用 `ShopRewardFeedback`，payload 带 `rewardClaimId` 和 `requiresClaim = true`；客户端收到 `source = "Chest"` 的成功反馈后先播放居中宝箱抖动和 `rbxassetid://1598630577` 光圈表现，再进入 `Main.ClaimSuccessful`，`closeDelay = 0.5`，且不会关闭 `Main.ChestRewards`。
+
+RequestChestRewardClaim（C -> S）
+发送方：`ShopController`
+接收方：`ChestService`
+用途：宝箱来源的 `Main.ClaimSuccessful` 奖励弹框被玩家点击关闭后，通知服务端发放对应待领取奖励；关闭前只展示已抽中的奖励内容，不实际增加钻石、转盘次数、药水或尾迹。
+字段：
+- rewardClaimId：来自 `ShopRewardFeedback.rewardClaimId`。
+说明：
+- 服务端按玩家和 `rewardClaimId` 校验 pending 记录，重复或错误 claim 不会重复发奖。
+- 玩家离开时若仍有 pending 宝箱奖励，服务端会兜底发放一次并清理开箱锁。
+
+SkinStateSync / PlayerStateSync 尾迹扩展（V5.9）
+用途：尾迹列表与经验倍率展示扩展。
+字段：
+- `SkinStateSync.trails[]` 新增 `sortOrder`、`isBoxOnly`、`experienceBonus`。
+- `PlayerStateSync` 新增 `chests`、`trailExperienceBonus`，并且 `totalExperienceMultiplier` 已包含当前装备尾迹的经验加成。
+说明：
+- 未拥有且 `isBoxOnly=true` 的尾迹隐藏钻石/Robux 购买按钮，显示 `TrailRowTemplate.BoxOpen`，点击打开 `Main.ChestRewards`。
+- `RewardType = "Chest"` 可被任务、兑换码、在线奖励、七日登录奖励等通用奖励入口复用，字段为 `ChestId`、`Amount`、`Icon`、`Label`。
+
 三补、收藏游戏系统 Prompt RemoteEvent（V5.7）
 PromptFavoritePlace（S -> C）
 发送方：`FavoritePlacePromptService`
@@ -237,7 +294,7 @@ FavoritePlacePromptResult（C -> S）
 PromptActivityRsvp（S -> C）
 发送方：`ActivityRsvpPromptService`
 接收方：`ActivityRsvpPromptController`
-用途：玩家进服一段时间后请求客户端调起 Roblox 官方 Experience Event RSVP 系统弹窗。当前活动 ID 为 `1601744394573185602`，客户端会先查询 RSVP 状态，已 `Going` 时不再弹出取消预约弹窗。
+用途：玩家进服一段时间后请求客户端调起 Roblox 官方 Experience Event RSVP 系统弹窗。当前活动 ID 为 `1688050057217180267`，客户端会先查询 RSVP 状态，已 `Going` 时不再弹出取消预约弹窗。
 字段：
 - requestId
 - eventId

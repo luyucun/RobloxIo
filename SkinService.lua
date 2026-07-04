@@ -416,6 +416,11 @@ function SkinService:_tryDiamondPurchase(player, skin)
 end
 
 function SkinService:_tryDiamondTrailPurchase(player, trail)
+    if trail and trail.IsBoxOnly == true then
+        self:_fireFeedback(player, "Failed", "BoxOnly", trail, "Trail")
+        return false, "BoxOnly"
+    end
+
     if self._playerStateService:OwnsTrail(player, trail.Id) then
         self:SyncState(player)
         self:_fireFeedback(player, "AlreadyOwned", "AlreadyOwned", trail, "Trail")
@@ -456,6 +461,11 @@ function SkinService:_tryDiamondTrailPurchase(player, trail)
 end
 
 function SkinService:_tryRobuxTrailPurchase(player, trail)
+    if trail and trail.IsBoxOnly == true then
+        self:_fireFeedback(player, "Failed", "BoxOnly", trail, "Trail")
+        return false, "BoxOnly"
+    end
+
     if self._playerStateService:OwnsTrail(player, trail.Id) then
         self:SyncState(player)
         self:_fireFeedback(player, "AlreadyOwned", "AlreadyOwned", trail, "Trail")
@@ -823,6 +833,9 @@ function SkinService:ProcessReceipt(receiptInfo)
     local productId = math.floor(tonumber(receiptInfo and receiptInfo.ProductId) or 0)
     local trail = TrailConfig.GetTrailByProductId(productId)
     if not trail then
+        return false, nil
+    end
+    if trail.IsBoxOnly == true then
         return false, nil
     end
 

@@ -335,6 +335,13 @@ GameConfig.DATASTORE = {
 GameConfig.FAVORITE_PROMPT = {
     Enabled = true,
     DelaySeconds = 300,
+    DebugEnabled = false,
+}
+
+GameConfig.ACTIVITY_RSVP_PROMPT = {
+    Enabled = true,
+    EventId = "1688050057217180267",
+    DelaySeconds = 90,
 }
 
 GameConfig.MONETIZATION = {

@@ -11,6 +11,8 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -55,6 +57,18 @@ SpecialEventController._lightingMovedEventChildren = {}
 SpecialEventController._lastBoardUpdateClock = 0
 SpecialEventController._perfStats = nil
 SpecialEventController._nextPerfLogClock = 0
+SpecialEventController._eventDescribeRoot = nil
+SpecialEventController._eventDescribeConnections = {}
+SpecialEventController._eventDescribeTooltipVisible = false
+SpecialEventController._lastEventStartSequenceIndex = nil
+SpecialEventController._lastEventStartKey = nil
+SpecialEventController._eventStartToken = 0
+SpecialEventController._eventStartTween = nil
+SpecialEventController._eventStartHideAtClock = 0
+
+local EVENT_START_VISIBLE_SECONDS = 2
+local EVENT_START_OPEN_TWEEN_INFO = TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local EVENT_START_CLOSE_TWEEN_INFO = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 
 local EVENT_BOARD_PATHS = {
     { "BattleSenceEventBoard" },
@@ -189,17 +203,39 @@ local function getBoardFrames()
     return frames
 end
 
-local function findEventEndRoot()
+local function getMainGui()
     local localPlayer = Players.LocalPlayer
     if not localPlayer then
         return nil
     end
 
     local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-    local mainGui = playerGui and playerGui:FindFirstChild("Main") or nil
+    return playerGui and playerGui:FindFirstChild("Main") or nil
+end
+
+local function findEventEndRoot()
+    local mainGui = getMainGui()
     local eventEnd = mainGui and mainGui:FindFirstChild("EventEnd", true) or nil
     if eventEnd and eventEnd:IsA("GuiObject") then
         return eventEnd
+    end
+    return nil
+end
+
+local function findEventDescribeRoot()
+    local mainGui = getMainGui()
+    local eventDescribe = mainGui and mainGui:FindFirstChild("EventDescribe", true) or nil
+    if eventDescribe and eventDescribe:IsA("GuiObject") then
+        return eventDescribe
+    end
+    return nil
+end
+
+local function findEventStartRoot()
+    local mainGui = getMainGui()
+    local eventStart = mainGui and mainGui:FindFirstChild("EventStart", true) or nil
+    if eventStart and eventStart:IsA("GuiObject") then
+        return eventStart
     end
     return nil
 end
@@ -227,6 +263,120 @@ local function setLabel(label, visible, text)
     if text ~= nil and (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox")) then
         label.Text = tostring(text)
     end
+end
+
+local function setGuiVisible(guiObject, visible)
+    if guiObject and guiObject:IsA("GuiObject") then
+        guiObject.Visible = visible == true
+    end
+end
+
+local function ensureScale(guiObject)
+    if not guiObject then
+        return nil
+    end
+
+    local uiScale = guiObject:FindFirstChildOfClass("UIScale")
+    if not uiScale then
+        uiScale = Instance.new("UIScale")
+        uiScale.Scale = 1
+        uiScale.Parent = guiObject
+    end
+    return uiScale
+end
+
+local function getEventDescribeParts(eventDescribe)
+    local info = eventDescribe and eventDescribe:FindFirstChild("Info", true) or nil
+    local icon = info and info:FindFirstChild("Icon", true) or nil
+    local timeLabel = info and info:FindFirstChild("Time", true) or nil
+    local inputTarget = info and info:FindFirstChild("TextButton", true) or nil
+    local buffDescription = eventDescribe and eventDescribe:FindFirstChild("EventBuffDes", true) or nil
+    local buffInfo = buffDescription and buffDescription:FindFirstChild("Info", true) or nil
+    return {
+        info = info,
+        icon = icon,
+        timeLabel = timeLabel,
+        inputTarget = inputTarget,
+        buffDescription = buffDescription,
+        buffInfo = buffInfo,
+    }
+end
+
+local function getEventLabelName(activeEvent)
+    return tostring(activeEvent and activeEvent.textLabelName or "")
+end
+
+local function getEventStartKey(activeEvent)
+    if type(activeEvent) ~= "table" then
+        return ""
+    end
+
+    local sequenceIndex = tonumber(activeEvent.sequenceIndex)
+    if sequenceIndex then
+        return "sequence:" .. tostring(sequenceIndex)
+    end
+
+    local eventId = tostring(activeEvent.id or activeEvent.eventId or "")
+    local startClock = tonumber(activeEvent.startClock)
+    local endClock = tonumber(activeEvent.endClock)
+    local labelName = getEventLabelName(activeEvent)
+    if eventId ~= "" or startClock or endClock or labelName ~= "" then
+        return table.concat({
+            "event",
+            eventId,
+            tostring(math.floor((startClock or 0) * 1000)),
+            tostring(math.floor((endClock or 0) * 1000)),
+            labelName,
+        }, ":")
+    end
+
+    return ""
+end
+
+local function ensureEventStartLabel(eventStart, labelName)
+    local label = findTextLabel(eventStart, labelName)
+    if label then
+        return label
+    end
+
+    if not eventStart or labelName == "" then
+        return nil
+    end
+
+    local template = nil
+    for _, descendant in ipairs(eventStart:GetDescendants()) do
+        if descendant:IsA("TextLabel") then
+            template = descendant
+            break
+        end
+    end
+    if not template then
+        return nil
+    end
+
+    label = template:Clone()
+    label.Name = labelName
+    label.Visible = false
+    label.Parent = template.Parent
+    return label
+end
+
+local function isInputInsideGuiObject(guiObject, inputObject)
+    if not (guiObject and guiObject:IsA("GuiObject") and inputObject) then
+        return false
+    end
+
+    local position = inputObject.Position
+    if typeof(position) ~= "Vector3" then
+        return false
+    end
+
+    local absolutePosition = guiObject.AbsolutePosition
+    local absoluteSize = guiObject.AbsoluteSize
+    return position.X >= absolutePosition.X
+        and position.X <= absolutePosition.X + absoluteSize.X
+        and position.Y >= absolutePosition.Y
+        and position.Y <= absolutePosition.Y + absoluteSize.Y
 end
 
 function SpecialEventController:_getServerClock()
@@ -368,6 +518,8 @@ function SpecialEventController:_applyPayload(payload)
     self:_addPerfStat("SyncEvents")
     self:_refreshScene()
     self:_updateBoards()
+    self:_updateEventDescribe()
+    self:_maybeShowEventStart()
 end
 
 function SpecialEventController:_getActiveEvent()
@@ -458,21 +610,255 @@ function SpecialEventController:_updateEventEnd()
     end
 
     self:_hideAllEventLabels(eventEndRoot)
+    eventEndRoot.Visible = false
+end
 
-    local nowClock = self:_getServerClock()
-    local activeEvent = self:_getActiveEvent()
-    if not activeEvent then
-        eventEndRoot.Visible = false
+function SpecialEventController:_setEventBuffDescriptionVisible(visible)
+    local eventDescribe = self._eventDescribeRoot or findEventDescribeRoot()
+    local parts = getEventDescribeParts(eventDescribe)
+    local shouldShow = visible == true and self:_getActiveEvent() ~= nil
+    setGuiVisible(parts.buffDescription, shouldShow)
+    self._eventDescribeTooltipVisible = shouldShow
+end
+
+function SpecialEventController:_bindEventDescribeInteractions(eventDescribe)
+    if self._eventDescribeRoot == eventDescribe then
         return
     end
 
-    eventEndRoot.Visible = true
-    local label = findTextLabel(eventEndRoot, activeEvent.textLabelName)
-    setLabel(label, true, string.format(
-        "%s Event Ends In: %s",
-        tostring(activeEvent.name or ""),
-        formatCountdown((tonumber(activeEvent.endClock) or nowClock) - nowClock)
-    ))
+    disconnectAll(self._eventDescribeConnections)
+    self._eventDescribeRoot = eventDescribe
+    self._eventDescribeTooltipVisible = false
+
+    local parts = getEventDescribeParts(eventDescribe)
+    local inputTarget = parts.inputTarget
+    if not (inputTarget and inputTarget:IsA("GuiObject")) then
+        inputTarget = parts.info
+    end
+    if not (inputTarget and inputTarget:IsA("GuiObject")) then
+        inputTarget = eventDescribe
+    end
+    if not (inputTarget and inputTarget:IsA("GuiObject")) then
+        return
+    end
+
+    table.insert(self._eventDescribeConnections, inputTarget.MouseEnter:Connect(function()
+        if not UserInputService.TouchEnabled then
+            self:_setEventBuffDescriptionVisible(true)
+        end
+    end))
+
+    table.insert(self._eventDescribeConnections, inputTarget.MouseLeave:Connect(function()
+        if not UserInputService.TouchEnabled then
+            self:_setEventBuffDescriptionVisible(false)
+        end
+    end))
+
+    table.insert(self._eventDescribeConnections, inputTarget.InputBegan:Connect(function(inputObject)
+        if inputObject.UserInputType == Enum.UserInputType.Touch
+            or inputObject.UserInputType == Enum.UserInputType.MouseButton1
+        then
+            if UserInputService.TouchEnabled then
+                self:_setEventBuffDescriptionVisible(not self._eventDescribeTooltipVisible)
+            end
+        end
+    end))
+
+    table.insert(self._eventDescribeConnections, UserInputService.InputBegan:Connect(function(inputObject, gameProcessedEvent)
+        if gameProcessedEvent or not self._eventDescribeTooltipVisible or not UserInputService.TouchEnabled then
+            return
+        end
+        if inputObject.UserInputType ~= Enum.UserInputType.Touch
+            and inputObject.UserInputType ~= Enum.UserInputType.MouseButton1
+        then
+            return
+        end
+        if isInputInsideGuiObject(inputTarget, inputObject)
+            or isInputInsideGuiObject(eventDescribe, inputObject)
+        then
+            return
+        end
+        self:_setEventBuffDescriptionVisible(false)
+    end))
+end
+
+function SpecialEventController:_updateEventDescribe()
+    local eventDescribe = findEventDescribeRoot()
+    if not eventDescribe then
+        self._eventDescribeRoot = nil
+        return
+    end
+
+    self:_bindEventDescribeInteractions(eventDescribe)
+
+    local parts = getEventDescribeParts(eventDescribe)
+    local activeEvent = self:_getActiveEvent()
+    if not activeEvent then
+        eventDescribe.Visible = false
+        setGuiVisible(parts.buffDescription, false)
+        self._eventDescribeTooltipVisible = false
+        return
+    end
+
+    eventDescribe.Visible = true
+
+    if parts.icon and (parts.icon:IsA("ImageLabel") or parts.icon:IsA("ImageButton")) then
+        parts.icon.Image = tostring(activeEvent.iconImage or "")
+    end
+
+    if parts.timeLabel and (parts.timeLabel:IsA("TextLabel") or parts.timeLabel:IsA("TextButton") or parts.timeLabel:IsA("TextBox")) then
+        local nowClock = self:_getServerClock()
+        parts.timeLabel.Text = formatCountdown((tonumber(activeEvent.endClock) or nowClock) - nowClock)
+    end
+
+    if parts.buffInfo and (parts.buffInfo:IsA("TextLabel") or parts.buffInfo:IsA("TextButton") or parts.buffInfo:IsA("TextBox")) then
+        parts.buffInfo.Text = tostring(activeEvent.effectDescription or "")
+    end
+
+    if self._eventDescribeTooltipVisible then
+        setGuiVisible(parts.buffDescription, true)
+    else
+        setGuiVisible(parts.buffDescription, false)
+    end
+end
+
+function SpecialEventController:_hideEventStart(immediate)
+    local eventStart = findEventStartRoot()
+    if self._eventStartTween then
+        self._eventStartTween:Cancel()
+        self._eventStartTween = nil
+    end
+    self._eventStartHideAtClock = 0
+    if not eventStart then
+        return
+    end
+
+    local uiScale = ensureScale(eventStart)
+    local function finishHide(expectedTween)
+        if expectedTween and self._eventStartTween ~= expectedTween then
+            return
+        end
+        eventStart.Visible = false
+        self:_hideAllEventLabels(eventStart)
+        if uiScale then
+            uiScale.Scale = 1
+        end
+        if not expectedTween or self._eventStartTween == expectedTween then
+            self._eventStartTween = nil
+        end
+    end
+
+    if immediate == true or not eventStart.Visible then
+        finishHide(nil)
+        return
+    end
+
+    if uiScale then
+        local closeTween = TweenService:Create(uiScale, EVENT_START_CLOSE_TWEEN_INFO, {
+            Scale = 0.92,
+        })
+        self._eventStartTween = closeTween
+        local closeConnection
+        closeConnection = closeTween.Completed:Connect(function(playbackState)
+            if closeConnection then
+                closeConnection:Disconnect()
+                closeConnection = nil
+            end
+            if self._eventStartTween ~= closeTween then
+                return
+            end
+            if playbackState ~= Enum.PlaybackState.Completed then
+                finishHide(closeTween)
+                return
+            end
+            finishHide(closeTween)
+        end)
+        closeTween:Play()
+        task.delay(EVENT_START_CLOSE_TWEEN_INFO.Time + 0.08, function()
+            if self._eventStartTween == closeTween then
+                closeTween:Cancel()
+                finishHide(closeTween)
+            end
+        end)
+    else
+        finishHide(nil)
+    end
+end
+
+function SpecialEventController:_showEventStart(activeEvent)
+    local eventStart = findEventStartRoot()
+    if not eventStart then
+        return
+    end
+
+    if self._eventStartTween then
+        self._eventStartTween:Cancel()
+        self._eventStartTween = nil
+    end
+
+    self:_hideAllEventLabels(eventStart)
+
+    local labelName = getEventLabelName(activeEvent)
+    local label = ensureEventStartLabel(eventStart, labelName)
+    setLabel(label, true, string.format("%s Start!", labelName))
+
+    local uiScale = ensureScale(eventStart)
+    eventStart.Visible = true
+    if uiScale then
+        uiScale.Scale = 0.86
+        local openTween = TweenService:Create(uiScale, EVENT_START_OPEN_TWEEN_INFO, {
+            Scale = 1,
+        })
+        self._eventStartTween = openTween
+        local openConnection
+        openConnection = openTween.Completed:Connect(function()
+            if openConnection then
+                openConnection:Disconnect()
+                openConnection = nil
+            end
+            if self._eventStartTween ~= openTween then
+                return
+            end
+            self._eventStartTween = nil
+        end)
+        openTween:Play()
+    end
+
+    self._eventStartToken += 1
+    local token = self._eventStartToken
+    self._eventStartHideAtClock = os.clock() + EVENT_START_VISIBLE_SECONDS
+    task.delay(EVENT_START_VISIBLE_SECONDS, function()
+        if token ~= self._eventStartToken then
+            return
+        end
+        self:_hideEventStart(true)
+    end)
+end
+
+function SpecialEventController:_maybeShowEventStart()
+    local activeEvent = self:_getActiveEvent()
+    if not activeEvent then
+        self._lastEventStartSequenceIndex = nil
+        self._lastEventStartKey = nil
+        self:_hideEventStart(true)
+        return
+    end
+
+    local eventStartKey = getEventStartKey(activeEvent)
+    if eventStartKey ~= "" and self._lastEventStartKey == eventStartKey then
+        return
+    end
+
+    self._lastEventStartSequenceIndex = tonumber(activeEvent.sequenceIndex)
+    self._lastEventStartKey = eventStartKey
+    self:_showEventStart(activeEvent)
+end
+
+function SpecialEventController:_updateEventStartAutoHide()
+    local hideAtClock = tonumber(self._eventStartHideAtClock) or 0
+    if hideAtClock > 0 and os.clock() >= hideAtClock then
+        self:_hideEventStart(true)
+    end
 end
 
 function SpecialEventController:_updateBoards()
@@ -487,6 +873,7 @@ function SpecialEventController:_updateBoards()
     end
 
     self:_updateEventEnd()
+    self:_updateEventDescribe()
 end
 
 function SpecialEventController:_resetPerfStats()
@@ -537,6 +924,7 @@ end
 
 function SpecialEventController:Init()
     disconnectAll(self._connections)
+    disconnectAll(self._eventDescribeConnections)
     self:_clearActiveClone()
     self:_restoreLightingState()
     self._payload = nil
@@ -544,6 +932,28 @@ function SpecialEventController:Init()
     self:_resetPerfStats()
     self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
     self._lastBoardUpdateClock = 0
+    self._eventDescribeRoot = nil
+    self._eventDescribeTooltipVisible = false
+    self._lastEventStartSequenceIndex = nil
+    self._lastEventStartKey = nil
+    self._eventStartToken += 1
+    self._eventStartHideAtClock = 0
+
+    local eventDescribe = findEventDescribeRoot()
+    if eventDescribe then
+        eventDescribe.Visible = false
+        setGuiVisible(getEventDescribeParts(eventDescribe).buffDescription, false)
+    end
+    local eventEndRoot = findEventEndRoot()
+    if eventEndRoot then
+        self:_hideAllEventLabels(eventEndRoot)
+        eventEndRoot.Visible = false
+    end
+    local eventStartRoot = findEventStartRoot()
+    if eventStartRoot then
+        self:_hideAllEventLabels(eventStartRoot)
+        eventStartRoot.Visible = false
+    end
 
     if self._renderConnection then
         self._renderConnection:Disconnect()
@@ -569,6 +979,7 @@ function SpecialEventController:Init()
 
     self._renderConnection = RunService.RenderStepped:Connect(function()
         self:_addPerfStat("RenderFrames")
+        self:_updateEventStartAutoHide()
         self:_refreshScene()
         self:_updateBoards()
         self:_addPerfStat("BoardUpdates")

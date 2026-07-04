@@ -65,6 +65,8 @@ SevenDayLoginRewardController._bindRetryQueued = false
 SevenDayLoginRewardController._activePromptProductId = 0
 SevenDayLoginRewardController._isPromptingUnlockAll = false
 SevenDayLoginRewardController._lastObservedUtcDay = 0
+SevenDayLoginRewardController._autoOpenedClaimableKey = ""
+SevenDayLoginRewardController._autoOpenPendingKey = ""
 
 local MODAL_OWNER_ID = "SevenDayLoginReward"
 local FIRST_PANEL_KEY = "first"
@@ -347,13 +349,31 @@ function SevenDayLoginRewardController:_setPanelVisible(panel, visible)
     end
 end
 
-function SevenDayLoginRewardController:_syncActivePanel()
+function SevenDayLoginRewardController:_isPanelVisible(panel)
+    return panel and panel:IsA("GuiObject") and panel.Visible == true
+end
+
+function SevenDayLoginRewardController:_isAnyPanelVisible()
+    local panels = self._panels
+    if type(panels) ~= "table" then
+        return false
+    end
+    return self:_isPanelVisible(panels[FIRST_PANEL_KEY]) or self:_isPanelVisible(panels[REPEAT_PANEL_KEY])
+end
+
+function SevenDayLoginRewardController:_releaseModalIfPanelsHidden()
+    if not self:_isAnyPanelVisible() then
+        ModalUiController:Release(MODAL_OWNER_ID)
+    end
+end
+
+function SevenDayLoginRewardController:_syncActivePanel(keepPanelOpen)
     local activePanel, activePanelKey = self:_getActivePanel()
     local panelKeys = { FIRST_PANEL_KEY, REPEAT_PANEL_KEY }
     for _, panelKey in ipairs(panelKeys) do
         local panel = self._panels and self._panels[panelKey] or nil
         if panel and panel:IsA("GuiObject") then
-            panel.Visible = panelKey == activePanelKey
+            panel.Visible = keepPanelOpen == true and panelKey == activePanelKey
         end
     end
     self._root = activePanel
@@ -368,7 +388,10 @@ end
 
 function SevenDayLoginRewardController:_openPanel()
     if not self._root or self._activePanelKey ~= self:_getPanelKey() then
-        if not self:_bindUi(true) then
+        if not self:_bindUi(true, {
+            KeepOpen = true,
+            ReleaseModalOnFailure = true,
+        }) then
             return
         end
     end
@@ -391,12 +414,16 @@ function SevenDayLoginRewardController:_closePanel()
             if repeatPanel and repeatPanel:IsA("GuiObject") then
                 repeatPanel.Visible = false
             end
+            ModalUiController:Release(MODAL_OWNER_ID)
         end,
     })
 end
 
 function SevenDayLoginRewardController:OpenSevenDayLoginReward()
-    if (not self._root or self._activePanelKey ~= self:_getPanelKey()) and not self:_bindUi(true) then
+    if (not self._root or self._activePanelKey ~= self:_getPanelKey()) and not self:_bindUi(true, {
+        KeepOpen = true,
+        ReleaseModalOnFailure = true,
+    }) then
         return
     end
     self:_openPanel()
@@ -494,17 +521,23 @@ function SevenDayLoginRewardController:_renderRewardFrame(dayIndex)
     local isLocked = not isClaimed and not isClaimable
 
     if self._activePanelKey ~= REPEAT_PANEL_KEY then
+        local rewardType = tostring(reward.rewardType or "")
         if rewardNode.nameLabel then
             setText(rewardNode.nameLabel, getRewardName(reward))
+            setVisible(rewardNode.nameLabel, rewardType == "Skin")
         end
         if rewardNode.iconLabel then
             setImage(rewardNode.iconLabel, reward.icon)
         end
         if rewardNode.amountLabel then
             setText(rewardNode.amountLabel, tostring(math.max(1, math.floor(tonumber(reward.amount) or 1))))
+            setVisible(rewardNode.amountLabel, rewardType ~= "Skin")
         end
     end
 
+    if rewardNode.dayNumLabel then
+        setText(rewardNode.dayNumLabel, "Day " .. tostring(dayIndex))
+    end
     setVisible(rewardNode.dayNumLabel, isLocked)
     setVisible(rewardNode.claimButton, isClaimable)
     setVisible(rewardNode.claimedLabel, isClaimed)
@@ -545,6 +578,73 @@ function SevenDayLoginRewardController:_renderAll()
     end
 end
 
+function SevenDayLoginRewardController:_getFirstClaimableRewardKey()
+    if not (self._state and self._state.hasClaimableReward == true and type(self._state.rewards) == "table") then
+        return ""
+    end
+    for dayIndex = 1, getRewardCount() do
+        local reward = self._state.rewards[dayIndex]
+        if type(reward) == "table" and reward.isClaimable == true then
+            return tostring(math.max(1, math.floor(tonumber(self._state.cycleId) or 1))) .. ":" .. tostring(dayIndex)
+        end
+    end
+    return ""
+end
+
+function SevenDayLoginRewardController:_maybeAutoOpenClaimablePanel()
+    local claimableKey = self:_getFirstClaimableRewardKey()
+    if claimableKey == "" then
+        return
+    end
+    if claimableKey == self._autoOpenedClaimableKey or claimableKey == self._autoOpenPendingKey then
+        return
+    end
+    if self._root and self._root.Visible == true then
+        self._autoOpenedClaimableKey = claimableKey
+        return
+    end
+    if not self._root or self._activePanelKey ~= self:_getPanelKey() then
+        if not self:_bindUi(true, {
+            KeepOpen = false,
+            ReleaseModalOnFailure = true,
+        }) then
+            self:_queueBindRetry()
+            return
+        end
+    end
+    if not self._root then
+        self:_queueBindRetry()
+        return
+    end
+
+    self._autoOpenPendingKey = claimableKey
+    task.defer(function()
+        if self._autoOpenPendingKey ~= claimableKey then
+            return
+        end
+        if self:_getFirstClaimableRewardKey() ~= claimableKey then
+            self._autoOpenPendingKey = ""
+            return
+        end
+        if (not self._root or self._activePanelKey ~= self:_getPanelKey()) and not self:_bindUi(true, {
+            KeepOpen = false,
+            ReleaseModalOnFailure = true,
+        }) then
+            self._autoOpenPendingKey = ""
+            self:_queueBindRetry()
+            return
+        end
+        if not self._root then
+            self._autoOpenPendingKey = ""
+            self:_queueBindRetry()
+            return
+        end
+        self._autoOpenPendingKey = ""
+        self._autoOpenedClaimableKey = claimableKey
+        self:_openPanel()
+    end)
+end
+
 function SevenDayLoginRewardController:_applyState(payload)
     if type(payload) ~= "table" then
         return
@@ -573,7 +673,10 @@ function SevenDayLoginRewardController:_applyState(payload)
     local desiredPanelKey = self:_getPanelKey()
     if self._root and self._activePanelKey ~= desiredPanelKey then
         local wasOpen = self._root.Visible == true
-        if not self:_bindUi(true) then
+        if not self:_bindUi(true, {
+            KeepOpen = wasOpen,
+            ReleaseModalOnFailure = true,
+        }) then
             self:_queueBindRetry()
             return
         end
@@ -584,11 +687,13 @@ function SevenDayLoginRewardController:_applyState(payload)
         end
         self:_setUnlockAllPrice(self._state.productId)
         self:_renderAll()
+        self:_maybeAutoOpenClaimablePanel()
         return
     end
 
     self:_setUnlockAllPrice(self._state.productId)
     self:_renderAll()
+    self:_maybeAutoOpenClaimablePanel()
 end
 
 function SevenDayLoginRewardController:_bindRemoteEvents()
@@ -613,11 +718,17 @@ function SevenDayLoginRewardController:_bindRemoteEvents()
     return self._stateSyncEvent ~= nil and self._requestStateSyncEvent ~= nil and self._requestClaimEvent ~= nil
 end
 
-function SevenDayLoginRewardController:_bindUi(silent)
+function SevenDayLoginRewardController:_bindUi(silent, options)
+    local bindOptions = type(options) == "table" and options or {}
+    local keepPanelOpen = bindOptions.KeepOpen == true or self:_isAnyPanelVisible()
+    local releaseModalOnFailure = bindOptions.ReleaseModalOnFailure == true
     self:_disconnectButtonBindings()
     local mainGui = findMainGui(self._localPlayer)
     self._mainGui = mainGui
     if not mainGui then
+        if releaseModalOnFailure then
+            ModalUiController:Release(MODAL_OWNER_ID)
+        end
         if not silent then
             self:_queueBindRetry()
         end
@@ -632,8 +743,11 @@ function SevenDayLoginRewardController:_bindUi(silent)
         [FIRST_PANEL_KEY] = mainGui:FindFirstChild("Sevendays", true),
         [REPEAT_PANEL_KEY] = mainGui:FindFirstChild("SevendaysRepeat", true),
     }
-    self:_syncActivePanel()
+    self:_syncActivePanel(keepPanelOpen)
     if not (self._entryRoot and self._root) then
+        if releaseModalOnFailure then
+            ModalUiController:Release(MODAL_OWNER_ID)
+        end
         if not silent then
             self:_queueBindRetry()
         end
@@ -675,15 +789,18 @@ function SevenDayLoginRewardController:_bindUi(silent)
         self._rewardNodes[dayIndex] = self:_bindRewardFrame(frame, dayIndex)
     end
 
-    if self._root:IsA("GuiObject") then
-        self._root.Visible = false
+    local firstPanel = self._panels[FIRST_PANEL_KEY]
+    local repeatPanel = self._panels[REPEAT_PANEL_KEY]
+    if self._root and self._root:IsA("GuiObject") then
+        self._root.Visible = keepPanelOpen == true
     end
-    if self._panels[FIRST_PANEL_KEY] and self._panels[FIRST_PANEL_KEY] ~= self._root and self._panels[FIRST_PANEL_KEY]:IsA("GuiObject") then
-        self._panels[FIRST_PANEL_KEY].Visible = false
+    if firstPanel and firstPanel ~= self._root and firstPanel:IsA("GuiObject") then
+        firstPanel.Visible = false
     end
-    if self._panels[REPEAT_PANEL_KEY] and self._panels[REPEAT_PANEL_KEY] ~= self._root and self._panels[REPEAT_PANEL_KEY]:IsA("GuiObject") then
-        self._panels[REPEAT_PANEL_KEY].Visible = false
+    if repeatPanel and repeatPanel ~= self._root and repeatPanel:IsA("GuiObject") then
+        repeatPanel.Visible = false
     end
+    self:_releaseModalIfPanelsHidden()
 
     self:_setUnlockAllPrice()
     self:_renderAll()
@@ -698,8 +815,11 @@ function SevenDayLoginRewardController:_queueBindRetry()
     task.spawn(function()
         local deadline = os.clock() + 12
         repeat
-            if self:_bindUi(true) then
+            if self:_bindUi(true, {
+                ReleaseModalOnFailure = true,
+            }) then
                 self._bindRetryQueued = false
+                self:_maybeAutoOpenClaimablePanel()
                 return
             end
             task.wait(0.5)
@@ -727,8 +847,12 @@ function SevenDayLoginRewardController:Init(dependencies)
     self._isPromptingUnlockAll = false
     self._unlockAllPriceProductId = 0
     self._lastObservedUtcDay = getUtcDayKey(os.time())
+    self._autoOpenedClaimableKey = ""
+    self._autoOpenPendingKey = ""
     self:_bindRemoteEvents()
-    if not self:_bindUi(true) then
+    if not self:_bindUi(true, {
+        ReleaseModalOnFailure = true,
+    }) then
         self:_queueBindRetry()
     end
 
@@ -751,7 +875,9 @@ function SevenDayLoginRewardController:Init(dependencies)
         table.insert(self._connections, playerGui.ChildAdded:Connect(function(child)
             if child.Name == "Main" then
                 task.defer(function()
-                    self:_bindUi()
+                    self:_bindUi(false, {
+                        ReleaseModalOnFailure = true,
+                    })
                     self:_requestStateSync("MainGuiReady", false)
                 end)
             end

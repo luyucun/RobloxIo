@@ -78,6 +78,7 @@ local DEFAULT_DORMANT_ROOT_NAMES = {
     "GroupReward",
     "OnlineReward",
     "Option",
+    "GameNews",
     "NewWeaponUnlock",
     "Defeated",
     "FriendsRanking",

@@ -423,6 +423,7 @@ local function getTaskRewards(task)
                 table.insert(result, {
                     RewardType = tostring(reward.RewardType or ""),
                     PotionId = math.max(0, math.floor(tonumber(reward.PotionId) or 0)),
+                    ChestId = math.max(0, math.floor(tonumber(reward.ChestId) or 0)),
                     Amount = math.max(1, math.floor(tonumber(reward.Amount) or 1)),
                     Icon = tostring(reward.Icon or ""),
                 })
@@ -434,6 +435,7 @@ local function getTaskRewards(task)
         table.insert(result, {
             RewardType = tostring(task.RewardType or ""),
             PotionId = math.max(0, math.floor(tonumber(task.PotionId) or 0)),
+            ChestId = math.max(0, math.floor(tonumber(task.ChestId) or 0)),
             Amount = math.max(1, math.floor(tonumber(task.Amount) or 1)),
             Icon = tostring(task.Icon or ""),
         })
@@ -450,6 +452,10 @@ function TaskService:_canGrantSingleReward(reward)
         return math.max(0, math.floor(tonumber(reward and reward.PotionId) or 0)) > 0
             and self._potionService ~= nil
             and self._potionService.AddPotion ~= nil
+    elseif rewardType == "Chest" then
+        return math.max(0, math.floor(tonumber(reward and reward.ChestId) or 0)) > 0
+            and self._playerStateService ~= nil
+            and self._playerStateService.AddChest ~= nil
     end
     return false
 end
@@ -477,6 +483,11 @@ function TaskService:_grantSingleReward(player, task, reward, rewardIndex)
             return false, "PotionServiceUnavailable"
         end
         return self._potionService:AddPotion(player, reward.PotionId, amount, "Task")
+    elseif rewardType == "Chest" then
+        if not (self._playerStateService and self._playerStateService.AddChest) then
+            return false, "ChestServiceUnavailable"
+        end
+        return self._playerStateService:AddChest(player, reward.ChestId, amount, context)
     end
 
     return false, "UnknownRewardType"

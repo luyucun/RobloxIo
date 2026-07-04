@@ -87,6 +87,7 @@ SkinController._panelAnimationSerial = 0
 SkinController._isPanelOpen = false
 SkinController._wheelController = nil
 SkinController._sevenDayLoginRewardController = nil
+SkinController._chestController = nil
 SkinController._skinRegionBindSerial = 0
 SkinController._skinRegionGate = nil
 SkinController._showSkinRegionGates = {}
@@ -298,6 +299,23 @@ local function firstNonEmptyString(...)
         end
     end
     return ""
+end
+
+local function trimNumber(value)
+    local rounded = math.floor(((tonumber(value) or 0) * 100) + 0.5) / 100
+    if math.abs(rounded - math.floor(rounded)) < 0.001 then
+        return tostring(math.floor(rounded))
+    end
+
+    local text = string.format("%.2f", rounded)
+    text = string.gsub(text, "0+$", "")
+    text = string.gsub(text, "%.$", "")
+    return text
+end
+
+local function formatTrailExperienceBonus(bonusValue)
+    local bonus = math.max(0, tonumber(bonusValue) or 0)
+    return "Exp*" .. trimNumber(1 + bonus)
 end
 
 local function toTitlePopupImage(image)
@@ -1182,10 +1200,21 @@ function SkinController:_getTrailEntries()
             diamondPrice = tonumber(stateEntry.diamondPrice) or trail.DiamondPrice,
             robuxPrice = tonumber(stateEntry.robuxPrice) or trail.RobuxPrice,
             productId = tonumber(stateEntry.productId) or trail.ProductId,
+            sortOrder = math.max(0, math.floor(tonumber(stateEntry.sortOrder) or tonumber(trail.SortOrder) or trail.Id)),
+            isBoxOnly = stateEntry.isBoxOnly == true or trail.IsBoxOnly == true,
+            experienceBonus = math.max(0, tonumber(stateEntry.experienceBonus) or tonumber(trail.ExperienceBonus) or 0),
             owned = stateEntry.owned == true,
             equipped = stateEntry.equipped == true or tonumber(self._latestState.equippedTrailId) == trail.Id,
         })
     end
+    table.sort(entries, function(left, right)
+        local leftOrder = math.max(0, math.floor(tonumber(left.sortOrder) or left.id or 0))
+        local rightOrder = math.max(0, math.floor(tonumber(right.sortOrder) or right.id or 0))
+        if leftOrder ~= rightOrder then
+            return leftOrder < rightOrder
+        end
+        return math.max(0, math.floor(tonumber(left.id) or 0)) < math.max(0, math.floor(tonumber(right.id) or 0))
+    end)
     return entries
 end
 
@@ -1537,8 +1566,11 @@ function SkinController:_populateTrailItem(frame, trail)
 
     local owned = trail.owned == true
     local equipped = trail.equipped == true
-    self:_setButtonVisible(frame, "DiamondBuy", not owned)
-    self:_setButtonVisible(frame, "RobuxButton", not owned)
+    local isBoxOnly = trail.isBoxOnly == true
+    setText(frame:FindFirstChild("Add", true), formatTrailExperienceBonus(trail.experienceBonus))
+    self:_setButtonVisible(frame, "DiamondBuy", not owned and not isBoxOnly)
+    self:_setButtonVisible(frame, "RobuxButton", not owned and not isBoxOnly)
+    self:_setButtonVisible(frame, "BoxOpen", not owned and isBoxOnly)
     self:_setButtonVisible(frame, "Equip", owned and not equipped)
     self:_setButtonVisible(frame, "Unequiped", owned and equipped)
 
@@ -1579,6 +1611,16 @@ function SkinController:_populateTrailItem(frame, trail)
                 MarketplaceService:PromptProductPurchase(self._localPlayer, productId)
             end
         end, { ScaleTarget = robuxScaleTarget or robuxButton })
+    end
+
+    local boxOpenButton, boxOpenScaleTarget = findButton(frame, "BoxOpen")
+    if boxOpenButton then
+        self:_bindItemButton(boxOpenButton, function()
+            self:_setPanelOpen(false, true)
+            if self._chestController and self._chestController.Open then
+                self._chestController:Open()
+            end
+        end, { ScaleTarget = boxOpenScaleTarget or boxOpenButton })
     end
 
     local equipButton, equipScaleTarget = findButton(frame, "Equip")
@@ -1640,6 +1682,10 @@ function SkinController:_renderList()
 
     if self._trailScrollingFrame and self._trailTemplate then
         self._trailTemplate.Visible = false
+        local trailListLayout = self._trailScrollingFrame:FindFirstChildOfClass("UIListLayout")
+        if trailListLayout then
+            trailListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        end
         local trailEntries = self:_getTrailEntries()
         local templatePosition = self._trailTemplate.Position
         local templateSize = self._trailTemplate.Size
@@ -1650,7 +1696,9 @@ function SkinController:_renderList()
         for index, trail in ipairs(trailEntries) do
             local frame = self._trailTemplate:Clone()
             frame.Name = "Trail_" .. tostring(trail.id)
-            frame.LayoutOrder = index
+            local sortOrder = math.max(0, math.floor(tonumber(trail.sortOrder) or index))
+            local trailId = math.max(0, math.floor(tonumber(trail.id) or index))
+            frame.LayoutOrder = sortOrder * 10000 + trailId
             frame.Position = UDim2.new(
                 templatePosition.X.Scale,
                 templatePosition.X.Offset,
@@ -1829,6 +1877,9 @@ function SkinController:_applyPlayerState(payload)
             diamondPrice = trail.DiamondPrice,
             robuxPrice = trail.RobuxPrice,
             productId = trail.ProductId,
+            sortOrder = trail.SortOrder,
+            isBoxOnly = trail.IsBoxOnly == true,
+            experienceBonus = math.max(0, tonumber(trail.ExperienceBonus) or 0),
             owned = ownedTrails[tostring(trail.Id)] == true,
             equipped = equippedTrailId == trail.Id,
         })
@@ -2118,6 +2169,7 @@ function SkinController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._wheelController = dependencies and dependencies.WheelController or nil
     self._sevenDayLoginRewardController = dependencies and dependencies.SevenDayLoginRewardController or nil
+    self._chestController = dependencies and dependencies.ChestController or nil
     self._activeTab = "Skins"
     self._latestStateTimestamp = 0
     self._isPanelOpen = false

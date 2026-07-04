@@ -40,6 +40,11 @@ TRAIL_DATA_START_ROW = 7
 TRAIL_BEGIN_MARKER = "-- BEGIN GENERATED TRAIL ROWS"
 TRAIL_END_MARKER = "-- END GENERATED TRAIL ROWS"
 
+CHEST_CONFIG_PATH = ROOT / "ChestConfig.lua"
+CHEST_SHEET_NAME = "宝箱"
+CHEST_BEGIN_MARKER = "-- BEGIN GENERATED CHEST ROWS"
+CHEST_END_MARKER = "-- END GENERATED CHEST ROWS"
+
 TITLE_CONFIG_PATH = ROOT / "TitleConfig.lua"
 TITLE_SHEET_NAME = "称号"
 TITLE_HEADER_ROW = 4
@@ -91,6 +96,13 @@ SPECIAL_EVENT_HEADER_ROW = 5
 SPECIAL_EVENT_DATA_START_ROW = 6
 SPECIAL_EVENT_BEGIN_MARKER = "-- BEGIN GENERATED SPECIAL EVENT ROWS"
 SPECIAL_EVENT_END_MARKER = "-- END GENERATED SPECIAL EVENT ROWS"
+
+MONSTER_CATALOG_PATH = ROOT / "MonsterCatalog.lua"
+MONSTER_CATALOG_SHEET_NAME = "怪物基础信息草稿"
+MONSTER_CATALOG_HEADER_ROW = 4
+MONSTER_CATALOG_DATA_START_ROW = 5
+MONSTER_CATALOG_BEGIN_MARKER = "-- BEGIN GENERATED MONSTER DEFINITIONS"
+MONSTER_CATALOG_END_MARKER = "-- END GENERATED MONSTER DEFINITIONS"
 
 
 def is_blank(value) -> bool:
@@ -197,6 +209,17 @@ def parse_potion_reward(compact: str) -> dict | None:
     }
 
 
+def parse_chest_reward(compact: str, amount: int = 1) -> dict | None:
+    match = re.fullmatch(r"(?:宝箱|Chest|chest)(\d+)", compact)
+    if not match:
+        return None
+    return {
+        "RewardType": "Chest",
+        "ChestId": parse_amount_token(match.group(1)),
+        "Amount": amount,
+    }
+
+
 def parse_reward_type_and_amount(reward_type_value, amount_value) -> tuple[dict | None, str | None]:
     if is_blank(reward_type_value):
         return None, None
@@ -219,6 +242,10 @@ def parse_reward_type_and_amount(reward_type_value, amount_value) -> tuple[dict 
 
     if compact in {"特殊皮肤", "皮肤", "Skin", "SpecialSkin"}:
         return {"RewardType": "Skin", "SkinId": amount, "Amount": 1}, None
+
+    chest = parse_chest_reward(compact, amount)
+    if chest:
+        return chest, None
 
     potion = parse_potion_reward(compact)
     if potion:
@@ -268,6 +295,10 @@ def parse_reward_text(value) -> tuple[dict | None, str | None]:
     if skin:
         return {"RewardType": "PendingWeaponSkin", "SkinId": parse_amount_token(skin.group(1)), "Amount": 1, "Pending": True}, None
 
+    chest = parse_chest_reward(compact)
+    if chest:
+        return chest, None
+
     potion = parse_potion_reward(compact)
     if potion:
         return potion, None
@@ -297,6 +328,11 @@ def format_reward(reward: dict) -> str:
         return "{ RewardType = 'WheelSpins', Amount = %d }" % int(reward["Amount"])
     if reward_type == "Diamonds":
         return "{ RewardType = 'Diamonds', Amount = %d }" % int(reward["Amount"])
+    if reward_type == "Chest":
+        return "{ RewardType = 'Chest', ChestId = %d, Amount = %d }" % (
+            int(reward["ChestId"]),
+            int(reward["Amount"]),
+        )
     raise RuntimeError(f"Unsupported reward type: {reward_type}")
 
 
@@ -438,6 +474,15 @@ def get_sheet(workbook, sheet_name: str, fallback_index: int):
     if sheet_name in workbook.sheetnames:
         return workbook[sheet_name]
     return workbook.worksheets[fallback_index]
+
+
+def find_header_columns(worksheet, header_row: int) -> dict[str, int]:
+    result = {}
+    for column_index in range(1, worksheet.max_column + 1):
+        value = worksheet.cell(header_row, column_index).value
+        if not is_blank(value):
+            result[str(value).strip()] = column_index
+    return result
 
 
 def read_weapon_skin_metadata(workbook) -> dict[int, dict]:
@@ -827,6 +872,7 @@ def read_task_rows() -> list[dict]:
             "Target": parse_task_target(task_type, description),
             "RewardType": primary_reward["RewardType"],
             "PotionId": math_safe_int(primary_reward.get("PotionId"), 0),
+            "ChestId": math_safe_int(primary_reward.get("ChestId"), 0),
             "Amount": math_safe_int(primary_reward.get("Amount"), 1),
             "Description": description,
             "ShortTitle": "" if is_blank(short_title_value) else str(short_title_value).strip(),
@@ -858,6 +904,8 @@ def build_task_generated_block(rows: list[dict]) -> str:
         ])
         if row["PotionId"] > 0:
             lines.append(f"        PotionId = {row['PotionId']},")
+        if row.get("ChestId", 0) > 0:
+            lines.append(f"        ChestId = {row['ChestId']},")
         lines.extend([
             f"        Amount = {row['Amount']},",
             f"        Description = {lua_value(row['Description'])},",
@@ -875,6 +923,9 @@ def build_task_generated_block(rows: list[dict]) -> str:
             potion_id = math_safe_int(reward.get("PotionId"), 0)
             if potion_id > 0:
                 reward_fields.insert(1, f"PotionId = {potion_id}")
+            chest_id = math_safe_int(reward.get("ChestId"), 0)
+            if chest_id > 0:
+                reward_fields.insert(1, f"ChestId = {chest_id}")
             lines.append("            { " + ", ".join(reward_fields) + " },")
         lines.extend([
             "        },",
@@ -954,6 +1005,130 @@ def read_special_event_rows() -> list[dict]:
 
     rows.sort(key=lambda row: row["Id"])
     return rows
+
+
+def normalize_monster_type(value) -> tuple[str, bool, bool]:
+    text = "" if is_blank(value) else str(value).strip()
+    if text in {"普通小怪", "Normal Monster", "NormalMonster"}:
+        return "Normal Monster", True, False
+    if text in {"首领", "Boss"}:
+        return "Boss", False, True
+    return text or "Normal Monster", False, False
+
+
+def read_monster_rows() -> list[dict]:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, MONSTER_CATALOG_SHEET_NAME, 7)
+    headers = build_header_map(worksheet, MONSTER_CATALOG_HEADER_ROW)
+    required_headers = [
+        "ID",
+        "类型",
+        "模板名",
+        "模型路径",
+        "生成权重",
+        "击杀积分",
+        "基础血量",
+        "攻击力",
+        "攻击范围",
+        "脱战距离",
+        "移动速度",
+        "经验块数量",
+        "每块经验",
+        "待机动画",
+        "移动动画",
+        "攻击动画",
+    ]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing monster catalog headers: " + ", ".join(missing_headers))
+
+    rows = []
+    for row_index in range(MONSTER_CATALOG_DATA_START_ROW, worksheet.max_row + 1):
+        row_values = {
+            header: cell_by_header(worksheet, row_index, headers, header)
+            for header in required_headers
+        }
+        if all(is_blank(value) for value in row_values.values()):
+            continue
+
+        monster_id_value = row_values["ID"]
+        monster_id = "" if is_blank(monster_id_value) else str(monster_id_value).strip()
+        if monster_id.endswith(".0"):
+            monster_id = monster_id[:-2]
+        if monster_id == "":
+            raise RuntimeError(f"Invalid monster catalog row {row_index}: ID is required")
+        if not monster_id.isdigit():
+            if all(is_blank(row_values[header]) for header in required_headers if header != "ID"):
+                continue
+            raise RuntimeError(f"Invalid monster catalog row {row_index}: ID must be numeric")
+
+        type_name, is_normal, is_boss = normalize_monster_type(row_values["类型"])
+        rows.append({
+            "Id": monster_id,
+            "TypeName": type_name,
+            "IsNormal": is_normal,
+            "IsBoss": is_boss,
+            "TemplateName": "" if is_blank(row_values["模板名"]) else str(row_values["模板名"]).strip(),
+            "ModelPath": "" if is_blank(row_values["模型路径"]) else str(row_values["模型路径"]).strip(),
+            "SpawnWeight": math_safe_float(row_values["生成权重"], 0),
+            "KillScoreReward": math_safe_int(row_values["击杀积分"], 0),
+            "MaxHealth": math_safe_int(row_values["基础血量"], 0),
+            "AttackDamage": math_safe_int(row_values["攻击力"], 0),
+            "AttackRange": math_safe_float(row_values["攻击范围"], 0),
+            "DisengageDistance": math_safe_float(row_values["脱战距离"], 0),
+            "MoveSpeed": math_safe_float(row_values["移动速度"], 0),
+            "ExperienceDropCount": math_safe_int(row_values["经验块数量"], 0),
+            "ExperiencePerOrb": math_safe_int(row_values["每块经验"], 0),
+            "IdleAnimation": "" if is_blank(row_values["待机动画"]) else str(row_values["待机动画"]).strip(),
+            "RunAnimation": "" if is_blank(row_values["移动动画"]) else str(row_values["移动动画"]).strip(),
+            "AttackAnimation": "" if is_blank(row_values["攻击动画"]) else str(row_values["攻击动画"]).strip(),
+        })
+
+    rows.sort(key=lambda row: row["Id"])
+    return rows
+
+
+def build_monster_catalog_generated_block(rows: list[dict]) -> str:
+    lines = [
+        MONSTER_CATALOG_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 怪物基础信息草稿. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "local DEFINITIONS = {",
+    ]
+    for row in rows:
+        lines.extend([
+            f"    [{lua_value(row['Id'])}] = {{",
+            f"        Id = {lua_value(row['Id'])},",
+            f"        TypeName = {lua_value(row['TypeName'])},",
+        ])
+        if row["IsNormal"]:
+            lines.append("        IsNormal = true,")
+        if row["IsBoss"]:
+            lines.append("        IsBoss = true,")
+        lines.extend([
+            f"        TemplateName = {lua_value(row['TemplateName'])},",
+            f"        ModelPath = {lua_value(row['ModelPath'])},",
+        ])
+        if row["IsNormal"]:
+            lines.append(f"        SpawnWeight = {lua_number(row['SpawnWeight'])},")
+        lines.extend([
+            f"        KillScoreReward = {row['KillScoreReward']},",
+            f"        MaxHealth = {row['MaxHealth']},",
+            f"        AttackDamage = {row['AttackDamage']},",
+            f"        AttackRange = {lua_number(row['AttackRange'])},",
+            f"        AggroRadius = {lua_number(row['AttackRange'])},",
+            f"        DisengageDistance = {lua_number(row['DisengageDistance'])},",
+            f"        MoveSpeed = {lua_number(row['MoveSpeed'])},",
+            f"        ExperienceDropCount = {row['ExperienceDropCount']},",
+            f"        ExperiencePerOrb = {row['ExperiencePerOrb']},",
+            "        Animations = {",
+            f"            Idle = {lua_value(row['IdleAnimation'])},",
+            f"            Run = {lua_value(row['RunAnimation'])},",
+            f"            Attack = {lua_value(row['AttackAnimation'])},",
+            "        },",
+            "    },",
+        ])
+    lines.extend(["}", MONSTER_CATALOG_END_MARKER])
+    return "\n".join(lines)
 
 
 def build_special_event_generated_block(rows: list[dict]) -> str:
@@ -1196,13 +1371,18 @@ def build_skin_generated_block(rows) -> str:
 def read_trail_rows():
     workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
     worksheet = get_sheet(workbook, TRAIL_SHEET_NAME, len(workbook.worksheets) - 1)
+    headers = find_header_columns(worksheet, TRAIL_HEADER_ROW)
+
+    def cell_value(row_index: int, header_name: str, fallback_column: int):
+        return worksheet.cell(row_index, headers.get(header_name, fallback_column)).value
+
     rows = []
     for row_index in range(TRAIL_DATA_START_ROW, worksheet.max_row + 1):
-        trail_id = math_safe_int(worksheet.cell(row_index, 3).value, 0)
+        trail_id = math_safe_int(cell_value(row_index, "尾迹id", 3), 0)
         if trail_id <= 0:
             continue
-        trail_name = worksheet.cell(row_index, 4).value
-        template_name = worksheet.cell(row_index, 5).value
+        trail_name = cell_value(row_index, "尾迹名字", 4)
+        template_name = cell_value(row_index, "尾迹路径下名字", 5)
         if is_blank(template_name):
             continue
         rows.append({
@@ -1210,12 +1390,16 @@ def read_trail_rows():
             "Name": "" if is_blank(trail_name) else str(trail_name).strip(),
             "TemplateName": str(template_name).strip(),
             "TemplatePath": "ReplicatedStorage/Model/Trail/" + str(template_name).strip(),
-            "DiamondPrice": math_safe_int(worksheet.cell(row_index, 6).value, 0),
-            "RobuxPrice": math_safe_int(worksheet.cell(row_index, 7).value, 0),
-            "ProductId": math_safe_int(worksheet.cell(row_index, 8).value, 0),
-            "IsDefaultUnlocked": math_safe_int(worksheet.cell(row_index, 9).value, 0) == 1,
-            "IconImage": "" if is_blank(worksheet.cell(row_index, 10).value) else str(worksheet.cell(row_index, 10).value).strip(),
+            "DiamondPrice": math_safe_int(cell_value(row_index, "尾迹钻石价格", 6), 0),
+            "RobuxPrice": math_safe_int(cell_value(row_index, "尾迹罗布币价格", 7), 0),
+            "ProductId": math_safe_int(cell_value(row_index, "尾迹开发者商品id", 8), 0),
+            "IsDefaultUnlocked": math_safe_int(cell_value(row_index, "尾迹是否默认解锁", 9), 0) == 1,
+            "IconImage": "" if is_blank(cell_value(row_index, "尾迹图标资源id", 10)) else str(cell_value(row_index, "尾迹图标资源id", 10)).strip(),
+            "SortOrder": math_safe_int(cell_value(row_index, "排序", 11), len(rows) + 1),
+            "IsBoxOnly": math_safe_int(cell_value(row_index, "是否宝箱开启", 12), 0) == 1,
+            "ExperienceBonus": math_safe_float(cell_value(row_index, "额外经验加成", 13), 0),
         })
+    rows.sort(key=lambda row: (row["SortOrder"], row["Id"]))
     return rows
 
 
@@ -1237,9 +1421,153 @@ def build_trail_generated_block(rows) -> str:
             f"        RobuxPrice = {row['RobuxPrice']},",
             f"        ProductId = {row['ProductId']},",
             f"        IsDefaultUnlocked = {'true' if row['IsDefaultUnlocked'] else 'false'},",
+            f"        SortOrder = {row['SortOrder']},",
+            f"        IsBoxOnly = {'true' if row['IsBoxOnly'] else 'false'},",
+            f"        ExperienceBonus = {row['ExperienceBonus']},",
             "    },",
         ])
     lines.extend(["}", TRAIL_END_MARKER])
+    return "\n".join(lines)
+
+
+CHEST_REWARD_ALIASES = {
+    "钻石": "Diamonds",
+    "Diamonds": "Diamonds",
+    "Diamond": "Diamonds",
+    "钻盘次数": "WheelSpins",
+    "转盘次数": "WheelSpins",
+    "转盘": "WheelSpins",
+    "WheelSpins": "WheelSpins",
+    "Spins": "WheelSpins",
+    "初级药水": "Potion",
+    "基础药水": "Potion",
+    "BasicPotion": "Potion",
+    "中级药水": "Potion",
+    "高级药水": "Potion",
+    "AdvancedPotion": "Potion",
+    "稀有药水": "Potion",
+    "RarePotion": "Potion",
+    "尾迹": "Trail",
+    "Trail": "Trail",
+}
+
+CHEST_POTION_ALIASES = {
+    "初级药水": 1001,
+    "基础药水": 1001,
+    "BasicPotion": 1001,
+    "中级药水": 1002,
+    "AdvancedPotion": 1002,
+    "高级药水": 1003,
+    "稀有药水": 1003,
+    "RarePotion": 1003,
+}
+
+
+def normalize_chest_reward(reward_type_value, amount_value, row_index: int) -> dict | None:
+    if is_blank(reward_type_value):
+        return None
+
+    reward_text = str(reward_type_value).strip()
+    compact = re.sub(r"\s+", "", reward_text)
+    reward_type = CHEST_REWARD_ALIASES.get(compact, compact)
+    amount_or_id = math_safe_int(amount_value, 0)
+    if amount_or_id <= 0:
+        return None
+
+    reward = {
+        "RewardType": reward_type,
+        "Amount": amount_or_id,
+    }
+
+    if reward_type == "Potion":
+        potion_id = CHEST_POTION_ALIASES.get(compact, 0)
+        if potion_id <= 0 and amount_or_id in POTION_IDS:
+            potion_id = amount_or_id
+            reward["Amount"] = 1
+        elif potion_id <= 0:
+            raise RuntimeError(f"Unsupported chest potion reward at row {row_index}: {reward_text}")
+        reward["PotionId"] = potion_id
+    elif reward_type == "Trail":
+        reward["TrailId"] = amount_or_id
+        reward["Amount"] = 1
+    elif reward_type not in {"Diamonds", "WheelSpins"}:
+        raise RuntimeError(f"Unsupported chest reward type at row {row_index}: {reward_text}")
+
+    return reward
+
+
+def read_chest_rows() -> tuple[list[dict], dict[int, list[dict]]]:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, CHEST_SHEET_NAME, len(workbook.worksheets) - 1)
+
+    chest_headers = find_header_columns(worksheet, 5)
+    chests = []
+    for row_index in range(6, worksheet.max_row + 1):
+        chest_id = math_safe_int(worksheet.cell(row_index, chest_headers.get("宝箱id", 3)).value, 0)
+        if chest_id <= 0:
+            continue
+        icon = worksheet.cell(row_index, chest_headers.get("宝箱图标", 4)).value
+        chests.append({
+            "Id": chest_id,
+            "Icon": "" if is_blank(icon) else str(icon).strip(),
+            "DropPoolId": math_safe_int(worksheet.cell(row_index, chest_headers.get("宝箱池子编号", 5)).value, 0),
+        })
+
+    pool_headers = find_header_columns(worksheet, 14)
+    drop_pools: dict[int, list[dict]] = {}
+    for row_index in range(15, worksheet.max_row + 1):
+        pool_id = math_safe_int(worksheet.cell(row_index, pool_headers.get("掉落池编号", 7)).value, 0)
+        if pool_id <= 0:
+            continue
+        reward = normalize_chest_reward(
+            worksheet.cell(row_index, pool_headers.get("奖励类型", 8)).value,
+            worksheet.cell(row_index, pool_headers.get("数量或id", 9)).value,
+            row_index,
+        )
+        if not reward:
+            continue
+        reward["Weight"] = math_safe_float(worksheet.cell(row_index, pool_headers.get("权重", 10)).value, 0)
+        reward["IsLimited"] = math_safe_int(worksheet.cell(row_index, pool_headers.get("是否是限时奖励", 11)).value, 0) == 1
+        if reward["Weight"] <= 0:
+            continue
+        drop_pools.setdefault(pool_id, []).append(reward)
+
+    return chests, drop_pools
+
+
+def build_chest_generated_block(chests: list[dict], drop_pools: dict[int, list[dict]]) -> str:
+    lines = [
+        CHEST_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 宝箱. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "ChestConfig.Chests = {",
+    ]
+    for chest in chests:
+        lines.extend([
+            "    {",
+            f"        Id = {chest['Id']},",
+            f"        Icon = {lua_value(chest['Icon'])},",
+            f"        DropPoolId = {chest['DropPoolId']},",
+            "    },",
+        ])
+    lines.append("}")
+    lines.append("")
+    lines.append("ChestConfig.DropPools = {")
+    for pool_id in sorted(drop_pools.keys()):
+        lines.append(f"    [{pool_id}] = {{")
+        for reward in drop_pools[pool_id]:
+            fields = [
+                f"RewardType = {lua_value(reward['RewardType'])}",
+                f"Amount = {int(reward['Amount'])}",
+                f"Weight = {reward['Weight']}",
+                f"IsLimited = {'true' if reward['IsLimited'] else 'false'}",
+            ]
+            if reward.get("PotionId"):
+                fields.append(f"PotionId = {int(reward['PotionId'])}")
+            if reward.get("TrailId"):
+                fields.append(f"TrailId = {int(reward['TrailId'])}")
+            lines.append("        { " + ", ".join(fields) + " },")
+        lines.append("    },")
+    lines.extend(["}", CHEST_END_MARKER])
     return "\n".join(lines)
 
 
@@ -1627,6 +1955,15 @@ def sync_title_config() -> dict:
 
 def sync_task_config() -> dict:
     task_rows = read_task_rows()
+    seen_task_ids: dict[int, int] = {}
+    duplicate_task_ids = []
+    for row in task_rows:
+        task_id = math_safe_int(row.get("TaskId"), 0)
+        seen_task_ids[task_id] = seen_task_ids.get(task_id, 0) + 1
+    for task_id, count in sorted(seen_task_ids.items()):
+        if task_id > 0 and count > 1:
+            duplicate_task_ids.append({"taskId": task_id, "count": count})
+
     task_source = TASK_CONFIG_PATH.read_text(encoding="utf-8")
     updated_task_source = replace_generated_block(
         task_source,
@@ -1638,6 +1975,11 @@ def sync_task_config() -> dict:
     TASK_CONFIG_PATH.write_text(updated_task_source, encoding="utf-8", newline="\n")
     return {
         "taskRows": len(task_rows),
+        "warnings": [
+            "Duplicate task IDs detected: " + ", ".join(
+                f"{item['taskId']} x{item['count']}" for item in duplicate_task_ids
+            )
+        ] if duplicate_task_ids else [],
     }
 
 
@@ -1657,14 +1999,68 @@ def sync_special_event_config() -> dict:
     }
 
 
+def sync_monster_catalog() -> dict:
+    monster_rows = read_monster_rows()
+    monster_source = MONSTER_CATALOG_PATH.read_text(encoding="utf-8")
+    updated_monster_source = replace_generated_block(
+        monster_source,
+        build_monster_catalog_generated_block(monster_rows),
+        MONSTER_CATALOG_BEGIN_MARKER,
+        MONSTER_CATALOG_END_MARKER,
+        MONSTER_CATALOG_PATH,
+    )
+    MONSTER_CATALOG_PATH.write_text(updated_monster_source, encoding="utf-8", newline="\n")
+    return {
+        "monsterRows": len(monster_rows),
+        "bossRows": sum(1 for row in monster_rows if row["IsBoss"]),
+        "normalMonsterRows": sum(1 for row in monster_rows if row["IsNormal"]),
+    }
+
+
+def sync_chest_config() -> dict:
+    chest_rows, drop_pools = read_chest_rows()
+    chest_source = CHEST_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_chest_source = replace_generated_block(
+        chest_source,
+        build_chest_generated_block(chest_rows, drop_pools),
+        CHEST_BEGIN_MARKER,
+        CHEST_END_MARKER,
+        CHEST_CONFIG_PATH,
+    )
+    CHEST_CONFIG_PATH.write_text(updated_chest_source, encoding="utf-8", newline="\n")
+    return {
+        "chestRows": len(chest_rows),
+        "chestDropPoolRows": sum(len(rows) for rows in drop_pools.values()),
+    }
+
+
+def sync_trail_config() -> dict:
+    trail_rows = read_trail_rows()
+    trail_source = TRAIL_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_trail_source = replace_generated_block(
+        trail_source,
+        build_trail_generated_block(trail_rows),
+        TRAIL_BEGIN_MARKER,
+        TRAIL_END_MARKER,
+        TRAIL_CONFIG_PATH,
+    )
+    TRAIL_CONFIG_PATH.write_text(updated_trail_source, encoding="utf-8", newline="\n")
+    return {
+        "trailRows": len(trail_rows),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync Lua config files from IO_BaseBalanceDraft.xlsx.")
     parser.add_argument("--attribute-only", action="store_true", help="Only sync AttributeConfig.lua from attribute progression sheets.")
     parser.add_argument("--diamond-shop-only", action="store_true", help="Only sync ShopConfig.lua diamond products from the diamond purchase sheet.")
     parser.add_argument("--seven-day-only", action="store_true", help="Only sync SevenDayLoginRewardConfig.lua from the seven-day login reward sheet.")
+    parser.add_argument("--trail-only", action="store_true", help="Only sync TrailConfig.lua from the trail sheet.")
     parser.add_argument("--title-only", action="store_true", help="Only sync TitleConfig.lua from the title sheet.")
     parser.add_argument("--task-only", action="store_true", help="Only sync TaskConfig.lua from the task sheet.")
     parser.add_argument("--special-event-only", action="store_true", help="Only sync SpecialEventConfig.lua from the special event sheet.")
+    parser.add_argument("--monster-only", action="store_true", help="Only sync MonsterCatalog.lua from the monster catalog sheet.")
+    parser.add_argument("--chest-only", action="store_true", help="Only sync ChestConfig.lua from the chest sheet.")
     args = parser.parse_args()
 
     if args.diamond_shop_only:
@@ -1676,18 +2072,33 @@ def main() -> None:
     if args.seven_day_only:
         print(json.dumps(sync_seven_day_login_reward_config(), ensure_ascii=False))
         return
+    if args.trail_only:
+        print(json.dumps({
+            **sync_trail_config(),
+            "warnings": [],
+        }, ensure_ascii=False))
+        return
     if args.title_only:
         print(json.dumps(sync_title_config(), ensure_ascii=False))
         return
     if args.task_only:
-        print(json.dumps({
-            **sync_task_config(),
-            "warnings": [],
-        }, ensure_ascii=False))
+        print(json.dumps(sync_task_config(), ensure_ascii=False))
         return
     if args.special_event_only:
         print(json.dumps({
             **sync_special_event_config(),
+            "warnings": [],
+        }, ensure_ascii=False))
+        return
+    if args.monster_only:
+        print(json.dumps({
+            **sync_monster_catalog(),
+            "warnings": [],
+        }, ensure_ascii=False))
+        return
+    if args.chest_only:
+        print(json.dumps({
+            **sync_chest_config(),
             "warnings": [],
         }, ensure_ascii=False))
         return
@@ -1743,6 +2154,7 @@ def main() -> None:
     TRAIL_CONFIG_PATH.write_text(updated_trail_source, encoding="utf-8", newline="\n")
 
     title_result = sync_title_config()
+    chest_result = sync_chest_config()
     diamond_shop_result = sync_diamond_shop_config()
     wheel_result = sync_wheel_config()
     task_result = sync_task_config()
@@ -1755,13 +2167,19 @@ def main() -> None:
         "skinRows": len(skin_rows),
         "trailRows": len(trail_rows),
         "titleRows": title_result["titleRows"],
+        **chest_result,
         **potion_result,
         **wheel_result,
         **attribute_result,
         **diamond_shop_result,
         **task_result,
         **special_event_result,
-        "warnings": warnings + online_warnings + seven_day_result["warnings"] + title_result["warnings"] + wheel_result["warnings"],
+        "warnings": warnings
+            + online_warnings
+            + seven_day_result["warnings"]
+            + title_result["warnings"]
+            + wheel_result["warnings"]
+            + task_result.get("warnings", []),
     }, ensure_ascii=False))
 
 

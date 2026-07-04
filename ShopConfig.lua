@@ -30,6 +30,8 @@ local function requireSharedModule(moduleName)
 end
 
 local PotionConfig = requireSharedModule("PotionConfig")
+local TrailConfig = requireSharedModule("TrailConfig")
+local ChestConfig = requireSharedModule("ChestConfig")
 
 ShopConfig.StarterPack = {
     ClaimKey = "StarterPack",
@@ -107,6 +109,8 @@ local function copyReward(reward)
         rewardType = reward.RewardType,
         potionId = reward.PotionId,
         skinId = reward.SkinId,
+        trailId = reward.TrailId,
+        chestId = reward.ChestId,
         amount = reward.Amount,
         durationSeconds = reward.DurationSeconds,
         icon = reward.Icon,
@@ -147,6 +151,14 @@ function ShopConfig.GetRewardPresentation(reward)
         iconConfig = ShopConfig.RewardIcons["Skin" .. tostring(reward.SkinId)]
         local skinId = math.max(0, math.floor(tonumber(reward.SkinId) or 0))
         result.label = result.label or ("Skin " .. tostring(skinId > 0 and skinId or ""))
+    elseif reward.RewardType == "Trail" then
+        local trail = TrailConfig.GetTrail and TrailConfig.GetTrail(reward.TrailId) or nil
+        result.icon = result.icon or (trail and trail.IconImage) or ""
+        result.label = result.label or (trail and trail.Name) or ("Trail " .. tostring(reward.TrailId or ""))
+    elseif reward.RewardType == "Chest" then
+        local chest = ChestConfig.GetChest and ChestConfig.GetChest(reward.ChestId) or nil
+        result.icon = result.icon or (chest and chest.Icon) or ""
+        result.label = result.label or ("Chest " .. tostring(reward.ChestId or ""))
     end
 
     if reward.RewardType == "Potion" and not iconConfig then

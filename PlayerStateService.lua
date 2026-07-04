@@ -40,6 +40,7 @@ local TrailConfig = requireSharedModule("TrailConfig")
 local TitleConfig = requireSharedModule("TitleConfig")
 local SubscriptionConfig = requireSharedModule("SubscriptionConfig")
 local AttributeConfig = requireSharedModule("AttributeConfig")
+local ChestConfig = requireSharedModule("ChestConfig")
 
 local PlayerStateService = {}
 
@@ -479,6 +480,22 @@ local function normalizeEquippedTrailId(equippedTrailId, ownedTrails)
     return nil
 end
 
+local function normalizeChests(chests)
+    local normalized = {}
+    if type(chests) ~= "table" then
+        return normalized
+    end
+
+    for chestKey, count in pairs(chests) do
+        local chestId = math.floor(tonumber(chestKey) or 0)
+        local amount = math.max(0, math.floor(tonumber(count) or 0))
+        if chestId > 0 and amount > 0 and ChestConfig.GetChest(chestId) then
+            normalized[tostring(chestId)] = amount
+        end
+    end
+    return normalized
+end
+
 local function normalizeOwnedTitles(ownedTitles)
     local normalized = {}
     if type(ownedTitles) ~= "table" then
@@ -538,6 +555,21 @@ local function copyBooleanMap(values)
     for key, value in pairs(values) do
         if value == true then
             result[tostring(key)] = true
+        end
+    end
+    return result
+end
+
+local function copyNumberMap(values)
+    local result = {}
+    if type(values) ~= "table" then
+        return result
+    end
+
+    for key, value in pairs(values) do
+        local amount = math.max(0, math.floor(tonumber(value) or 0))
+        if amount > 0 then
+            result[tostring(key)] = amount
         end
     end
     return result
@@ -728,6 +760,127 @@ local function updateOverheadShieldUi(root, shieldState, shouldShowHealthBar)
     local countDownTime = shield:FindFirstChild("CountDownTime")
     if countDownTime and countDownTime:IsA("TextLabel") then
         countDownTime.Text = string.format("%dS", remainingSeconds)
+    end
+end
+
+local function ensureOverheadEventImage(root)
+    if not root then
+        return nil
+    end
+
+    local barBackground = root:FindFirstChild("BarBackground")
+    if not barBackground then
+        return nil
+    end
+
+    local eventImage = barBackground:FindFirstChild("Event")
+    local legacyEventImage = root:FindFirstChild("Event")
+    if legacyEventImage and legacyEventImage ~= eventImage then
+        if not eventImage and legacyEventImage:IsA("ImageLabel") then
+            eventImage = legacyEventImage
+            eventImage.Parent = barBackground
+        else
+            legacyEventImage:Destroy()
+        end
+    end
+
+    if eventImage and not eventImage:IsA("ImageLabel") then
+        eventImage:Destroy()
+        eventImage = nil
+    end
+
+    if not eventImage then
+        eventImage = Instance.new("ImageLabel")
+        eventImage.Name = "Event"
+        eventImage.BackgroundTransparency = 1
+        eventImage.BorderSizePixel = 0
+        eventImage.AnchorPoint = Vector2.new(0, 0.5)
+        eventImage.Position = UDim2.new(1, 8, 0.5, 0)
+        eventImage.Size = UDim2.fromOffset(28, 28)
+        eventImage.ScaleType = Enum.ScaleType.Fit
+        eventImage.Visible = false
+        eventImage.Parent = barBackground
+
+        local aspect = Instance.new("UIAspectRatioConstraint")
+        aspect.AspectRatio = 1
+        aspect.Parent = eventImage
+    end
+
+    return eventImage
+end
+
+local function updateOverheadEventUi(root, visualInfo)
+    local eventImage = ensureOverheadEventImage(root)
+    if not eventImage then
+        return false
+    end
+
+    local iconImage = tostring(visualInfo and visualInfo.iconImage or "")
+    local isActive = iconImage ~= ""
+    if eventImage:GetAttribute("CurrentEventIconImage") ~= iconImage then
+        eventImage:SetAttribute("CurrentEventIconImage", iconImage)
+        eventImage.Image = iconImage
+    end
+    if eventImage.Visible ~= isActive then
+        eventImage.Visible = isActive
+    end
+    return isActive
+end
+
+local function cacheOriginalNumberAttribute(instance, attributeName, value)
+    if instance:GetAttribute(attributeName) == nil then
+        instance:SetAttribute(attributeName, value)
+    end
+end
+
+local function restoreDirectUiStrokeTransparency(container)
+    for _, child in ipairs(container:GetChildren()) do
+        if child:IsA("UIStroke") then
+            local originalTransparency = tonumber(child:GetAttribute("OriginalTransparency"))
+            if originalTransparency ~= nil and child.Transparency ~= originalTransparency then
+                child.Transparency = originalTransparency
+            end
+        end
+    end
+end
+
+local function hideDirectUiStrokeTransparency(container)
+    for _, child in ipairs(container:GetChildren()) do
+        if child:IsA("UIStroke") then
+            cacheOriginalNumberAttribute(child, "OriginalTransparency", child.Transparency)
+            if child.Transparency ~= 1 then
+                child.Transparency = 1
+            end
+        end
+    end
+end
+
+local function updateOverheadBarBackgroundUi(barBackground, fill, shouldShowHealthBar, hasActiveEventIcon)
+    if not (barBackground and barBackground:IsA("GuiObject")) then
+        return
+    end
+
+    cacheOriginalNumberAttribute(barBackground, "OriginalBackgroundTransparency", barBackground.BackgroundTransparency)
+    local shouldShowContainer = shouldShowHealthBar == true or hasActiveEventIcon == true
+    if barBackground.Visible ~= shouldShowContainer then
+        barBackground.Visible = shouldShowContainer
+    end
+
+    if shouldShowHealthBar == true then
+        local originalTransparency = tonumber(barBackground:GetAttribute("OriginalBackgroundTransparency"))
+        if originalTransparency ~= nil and barBackground.BackgroundTransparency ~= originalTransparency then
+            barBackground.BackgroundTransparency = originalTransparency
+        end
+        restoreDirectUiStrokeTransparency(barBackground)
+    elseif hasActiveEventIcon == true then
+        if barBackground.BackgroundTransparency ~= 1 then
+            barBackground.BackgroundTransparency = 1
+        end
+        hideDirectUiStrokeTransparency(barBackground)
+    end
+
+    if fill and fill:IsA("GuiObject") and fill.Visible ~= shouldShowHealthBar then
+        fill.Visible = shouldShowHealthBar == true
     end
 end
 
@@ -1028,6 +1181,7 @@ function PlayerStateService:_createDefaultState(actor)
         EquippedSkinId = nil,
         OwnedTrails = {},
         EquippedTrailId = nil,
+        Chests = {},
         OwnedTitles = {},
         EquippedTitleId = nil,
         TotalDeaths = 0,
@@ -1451,6 +1605,7 @@ function PlayerStateService:RefreshSpecialEventEffectForPlayer(player)
     self:RecalculateDerivedStats(player, {
         preserveHealthRatio = true,
     })
+    self:UpdateOverheadHealthBar(player)
     self:PushState(player)
     return true
 end
@@ -1602,6 +1757,8 @@ function PlayerStateService:_createDefaultOverheadHealthBarTemplate()
     shieldAspect.AspectRatio = 1
     shieldAspect.Parent = shield
 
+    ensureOverheadEventImage(root)
+
     local countDownTime = Instance.new("TextLabel")
     countDownTime.Name = "CountDownTime"
     countDownTime.BackgroundTransparency = 1
@@ -1715,9 +1872,6 @@ function PlayerStateService:UpdateOverheadHealthBar(actor)
     end
 
     local shouldShowHealthBar = state.Alive == true and state.IsInArena == true
-    if barBackground and barBackground:IsA("GuiObject") then
-        barBackground.Visible = shouldShowHealthBar
-    end
     if valueLabel and valueLabel:IsA("GuiObject") then
         valueLabel.Visible = shouldShowHealthBar
     end
@@ -1727,6 +1881,16 @@ function PlayerStateService:UpdateOverheadHealthBar(actor)
     billboard.Enabled = shouldShowHealthBar or hasEquippedTitle
     local shieldState = self._healthService and self._healthService.GetShieldState and self._healthService:GetShieldState(actor) or nil
     updateOverheadShieldUi(root, shieldState, shouldShowHealthBar)
+    local eventVisualInfo = nil
+    if shouldShowHealthBar then
+        eventVisualInfo = self._specialEventService
+            and self._specialEventService.GetActiveEventVisualInfo
+            and self._specialEventService:GetActiveEventVisualInfo()
+            or nil
+    end
+    local hasActiveEventIcon = updateOverheadEventUi(root, eventVisualInfo)
+    updateOverheadBarBackgroundUi(barBackground, fill, shouldShowHealthBar, hasActiveEventIcon)
+    billboard.Enabled = shouldShowHealthBar or hasEquippedTitle or hasActiveEventIcon
     return true
 end
 
@@ -2004,6 +2168,7 @@ function PlayerStateService:BuildStatePayload(actor)
     local ownedTrails = normalizeOwnedTrails(state.OwnedTrails)
     state.OwnedTrails = ownedTrails
     state.EquippedTrailId = normalizeEquippedTrailId(state.EquippedTrailId, ownedTrails)
+    state.Chests = normalizeChests(state.Chests)
     local ownedTitles = normalizeOwnedTitles(state.OwnedTitles)
     state.OwnedTitles = ownedTitles
     state.EquippedTitleId = normalizeEquippedTitleId(state.EquippedTitleId, ownedTitles)
@@ -2076,6 +2241,7 @@ function PlayerStateService:BuildStatePayload(actor)
         equippedSkinId = state.EquippedSkinId,
         ownedTrails = copyBooleanMap(ownedTrails),
         equippedTrailId = state.EquippedTrailId,
+        chests = copyNumberMap(state.Chests),
         ownedTitles = copyBooleanMap(ownedTitles),
         equippedTitleId = state.EquippedTitleId,
         hasUnseenTitleUnlock = state.HasUnseenTitleUnlock == true,
@@ -2087,6 +2253,7 @@ function PlayerStateService:BuildStatePayload(actor)
         activePotions = activePotions,
         activePotion = activePotion,
         potionExperienceBonus = potionExperienceBonus,
+        trailExperienceBonus = self:GetTrailExperienceBonus(actor),
         potionMoveSpeedBonus = potionMoveSpeedBonus,
         friendExperienceBonus = friendExperienceBonus,
         friendBonusPercent = math.floor((friendExperienceBonus * 100) + 0.5),
@@ -2706,6 +2873,106 @@ function PlayerStateService:GetEquippedTrailConfig(actor)
     return trailId and TrailConfig.GetTrail(trailId) or nil
 end
 
+function PlayerStateService:GetTrailExperienceBonus(actor)
+    local trail = self:GetEquippedTrailConfig(actor)
+    return math.max(0, tonumber(trail and trail.ExperienceBonus) or 0)
+end
+
+function PlayerStateService:GetChests(actor)
+    local state = self:_getOrCreateState(actor)
+    state.Chests = normalizeChests(state.Chests)
+    return state.Chests
+end
+
+function PlayerStateService:GetChestCount(actor, chestId)
+    local chests = self:GetChests(actor)
+    return math.max(0, math.floor(tonumber(chests[tostring(math.floor(tonumber(chestId) or 0))]) or 0))
+end
+
+function PlayerStateService:AddChest(actor, chestId, amount, context)
+    local chest = ChestConfig.GetChest(chestId)
+    if not chest then
+        return false, "InvalidChest"
+    end
+
+    local delta = math.max(1, math.floor(tonumber(amount) or 1))
+    local state = self:_getOrCreateState(actor)
+    state.Chests = normalizeChests(state.Chests)
+    local key = tostring(chest.Id)
+    state.Chests[key] = math.max(0, math.floor(tonumber(state.Chests[key]) or 0)) + delta
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if ActorUtils.IsPlayer(actor) and self._gameAnalyticsService and self._gameAnalyticsService.TrackEconomy then
+        local normalizedContext = type(context) == "table" and context or {}
+        self._gameAnalyticsService:TrackEconomy(
+            actor,
+            Enum.AnalyticsEconomyFlowType.Source,
+            "Chest" .. tostring(chest.Id),
+            delta,
+            state.Chests[key],
+            Enum.AnalyticsEconomyTransactionType.Gameplay,
+            tostring(normalizedContext.itemSku or normalizedContext.productGroup or "ChestReward"),
+            normalizedContext
+        )
+    end
+    return true, "Granted", state.Chests[key]
+end
+
+function PlayerStateService:ConsumeChest(actor, chestId, amount, context)
+    local chest = ChestConfig.GetChest(chestId)
+    if not chest then
+        return false, "InvalidChest"
+    end
+
+    local delta = math.max(1, math.floor(tonumber(amount) or 1))
+    local state = self:_getOrCreateState(actor)
+    state.Chests = normalizeChests(state.Chests)
+    local key = tostring(chest.Id)
+    local current = math.max(0, math.floor(tonumber(state.Chests[key]) or 0))
+    if current < delta then
+        return false, "NotEnoughChest"
+    end
+
+    local remaining = current - delta
+    if remaining > 0 then
+        state.Chests[key] = remaining
+    else
+        state.Chests[key] = nil
+    end
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if ActorUtils.IsPlayer(actor) and self._gameAnalyticsService and self._gameAnalyticsService.TrackEconomy then
+        local normalizedContext = type(context) == "table" and context or {}
+        self._gameAnalyticsService:TrackEconomy(
+            actor,
+            Enum.AnalyticsEconomyFlowType.Sink,
+            "Chest" .. tostring(chest.Id),
+            delta,
+            remaining,
+            Enum.AnalyticsEconomyTransactionType.Gameplay,
+            tostring(normalizedContext.itemSku or normalizedContext.productGroup or "ChestOpen"),
+            normalizedContext
+        )
+    end
+    return true, "Consumed", remaining
+end
+
+function PlayerStateService:HasLimitedChestReward(actor, reward)
+    if type(reward) ~= "table" or reward.IsLimited ~= true then
+        return false
+    end
+
+    local rewardType = tostring(reward.RewardType or "")
+    if rewardType == "Trail" then
+        return self:OwnsTrail(actor, reward.TrailId) == true
+    end
+    return false
+end
+
 function PlayerStateService:_buildTitleUnlockMetrics(state)
     return {
         highestLevelReached = math.max(1, math.floor(tonumber(state.HighestLevelReached or state.Level) or GameConfig.PLAYER.BaseLevel)),
@@ -2974,7 +3241,8 @@ function PlayerStateService:GetExperienceMultiplier(actor)
     local subscriptionBonus = self._subscriptionService and self._subscriptionService.GetExperienceBonus and self._subscriptionService:GetExperienceBonus(actor) or 0
     local attributeBonus = math.max(0, tonumber((self:GetAttributeFinalStats(actor) or {}).ExpGainBonus) or 0)
     local specialEventBonus = math.max(0, tonumber((self:GetSpecialEventEffect(actor) or {}).ExperienceBonus) or 0)
-    return math.max(1, 1 + rebirthBonus + extraBonus + potionBonus + friendBonus + attributeBonus + math.max(0, tonumber(subscriptionBonus) or 0) + specialEventBonus)
+    local trailBonus = self:GetTrailExperienceBonus(actor)
+    return math.max(1, 1 + rebirthBonus + extraBonus + potionBonus + friendBonus + attributeBonus + math.max(0, tonumber(subscriptionBonus) or 0) + specialEventBonus + trailBonus)
 end
 
 function PlayerStateService:GetActivePotions(actor)
@@ -3193,6 +3461,7 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.EquippedSkinId = normalizeEquippedSkinId(savedProgress.equippedSkinId or savedProgress.EquippedSkinId, state.OwnedSkins)
         state.OwnedTrails = normalizeOwnedTrails(savedProgress.ownedTrails or savedProgress.OwnedTrails)
         state.EquippedTrailId = normalizeEquippedTrailId(savedProgress.equippedTrailId or savedProgress.EquippedTrailId, state.OwnedTrails)
+        state.Chests = normalizeChests(savedProgress.chests or savedProgress.Chests)
         state.OwnedTitles = normalizeOwnedTitles(savedProgress.ownedTitles or savedProgress.OwnedTitles)
         state.EquippedTitleId = normalizeEquippedTitleId(savedProgress.equippedTitleId or savedProgress.EquippedTitleId, state.OwnedTitles)
         state.AttributeCaps = AttributeConfig.NormalizeCaps(savedProgress.attributeCaps or savedProgress.AttributeCaps or state.AttributeCaps)
