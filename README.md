@@ -43,3 +43,11 @@ README:
     - 客户端热键与按钮逻辑放 `StarterPlayerScripts/Controllers`
     - 调试指令仍通过 `RemoteEvent` 进入服务端，由服务端统一校验和执行
 16.当前文档必须以 Release 目录代码为准；发现规划、架构、数值表与代码不一致时，优先同步文档，不反向改代码
+
+17.Rojo Script Sync 流程：
+   - 本项目已提供 `default.project.json`，用于 VS Code 的 `Rojo - Roblox Studio Sync` / Studio Rojo 插件把本地 Lua 脚本实时同步到 Studio。
+   - `default.project.json` 由 `tools/BuildRojoProject.py` 根据脚本头部的 `Studio放置路径` 或 `Studio path` 自动生成；新增脚本时必须写清脚本类型和 Studio 放置路径，然后运行 `py -X utf8 tools\BuildRojoProject.py` 刷新映射。
+   - 当前映射只接管脚本和共享配置：`ReplicatedStorage/Shared`、`ServerScriptService/MainServer`、`ServerScriptService/Services`、`StarterPlayer/StarterPlayerScripts/MainClient`、`StarterPlayer/StarterPlayerScripts/Controllers`；Studio 里的 UI 模板、场景模型和手调节点仍以 Studio 当前状态为准。
+   - 使用方式：在 VS Code 打开本目录，运行 Rojo 菜单/Script Sync，或在命令行运行 `rojo serve default.project.json`，再在 Roblox Studio 的 Rojo 插件中 Connect。
+   - 本地验证命令：`rojo sourcemap default.project.json` 和 `rojo build default.project.json --output <临时rbxlx路径>`；当前已验证可解析并构建 113 个脚本映射。
+   - Rojo 负责提高本地代码写入 Studio 的效率，但完成改动后仍要用固定 Studio MCP 做读回和 `get_script_analysis` 校验，不能只凭同步成功就认为功能已验证。

@@ -1,0 +1,377 @@
+{
+  "name": "RobloxIo",
+  "servePort": 34872,
+  "servePlaceIds": [
+    73988417166286
+  ],
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "$ignoreUnknownInstances": true,
+      "Shared": {
+        "$className": "Folder",
+        "$ignoreUnknownInstances": true,
+        "AttackProgressionConfig": {
+          "$path": "AttackProgressionConfig.lua"
+        },
+        "AttributeConfig": {
+          "$path": "AttributeConfig.lua"
+        },
+        "BadgeConfig": {
+          "$path": "BadgeConfig.lua"
+        },
+        "ChestConfig": {
+          "$path": "ChestConfig.lua"
+        },
+        "CodeConfig": {
+          "$path": "CodeConfig.lua"
+        },
+        "GameConfig": {
+          "$path": "GameConfig.lua"
+        },
+        "MonsterCatalog": {
+          "$path": "MonsterCatalog.lua"
+        },
+        "OnlineRewardConfig": {
+          "$path": "OnlineRewardConfig.lua"
+        },
+        "PickupConfig": {
+          "$path": "PickupConfig.lua"
+        },
+        "PotionConfig": {
+          "$path": "PotionConfig.lua"
+        },
+        "RemoteNames": {
+          "$path": "RemoteNames.lua"
+        },
+        "SevenDayLoginRewardConfig": {
+          "$path": "SevenDayLoginRewardConfig.lua"
+        },
+        "ShopConfig": {
+          "$path": "ShopConfig.lua"
+        },
+        "SkinConfig": {
+          "$path": "SkinConfig.lua"
+        },
+        "SpecialEventConfig": {
+          "$path": "SpecialEventConfig.lua"
+        },
+        "SubscriptionConfig": {
+          "$path": "SubscriptionConfig.lua"
+        },
+        "TaskConfig": {
+          "$path": "TaskConfig.lua"
+        },
+        "TitleConfig": {
+          "$path": "TitleConfig.lua"
+        },
+        "TrailConfig": {
+          "$path": "TrailConfig.lua"
+        },
+        "WeaponTierConfig": {
+          "$path": "WeaponTierConfig.lua"
+        },
+        "WheelConfig": {
+          "$path": "WheelConfig.lua"
+        }
+      }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$ignoreUnknownInstances": true,
+      "MainServer": {
+        "$path": "MainServer.server.lua"
+      },
+      "Services": {
+        "$className": "Folder",
+        "$ignoreUnknownInstances": true,
+        "ActivityRsvpPromptService": {
+          "$path": "ActivityRsvpPromptService.lua"
+        },
+        "ActorUtils": {
+          "$path": "ActorUtils.lua"
+        },
+        "ArenaProgressService": {
+          "$path": "ArenaProgressService.lua"
+        },
+        "ArenaService": {
+          "$path": "ArenaService.lua"
+        },
+        "AttributeCapUpgradeService": {
+          "$path": "AttributeCapUpgradeService.lua"
+        },
+        "AttributeUpgradeService": {
+          "$path": "AttributeUpgradeService.lua"
+        },
+        "BadgeAwardService": {
+          "$path": "BadgeAwardService.lua"
+        },
+        "BossService": {
+          "$path": "BossService.lua"
+        },
+        "BotService": {
+          "$path": "BotService.lua"
+        },
+        "BuffService": {
+          "$path": "BuffService.lua"
+        },
+        "ChestService": {
+          "$path": "ChestService.lua"
+        },
+        "CodeService": {
+          "$path": "CodeService.lua"
+        },
+        "CombatService": {
+          "$path": "CombatService.lua"
+        },
+        "ExperienceOrbService": {
+          "$path": "ExperienceOrbService.lua"
+        },
+        "FavoritePlacePromptService": {
+          "$path": "FavoritePlacePromptService.lua"
+        },
+        "FriendsRankingService": {
+          "$path": "FriendsRankingService.lua"
+        },
+        "GMCommandService": {
+          "$path": "GMCommandService.lua"
+        },
+        "GameAnalyticsService": {
+          "$path": "GameAnalyticsService.lua"
+        },
+        "GroupRewardService": {
+          "$path": "GroupRewardService.lua"
+        },
+        "HealthService": {
+          "$path": "HealthService.lua"
+        },
+        "LeaderboardService": {
+          "$path": "LeaderboardService.lua"
+        },
+        "LocalMonsterRewardService": {
+          "$path": "LocalMonsterRewardService.lua"
+        },
+        "MonsterService": {
+          "$path": "MonsterService.lua"
+        },
+        "NukeService": {
+          "$path": "NukeService.lua"
+        },
+        "OnlineRewardService": {
+          "$path": "OnlineRewardService.lua"
+        },
+        "PickupService": {
+          "$path": "PickupService.lua"
+        },
+        "PlayerStateService": {
+          "$path": "PlayerStateService.lua"
+        },
+        "PotionService": {
+          "$path": "PotionService.lua"
+        },
+        "RebirthService": {
+          "$path": "RebirthService.lua"
+        },
+        "RemoteEventService": {
+          "$path": "RemoteEventService.lua"
+        },
+        "RespawnService": {
+          "$path": "RespawnService.lua"
+        },
+        "RevengeService": {
+          "$path": "RevengeService.lua"
+        },
+        "SevenDayLoginRewardService": {
+          "$path": "SevenDayLoginRewardService.lua"
+        },
+        "ShopService": {
+          "$path": "ShopService.lua"
+        },
+        "SkinService": {
+          "$path": "SkinService.lua"
+        },
+        "SpecialEventService": {
+          "$path": "SpecialEventService.lua"
+        },
+        "SubscriptionService": {
+          "$path": "SubscriptionService.lua"
+        },
+        "TaskService": {
+          "$path": "TaskService.lua"
+        },
+        "WeaponService": {
+          "$path": "WeaponService.lua"
+        },
+        "WeaponUnlockRewardService": {
+          "$path": "WeaponUnlockRewardService.lua"
+        },
+        "WheelService": {
+          "$path": "WheelService.lua"
+        }
+      }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "$ignoreUnknownInstances": true,
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "$ignoreUnknownInstances": true,
+        "Controllers": {
+          "$className": "Folder",
+          "$ignoreUnknownInstances": true,
+          "ActivityRsvpPromptController": {
+            "$path": "ActivityRsvpPromptController.lua"
+          },
+          "ArenaProgressController": {
+            "$path": "ArenaProgressController.lua"
+          },
+          "AttributeCapUpgradeController": {
+            "$path": "AttributeCapUpgradeController.lua"
+          },
+          "AttributeUpgradeController": {
+            "$path": "AttributeUpgradeController.lua"
+          },
+          "AudioSettingsController": {
+            "$path": "AudioSettingsController.lua"
+          },
+          "AutoBattleController": {
+            "$path": "AutoBattleController.lua"
+          },
+          "BossHitFeedbackController": {
+            "$path": "BossHitFeedbackController.lua"
+          },
+          "CameraController": {
+            "$path": "CameraController.lua"
+          },
+          "ChestController": {
+            "$path": "ChestController.lua"
+          },
+          "ClientEventController": {
+            "$path": "ClientEventController.lua"
+          },
+          "CodeController": {
+            "$path": "CodeController.lua"
+          },
+          "CoreGuiController": {
+            "$path": "CoreGuiController.lua"
+          },
+          "DefeatedController": {
+            "$path": "DefeatedController.lua"
+          },
+          "FavoritePlacePromptController": {
+            "$path": "FavoritePlacePromptController.lua"
+          },
+          "FriendsRankingController": {
+            "$path": "FriendsRankingController.lua"
+          },
+          "GameNewsController": {
+            "$path": "GameNewsController.lua"
+          },
+          "GlobalLeaderboardController": {
+            "$path": "GlobalLeaderboardController.lua"
+          },
+          "GroupRewardController": {
+            "$path": "GroupRewardController.lua"
+          },
+          "GuideController": {
+            "$path": "GuideController.lua"
+          },
+          "InviteTipsController": {
+            "$path": "InviteTipsController.lua"
+          },
+          "JoinGameController": {
+            "$path": "JoinGameController.lua"
+          },
+          "KillTipsController": {
+            "$path": "KillTipsController.lua"
+          },
+          "LeaveTipsController": {
+            "$path": "LeaveTipsController.lua"
+          },
+          "LocalLeaderboardController": {
+            "$path": "LocalLeaderboardController.lua"
+          },
+          "LocalMonsterController": {
+            "$path": "LocalMonsterController.lua"
+          },
+          "ModalUiController": {
+            "$path": "ModalUiController.lua"
+          },
+          "MonetizationController": {
+            "$path": "MonetizationController.lua"
+          },
+          "MonsterAnimationController": {
+            "$path": "MonsterAnimationController.lua"
+          },
+          "NewWeaponUnlockController": {
+            "$path": "NewWeaponUnlockController.lua"
+          },
+          "NoobMachineController": {
+            "$path": "NoobMachineController.lua"
+          },
+          "NukeCinematicController": {
+            "$path": "NukeCinematicController.lua"
+          },
+          "OnlineRewardController": {
+            "$path": "OnlineRewardController.lua"
+          },
+          "OptionController": {
+            "$path": "OptionController.lua"
+          },
+          "OverheadLevelController": {
+            "$path": "OverheadLevelController.lua"
+          },
+          "PotionController": {
+            "$path": "PotionController.lua"
+          },
+          "RebirthController": {
+            "$path": "RebirthController.lua"
+          },
+          "RevengeCinematicController": {
+            "$path": "RevengeCinematicController.lua"
+          },
+          "SevenDayLoginRewardController": {
+            "$path": "SevenDayLoginRewardController.lua"
+          },
+          "ShopController": {
+            "$path": "ShopController.lua"
+          },
+          "SkinController": {
+            "$path": "SkinController.lua"
+          },
+          "SpecialEventController": {
+            "$path": "SpecialEventController.lua"
+          },
+          "SubscriptionController": {
+            "$path": "SubscriptionController.lua"
+          },
+          "TaskController": {
+            "$path": "TaskController.lua"
+          },
+          "TopStatsController": {
+            "$path": "TopStatsController.lua"
+          },
+          "TouchRegionGate": {
+            "$path": "TouchRegionGate.lua"
+          },
+          "TrailFxController": {
+            "$path": "TrailFxController.lua"
+          },
+          "WeaponFxController": {
+            "$path": "WeaponFxController.lua"
+          },
+          "WeaponIndexController": {
+            "$path": "WeaponIndexController.lua"
+          },
+          "WheelController": {
+            "$path": "WheelController.lua"
+          }
+        },
+        "MainClient": {
+          "$path": "MainClient.client.lua"
+        }
+      }
+    }
+  }
+}
