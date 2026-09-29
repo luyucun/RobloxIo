@@ -12,7 +12,7 @@ local ChestConfig = {}
 ChestConfig.Chests = {
     {
         Id = 101,
-        Icon = 'rbxassetid://100403311120383',
+        Icon = 'rbxassetid://134158624322683',
         DropPoolId = 1,
     },
     {
@@ -29,7 +29,7 @@ ChestConfig.DropPools = {
         { RewardType = 'Potion', Amount = 2, Weight = 250.0, IsLimited = false, PotionId = 1001 },
         { RewardType = 'Potion', Amount = 2, Weight = 100.0, IsLimited = false, PotionId = 1002 },
         { RewardType = 'Potion', Amount = 2, Weight = 40.0, IsLimited = false, PotionId = 1003 },
-        { RewardType = 'Trail', Amount = 1, Weight = 7.0, IsLimited = true, TrailId = 1008 },
+        { RewardType = 'Trail', Amount = 1, Weight = 7.0, IsLimited = true, TrailId = 1010 },
         { RewardType = 'Diamonds', Amount = 20000, Weight = 3.0, IsLimited = false },
     },
     [2] = {

@@ -53,6 +53,7 @@ AutoBattleController._isAutoEnabled = false
 AutoBattleController._isAutoJoining = false
 AutoBattleController._resumeAutoAfterJoin = false
 AutoBattleController._isAutoMoving = false
+AutoBattleController._flashSuspendEndsAt = 0
 AutoBattleController._bindRetryQueued = false
 AutoBattleController._portalJoinPromptEvent = nil
 AutoBattleController._requestJoinBattleEvent = nil
@@ -646,6 +647,23 @@ function AutoBattleController:_stopMovement()
     self:_resetProgressCheckState()
 end
 
+function AutoBattleController:SuspendForFlash(durationSeconds)
+    if not self._isAutoEnabled then
+        return false
+    end
+
+    self:_stopMovement()
+    local resumeAfterSeconds = math.max(0, tonumber(durationSeconds) or 0)
+    self._flashSuspendEndsAt = math.max(self._flashSuspendEndsAt or 0, os.clock() + resumeAfterSeconds)
+    task.delay(resumeAfterSeconds, function()
+        if self._isAutoEnabled and self:_isActiveInArena() then
+            self._lastMoveToClock = 0
+            self._lastMoveToPosition = nil
+        end
+    end)
+    return true
+end
+
 function AutoBattleController:_setAutoEnabled(enabled, options)
     local preserveWanted = type(options) == "table" and options.PreserveWanted == true
     local shouldEnable = enabled == true and self:_isActiveInArena() == true
@@ -1173,6 +1191,9 @@ end
 
 function AutoBattleController:_stepAutoBattle()
     if not self._isAutoEnabled then
+        return
+    end
+    if os.clock() < (self._flashSuspendEndsAt or 0) then
         return
     end
     if not self:_isActiveInArena() then

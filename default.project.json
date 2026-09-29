@@ -110,6 +110,9 @@
         "BossService": {
           "$path": "BossService.lua"
         },
+        "BossSkillService": {
+          "$path": "BossSkillService.lua"
+        },
         "BotService": {
           "$path": "BotService.lua"
         },
@@ -130,6 +133,9 @@
         },
         "FavoritePlacePromptService": {
           "$path": "FavoritePlacePromptService.lua"
+        },
+        "FlashService": {
+          "$path": "FlashService.lua"
         },
         "FriendsRankingService": {
           "$path": "FriendsRankingService.lua"
@@ -261,6 +267,9 @@
           },
           "FavoritePlacePromptController": {
             "$path": "FavoritePlacePromptController.lua"
+          },
+          "FlashController": {
+            "$path": "FlashController.lua"
           },
           "FriendsRankingController": {
             "$path": "FriendsRankingController.lua"

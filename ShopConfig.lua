@@ -157,7 +157,10 @@ function ShopConfig.GetRewardPresentation(reward)
         result.label = result.label or (trail and trail.Name) or ("Trail " .. tostring(reward.TrailId or ""))
     elseif reward.RewardType == "Chest" then
         local chest = ChestConfig.GetChest and ChestConfig.GetChest(reward.ChestId) or nil
-        result.icon = result.icon or (chest and chest.Icon) or ""
+        local chestIcon = chest and tostring(chest.Icon or "") or ""
+        if chestIcon ~= "" then
+            result.icon = chestIcon
+        end
         result.label = result.label or ("Chest " .. tostring(reward.ChestId or ""))
     end
 

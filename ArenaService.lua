@@ -711,6 +711,28 @@ function ArenaService:_isPositionInsideBattleBounds(position)
         and localPosition.Y <= halfSize.Y + BATTLE_ENTRY_VERTICAL_PADDING
 end
 
+function ArenaService:IsPositionInsideBattle(position)
+    return self:_isPositionInsideBattleBounds(position)
+end
+
+function ArenaService:ClampPositionInsideBattle(position, padding)
+    if not (self._battlePart and typeof(position) == "Vector3") then
+        return nil
+    end
+
+    local resolvedPadding = math.max(0, tonumber(padding) or 0)
+    local halfSize = self._battlePart.Size * 0.5
+    local usableX = math.max(0, halfSize.X - resolvedPadding)
+    local usableZ = math.max(0, halfSize.Z - resolvedPadding)
+    local localPosition = self._battlePart.CFrame:PointToObjectSpace(position)
+    local clampedLocalPosition = Vector3.new(
+        math.clamp(localPosition.X, -usableX, usableX),
+        localPosition.Y,
+        math.clamp(localPosition.Z, -usableZ, usableZ)
+    )
+    return self._battlePart.CFrame:PointToWorldSpace(clampedLocalPosition)
+end
+
 function ArenaService:_isActorInsideBattleBounds(actor)
     local rootPart = ActorUtils.GetRootPart(actor)
     return rootPart ~= nil and self:_isPositionInsideBattleBounds(rootPart.Position)

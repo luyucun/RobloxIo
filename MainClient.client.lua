@@ -118,6 +118,7 @@ local NoobMachineController = requireLocalModule("NoobMachineController")
 local GuideController = requireLocalModule("GuideController")
 local FavoritePlacePromptController = requireLocalModule("FavoritePlacePromptController")
 local ActivityRsvpPromptController = requireLocalModule("ActivityRsvpPromptController")
+local FlashController = requireLocalModule("FlashController")
 
 initController("AudioSettingsController", AudioSettingsController, {
     LocalPlayer = localPlayer,
@@ -363,6 +364,13 @@ initController("FavoritePlacePromptController", FavoritePlacePromptController, {
 initController("ActivityRsvpPromptController", ActivityRsvpPromptController, {
     LocalPlayer = localPlayer,
     RootScript = script,
+})
+
+initController("FlashController", FlashController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+    ModalUiController = ModalUiController,
+    AutoBattleController = AutoBattleController,
 })
 
 initController("DefeatedController", DefeatedController, {

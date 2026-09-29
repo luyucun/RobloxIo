@@ -21,6 +21,7 @@ GMCommandService._revengeService = nil
 GMCommandService._gameAnalyticsService = nil
 GMCommandService._taskService = nil
 GMCommandService._chestService = nil
+GMCommandService._skinService = nil
 GMCommandService._connections = {}
 
 local function requireSharedModule(moduleName)
@@ -496,6 +497,23 @@ function GMCommandService:_handleChatCommand(player, message)
         return success == true, result
     end
 
+    if commandName == "skingrant" then
+        if not self._skinService then
+            warn("[GMCommandService] SkinService is unavailable")
+            return false, "ServiceUnavailable"
+        end
+
+        local skinId, errorCode = parsePositiveAmountCommand(message, commandName)
+        if not skinId then
+            warn(string.format("[GMCommandService] Invalid /skingrant command from %s: %s", player.Name, tostring(message)))
+            return false, errorCode or "InvalidSkinId"
+        end
+
+        local success, result = self._skinService:GrantSkin(player, skinId, "StudioGM")
+        print(string.format("[GMCommandService] %s granted skin skinId=%d: success=%s, result=%s", player.Name, skinId, tostring(success), tostring(result)))
+        return success == true, result
+    end
+
     if commandName == "setcap" or commandName == "addcap" or commandName == "setcaps" or commandName == "setallcaps" or commandName == "allcaps" or commandName == "resetcaps" or commandName == "maxcaps" then
         if not self._playerStateService then
             warn("[GMCommandService] PlayerStateService is unavailable")
@@ -869,6 +887,7 @@ function GMCommandService:Init(dependencies)
     self._gameAnalyticsService = dependencies and dependencies.GameAnalyticsService or self._gameAnalyticsService
     self._taskService = dependencies and dependencies.TaskService or self._taskService
     self._chestService = dependencies and dependencies.ChestService or self._chestService
+    self._skinService = dependencies and dependencies.SkinService or self._skinService
 
     disconnectAll(self._connections)
 

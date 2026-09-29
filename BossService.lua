@@ -35,9 +35,16 @@ local BossService = {}
 
 BossService._monsterService = nil
 BossService._arenaService = nil
+BossService._bossSkillService = nil
 BossService._battlePart = nil
 BossService._bossFeedbackEvent = nil
 BossService._activeBosses = {}
+
+local function getPlanarDistance(positionA, positionB)
+    local deltaX = positionA.X - positionB.X
+    local deltaZ = positionA.Z - positionB.Z
+    return math.sqrt((deltaX * deltaX) + (deltaZ * deltaZ))
+end
 
 local function resolveBattlePart()
     local battlePart = Workspace:FindFirstChild(GameConfig.ARENA.BattlePartName)
@@ -85,6 +92,107 @@ function BossService:_samplePointInsideBattle()
     return nil
 end
 
+function BossService:_getMinimumPlanarDistance(position, positions)
+    local minimumDistance = math.huge
+    for _, otherPosition in ipairs(positions) do
+        local distance = getPlanarDistance(position, otherPosition)
+        if distance < minimumDistance then
+            minimumDistance = distance
+        end
+    end
+    return minimumDistance
+end
+
+function BossService:_getCurrentBossSpawnPositions()
+    local positions = {}
+    for index = #self._activeBosses, 1, -1 do
+        local bossState = self._activeBosses[index]
+        if bossState and bossState.Alive and bossState.RuntimeInstance and bossState.RuntimeInstance.Parent then
+            local runtimeInstance = bossState.RuntimeInstance
+            if runtimeInstance:IsA("Model") then
+                table.insert(positions, runtimeInstance:GetPivot().Position)
+            elseif runtimeInstance:IsA("BasePart") then
+                table.insert(positions, runtimeInstance.Position)
+            end
+        elseif not (bossState and bossState.Alive) then
+            table.remove(self._activeBosses, index)
+        end
+    end
+    return positions
+end
+
+function BossService:_getEventBossSpawnMinSpacing(bossCount)
+    local configuredSpacing = math.max(0, tonumber(GameConfig.BOSS.EventSpawnMinSpacing) or 70)
+    if self._battlePart and bossCount > 1 then
+        local size = self._battlePart.Size
+        local spacingRatio = math.clamp(tonumber(GameConfig.BOSS.EventSpawnAreaSpacingRatio) or 0.55, 0.1, 1)
+        local areaSpacing = math.min(size.X, size.Z) * spacingRatio / math.sqrt(bossCount)
+        configuredSpacing = math.min(configuredSpacing, areaSpacing)
+    end
+    return configuredSpacing
+end
+
+function BossService:_sampleEventBossSpawnPositions(bossCount)
+    local positions = {}
+    if bossCount <= 0 then
+        return positions
+    end
+
+    local occupiedPositions = self:_getCurrentBossSpawnPositions()
+    local minSpacing = self:_getEventBossSpawnMinSpacing(bossCount + #occupiedPositions)
+    local spacingFloor = math.max(0, tonumber(GameConfig.BOSS.EventSpawnMinSpacingFloor) or 24)
+    local spacingDecay = math.clamp(tonumber(GameConfig.BOSS.EventSpawnMinSpacingDecay) or 0.82, 0.2, 0.98)
+    local baseAttempts = math.max(1, math.floor(tonumber(GameConfig.ARENA.SpawnCandidateAttempts) or 40))
+    local candidateMultiplier = math.max(1, math.floor(tonumber(GameConfig.BOSS.EventSpawnCandidateMultiplier) or 12))
+    local attemptsPerBoss = math.max(baseAttempts, bossCount * candidateMultiplier)
+
+    for _ = 1, bossCount do
+        local requiredSpacing = minSpacing
+        local selectedPosition = nil
+        local bestPosition = nil
+        local bestDistance = -math.huge
+
+        repeat
+            for _ = 1, attemptsPerBoss do
+                local candidate = self:_samplePointInsideBattle()
+                if candidate then
+                    local comparisonPositions = {}
+                    for _, position in ipairs(occupiedPositions) do
+                        table.insert(comparisonPositions, position)
+                    end
+                    for _, position in ipairs(positions) do
+                        table.insert(comparisonPositions, position)
+                    end
+
+                    local distance = #comparisonPositions > 0
+                        and self:_getMinimumPlanarDistance(candidate, comparisonPositions)
+                        or math.huge
+                    if distance > bestDistance then
+                        bestDistance = distance
+                        bestPosition = candidate
+                    end
+                    if distance >= requiredSpacing then
+                        selectedPosition = candidate
+                        break
+                    end
+                end
+            end
+
+            if selectedPosition or requiredSpacing <= spacingFloor then
+                break
+            end
+            requiredSpacing = math.max(spacingFloor, requiredSpacing * spacingDecay)
+        until false
+
+        selectedPosition = selectedPosition or bestPosition or self:_samplePointInsideBattle()
+        if selectedPosition then
+            table.insert(positions, selectedPosition)
+        end
+    end
+
+    return positions
+end
+
 function BossService:_getActiveBossCount()
     local count = 0
     for index = #self._activeBosses, 1, -1 do
@@ -112,7 +220,7 @@ function BossService:_fireBossFeedback(eventType, bossState)
     })
 end
 
-function BossService:SpawnBoss(monsterDefinitionId)
+function BossService:_spawnBossAt(monsterDefinitionId, spawnPosition)
     if not (GameConfig.BOSS.Enabled and self._monsterService) then
         return nil
     end
@@ -128,7 +236,6 @@ function BossService:SpawnBoss(monsterDefinitionId)
         return nil
     end
 
-    local spawnPosition = self:_samplePointInsideBattle()
     if not spawnPosition then
         warn("[BossService] Boss spawn skipped: no non-Safe Battle spawn point found.")
         return nil
@@ -161,9 +268,16 @@ function BossService:SpawnBoss(monsterDefinitionId)
 
     if bossState then
         table.insert(self._activeBosses, bossState)
+        if self._bossSkillService and self._bossSkillService.RegisterBoss then
+            self._bossSkillService:RegisterBoss(bossState)
+        end
         self:_fireBossFeedback("BossSpawned", bossState)
     end
     return bossState
+end
+
+function BossService:SpawnBoss(monsterDefinitionId)
+    return self:_spawnBossAt(monsterDefinitionId, self:_samplePointInsideBattle())
 end
 
 function BossService:SpawnBossesForEvent(eventConfig)
@@ -178,8 +292,10 @@ function BossService:SpawnBossesForEvent(eventConfig)
     end
 
     local spawnedCount = 0
-    for _ = 1, bossCount do
-        if self:SpawnBoss(bossDefinitionId) then
+    local spawnPositions = self:_sampleEventBossSpawnPositions(bossCount)
+    for index = 1, bossCount do
+        local spawnPosition = spawnPositions[index] or self:_samplePointInsideBattle()
+        if self:_spawnBossAt(bossDefinitionId, spawnPosition) then
             spawnedCount += 1
         end
     end
@@ -189,6 +305,7 @@ end
 function BossService:Init(dependencies)
     self._monsterService = dependencies.MonsterService
     self._arenaService = dependencies.ArenaService
+    self._bossSkillService = dependencies.BossSkillService
     self._battlePart = resolveBattlePart()
     self._bossFeedbackEvent = dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("BossFeedback") or nil
     self._activeBosses = {}

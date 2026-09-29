@@ -47,13 +47,13 @@ WheelConfig.Rewards = {
     },
     {
         Slot = 3,
-        Id = 'WeaponSkin10003',
+        Id = 'WeaponSkin10009',
         RewardType = 'PendingWeaponSkin',
-        Label = 'Special Weapon Skin 10003',
+        Label = 'Special Weapon Skin 10009',
         Weight = 0.5,
         GiftName = 'Gift3',
         TargetRotation = 30,
-        SkinId = 10003,
+        SkinId = 10009,
         Pending = true,
     },
     {

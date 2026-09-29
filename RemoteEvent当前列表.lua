@@ -294,7 +294,7 @@ FavoritePlacePromptResult（C -> S）
 PromptActivityRsvp（S -> C）
 发送方：`ActivityRsvpPromptService`
 接收方：`ActivityRsvpPromptController`
-用途：玩家进服一段时间后请求客户端调起 Roblox 官方 Experience Event RSVP 系统弹窗。当前活动 ID 为 `1688050057217180267`，客户端会先查询 RSVP 状态，已 `Going` 时不再弹出取消预约弹窗。
+用途：玩家进服一段时间后请求客户端调起 Roblox 官方 Experience Event RSVP 系统弹窗。当前活动 ID 为 `1761422313611461386`，客户端会先查询 RSVP 状态，已 `Going` 时不再弹出取消预约弹窗。
 字段：
 - requestId
 - eventId
@@ -525,6 +525,31 @@ weapons 子字段：
 - maxHealth
 - timestamp
 当前 eventType 为 `BossSpawned`。
+
+十六补、Boss2005 FootballKick（无 RemoteEvent）
+发送方：`BossSkillService`
+用途：V6.0 Boss2005 足球技能完全由服务端运行；`SkillMessi` 复制到 `Workspace.Runtime.BossSkills` 后依靠 Workspace 复制给客户端显示，不新增 RemoteEvent。
+说明：
+- 足球移动距离为 100 studs，命中优先按 `SkillMessi` 下的 `Aura` BasePart 判定，并检测上一帧到当前帧的移动路径；足球击飞不走伤害链路，不被护盾抵挡。
+- 命中真实玩家时服务端让玩家短暂进入物理失控状态，施加强上抛、水平冲量、翻滚和多次衰减落地弹跳，并临时清空武器。
+- 武器恢复复用 `WeaponService` 现有逐把恢复逻辑；该技能不造成伤害，也不信任客户端判定。
+
+十六再补、Flash（C -> S / S -> C）
+1.RequestFlash（C -> S）
+接收方：`FlashService:Init`。
+用途：玩家请求使用 Flash；不带业务参数，服务端不接受客户端方向、距离、落点或伤害数据。
+服务端校验：玩家必须 `Alive = true`、`IsInArena = true`、角色存在且正在移动、未处于 Flash 冷却；服务端按真实 `Humanoid.MoveDirection` 与 Battle 边界/碰撞检测执行位移。
+
+2.FlashFeedback（S -> C）
+发送方：`FlashService:_fireFeedback`。
+用途：通知本地 HUD 开始冷却、拒绝原因或最终实际距离。
+字段：
+- `eventType = Started | Rejected | Completed | Interrupted`
+- `reason`（Rejected/Interrupted 时）
+- `cooldownSeconds`、`cooldownRemainingSeconds`
+- `durationSeconds`
+- `requestedDistanceStuds`、`actualDistanceStuds`
+- `timestamp`
 
 十七、LeaderboardSync（S -> C）
 发送方：`LeaderboardService:_broadcast`

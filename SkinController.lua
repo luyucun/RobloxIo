@@ -1175,12 +1175,22 @@ function SkinController:_getSkinEntries()
             name = stateEntry.name or skin.Name,
             iconImage = stateEntry.iconImage or skin.IconImage,
             purchaseChannel = tonumber(stateEntry.purchaseChannel) or skin.PurchaseChannel,
+            sortOrder = math.max(0, math.floor(tonumber(stateEntry.sortOrder) or tonumber(skin.SortOrder) or skin.Id)),
             diamondPrice = tonumber(stateEntry.diamondPrice) or skin.DiamondPrice,
+            robuxPrice = tonumber(stateEntry.robuxPrice) or skin.RobuxPrice,
             gamePassId = tonumber(stateEntry.gamePassId) or skin.GamePassId,
             owned = stateEntry.owned == true,
             equipped = stateEntry.equipped == true or tonumber(self._latestState.equippedSkinId) == skin.Id,
         })
     end
+    table.sort(entries, function(left, right)
+        local leftOrder = math.max(0, math.floor(tonumber(left.sortOrder) or left.id or 0))
+        local rightOrder = math.max(0, math.floor(tonumber(right.sortOrder) or right.id or 0))
+        if leftOrder ~= rightOrder then
+            return leftOrder < rightOrder
+        end
+        return math.max(0, math.floor(tonumber(left.id) or 0)) < math.max(0, math.floor(tonumber(right.id) or 0))
+    end)
     return entries
 end
 
@@ -1507,7 +1517,7 @@ function SkinController:_populateItem(frame, skin)
     local robuxButton, robuxScaleTarget = findButton(frame, "RobuxBuyButton")
     if robuxButton then
         local priceLabel = robuxScaleTarget and robuxScaleTarget:FindFirstChild("RMoney", true)
-        setText(priceLabel, "299")
+        setText(priceLabel, skin.robuxPrice)
         setMarketplaceGamePassPrice(priceLabel, skin.gamePassId)
         self:_bindItemButton(robuxButton, function()
             if self._requestPurchaseEvent then
@@ -1671,9 +1681,16 @@ function SkinController:_renderList()
 
     self:_clearItems()
     self._template.Visible = false
+    local skinListLayout = self._scrollingFrame:FindFirstChildOfClass("UIListLayout")
+    if skinListLayout then
+        skinListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    end
     for _, skin in ipairs(self:_getSkinEntries()) do
         local frame = self._template:Clone()
         frame.Name = "Skin_" .. tostring(skin.id)
+        local sortOrder = math.max(0, math.floor(tonumber(skin.sortOrder) or skin.id or 0))
+        local skinId = math.max(0, math.floor(tonumber(skin.id) or 0))
+        frame.LayoutOrder = sortOrder * 10000 + skinId
         frame.Visible = true
         frame.Parent = self._scrollingFrame
         table.insert(self._itemFrames, frame)

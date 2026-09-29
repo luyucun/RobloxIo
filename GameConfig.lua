@@ -47,7 +47,10 @@ GameConfig.PLAYER = {
     BaseWeaponTier = "T1",
     BaseWeaponCount = 1,
     MaxWeaponCount = 10,
-    MaxSupportedLevel = 400,
+    -- BEGIN GENERATED LEVEL CAP
+    -- Source: IO_BaseBalanceDraft.xlsx / 等级武器映射. Update via tools/SyncCodeConfigFromWorkbook.py --level-progression-only.
+    MaxSupportedLevel = 610,
+    -- END GENERATED LEVEL CAP
 }
 
 GameConfig.EXPERIENCE = {
@@ -70,7 +73,10 @@ GameConfig.EXPERIENCE = {
         { MinLevel = 171, MaxLevel = 220, Experience = 1600 },
         { MinLevel = 221, MaxLevel = 280, Experience = 2400 },
         { MinLevel = 281, MaxLevel = 350, Experience = 3200 },
-        { MinLevel = 351, MaxLevel = 400, Experience = 4000 },
+        -- BEGIN GENERATED LEVEL EXPERIENCE CAP
+        -- Source: IO_BaseBalanceDraft.xlsx / 等级武器映射. Update via tools/SyncCodeConfigFromWorkbook.py --level-progression-only.
+        { MinLevel = 351, MaxLevel = 610, Experience = 4000 },
+        -- END GENERATED LEVEL EXPERIENCE CAP
     },
     OrbCollectRadius = 4,
     HomingDelaySeconds = 0.8,
@@ -183,6 +189,22 @@ GameConfig.COMBAT = {
     PlayerKnockbackUpwardSpeed = 8,
 }
 
+-- BEGIN GENERATED FLASH CONFIG
+-- Source: IO_BaseBalanceDraft.xlsx / 技能. Update via tools/SyncCodeConfigFromWorkbook.py.
+GameConfig.FLASH = {
+    Enabled = true,
+    Id = 'Flash',
+    Name = 'Flash',
+    DistanceStuds = 30.0,
+    DurationSeconds = 0.3,
+    CooldownSeconds = 5.0,
+    AnimationId = 'rbxassetid://122960903142690',
+    MinimumMoveDirectionMagnitude = 0.05,
+    MinimumTravelDistance = 1.0,
+    CollisionPaddingStuds = 0.35,
+}
+-- END GENERATED FLASH CONFIG
+
 GameConfig.HEALTH_REGEN = {
     Enabled = true,
     OutOfCombatDelaySeconds = 3,
@@ -289,6 +311,11 @@ GameConfig.BOSS = {
     MaxExperienceOrbVisualCount = 20,
     KillScoreReward = 300,
     BuffDropCount = 3,
+    EventSpawnMinSpacing = 70,
+    EventSpawnMinSpacingFloor = 24,
+    EventSpawnMinSpacingDecay = 0.82,
+    EventSpawnCandidateMultiplier = 12,
+    EventSpawnAreaSpacingRatio = 0.55,
     PotionDropEnabled = true,
     PotionDropRuntimeFolderName = "BossPotionDrops",
     PotionDropMaxLifetimeSeconds = 12,
@@ -296,6 +323,49 @@ GameConfig.BOSS = {
         { PotionId = 1001, Weight = 50 },
         { PotionId = 1002, Weight = 20 },
         { PotionId = 1003, Weight = 5 },
+    },
+}
+
+GameConfig.BOSS_SKILLS = {
+    Enabled = true,
+    BossBindings = {
+        ["2005"] = "FootballKick",
+    },
+    Skills = {
+        FootballKick = {
+            TemplateName = "SkillMessi",
+            TemplatePath = { "ReplicatedStorage", "Effect", "SkillMessi" },
+            CooldownSeconds = 20,
+            InitialCooldownJitterMinSeconds = -5,
+            InitialCooldownJitterMaxSeconds = 5,
+            RetryDelaySeconds = 2,
+            DistanceStuds = 100,
+            TravelSeconds = 1.35,
+            SpawnForwardOffset = 9,
+            GroundOffset = 1.6,
+            AuraPartName = "Aura",
+            AuraSweepPadding = 1.5,
+            HitRadius = 4,
+            PlayerHitRadius = 3.5,
+            KnockbackHorizontalSpeed = 65,
+            KnockbackUpwardSpeed = 35,
+            KnockbackImpulseMultiplier = 0.55,
+            BoundaryGuardDurationSeconds = 2.6,
+            BoundaryGuardIntervalSeconds = 0.08,
+            BoundaryGuardVelocityDamping = 0.35,
+            PlayerClampRadius = 3,
+            FlyoutControlSeconds = 2.6,
+            FlyoutSpinSpeed = 20,
+            FlyoutBounceCount = 0,
+            FlyoutFirstBounceUpwardSpeed = 40,
+            FlyoutBounceUpwardDecay = 0.62,
+            FlyoutBounceHorizontalDamping = 0.4,
+            FlyoutGroundCheckDistance = 5,
+            FlyoutBounceMinDelaySeconds = 0.28,
+            FlyoutBounceTimeoutSeconds = 1.1,
+            NetworkOwnerReleaseDelaySeconds = 2.6,
+            WeaponRestoreDelaySeconds = 0,
+        },
     },
 }
 
@@ -340,8 +410,8 @@ GameConfig.FAVORITE_PROMPT = {
 
 GameConfig.ACTIVITY_RSVP_PROMPT = {
     Enabled = true,
-    EventId = "1688050057217180267",
-    DelaySeconds = 90,
+    EventId = "1761422313611461386",
+    DelaySeconds = 10,
 }
 
 GameConfig.MONETIZATION = {

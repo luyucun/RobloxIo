@@ -299,16 +299,16 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
         collisionMidpoint = (positionA + positionB) * 0.5
     end
 
-    local tierIndexA = tonumber(weaponStateA.TierIndex) or 0
-    local tierIndexB = tonumber(weaponStateB.TierIndex) or 0
+    local combatRankA = tonumber(weaponStateA.CombatRank) or tonumber(weaponStateA.TierIndex) or 0
+    local combatRankB = tonumber(weaponStateB.CombatRank) or tonumber(weaponStateB.TierIndex) or 0
 
-    self:_fireCombatFeedback("WeaponHitWeapon", weaponStateA.OwnerUserId, weaponStateB.OwnerUserId, weaponStateA.BaseDamage, tierIndexB)
-    self:_fireCombatFeedback("WeaponHitWeapon", weaponStateB.OwnerUserId, weaponStateA.OwnerUserId, weaponStateB.BaseDamage, tierIndexA)
+    self:_fireCombatFeedback("WeaponHitWeapon", weaponStateA.OwnerUserId, weaponStateB.OwnerUserId, weaponStateA.BaseDamage, weaponStateB.TierIndex)
+    self:_fireCombatFeedback("WeaponHitWeapon", weaponStateB.OwnerUserId, weaponStateA.OwnerUserId, weaponStateB.BaseDamage, weaponStateA.TierIndex)
 
-    if tierIndexA == tierIndexB then
+    if combatRankA == combatRankB then
         local didBreakA = self._weaponService:HandleBrokenWeapon(weaponStateA, {
             sourceWeaponId = weaponStateB.Id,
-            sourceTierIndex = tierIndexB,
+            sourceCombatRank = combatRankB,
             impactPosition = collisionMidpoint,
             launchDirection = positionA and positionB and (positionA - positionB) or nil,
         })
@@ -318,7 +318,7 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
 
         local didBreakB = self._weaponService:HandleBrokenWeapon(weaponStateB, {
             sourceWeaponId = weaponStateA.Id,
-            sourceTierIndex = tierIndexA,
+            sourceCombatRank = combatRankA,
             impactPosition = collisionMidpoint,
             launchDirection = positionB and positionA and (positionB - positionA) or nil,
         })
@@ -328,10 +328,10 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
         return
     end
 
-    if tierIndexA > tierIndexB then
+    if combatRankA > combatRankB then
         local didBreakB = self._weaponService:HandleBrokenWeapon(weaponStateB, {
             sourceWeaponId = weaponStateA.Id,
-            sourceTierIndex = tierIndexA,
+            sourceCombatRank = combatRankA,
             impactPosition = collisionMidpoint,
             launchDirection = positionB and positionA and (positionB - positionA) or nil,
         })
@@ -343,7 +343,7 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
 
     local didBreakA = self._weaponService:HandleBrokenWeapon(weaponStateA, {
         sourceWeaponId = weaponStateB.Id,
-        sourceTierIndex = tierIndexB,
+        sourceCombatRank = combatRankB,
         impactPosition = collisionMidpoint,
         launchDirection = positionA and positionB and (positionA - positionB) or nil,
     })

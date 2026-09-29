@@ -75,7 +75,7 @@ local OPEN_EFFECT_FADE_OUT = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.Easi
 local OPEN_EFFECT_COMPLETE_DELAY = 0.08
 local BEIJING_UTC_OFFSET_SECONDS = 8 * 3600
 local WEEKLY_REFRESH_WEEKDAY = 7
-local WEEKLY_REFRESH_HOUR = 20
+local WEEKLY_REFRESH_HOUR = 22
 local COUNTDOWN_REFRESH_INTERVAL_SECONDS = 30
 
 local function disconnectAll(connections)

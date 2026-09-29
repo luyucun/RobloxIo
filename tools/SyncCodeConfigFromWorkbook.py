@@ -104,6 +104,25 @@ MONSTER_CATALOG_DATA_START_ROW = 5
 MONSTER_CATALOG_BEGIN_MARKER = "-- BEGIN GENERATED MONSTER DEFINITIONS"
 MONSTER_CATALOG_END_MARKER = "-- END GENERATED MONSTER DEFINITIONS"
 
+FLASH_CONFIG_PATH = ROOT / "GameConfig.lua"
+FLASH_SHEET_NAME = "技能"
+FLASH_HEADER_ROW = 4
+FLASH_DATA_START_ROW = 5
+FLASH_BEGIN_MARKER = "-- BEGIN GENERATED FLASH CONFIG"
+FLASH_END_MARKER = "-- END GENERATED FLASH CONFIG"
+
+LEVEL_PROGRESSION_GAME_CONFIG_PATH = ROOT / "GameConfig.lua"
+LEVEL_PROGRESSION_WEAPON_CONFIG_PATH = ROOT / "WeaponTierConfig.lua"
+LEVEL_PROGRESSION_SHEET_NAME = "等级武器映射"
+LEVEL_PROGRESSION_HEADER_ROW = 4
+LEVEL_PROGRESSION_DATA_START_ROW = 5
+LEVEL_CAP_BEGIN_MARKER = "-- BEGIN GENERATED LEVEL CAP"
+LEVEL_CAP_END_MARKER = "-- END GENERATED LEVEL CAP"
+LEVEL_EXPERIENCE_BEGIN_MARKER = "-- BEGIN GENERATED LEVEL EXPERIENCE CAP"
+LEVEL_EXPERIENCE_END_MARKER = "-- END GENERATED LEVEL EXPERIENCE CAP"
+LEVEL_WEAPON_PROGRESSION_BEGIN_MARKER = "-- BEGIN GENERATED LEVEL WEAPON PROGRESSION"
+LEVEL_WEAPON_PROGRESSION_END_MARKER = "-- END GENERATED LEVEL WEAPON PROGRESSION"
+
 
 def is_blank(value) -> bool:
     if value is None:
@@ -210,13 +229,14 @@ def parse_potion_reward(compact: str) -> dict | None:
 
 
 def parse_chest_reward(compact: str, amount: int = 1) -> dict | None:
-    match = re.fullmatch(r"(?:宝箱|Chest|chest)(\d+)", compact)
+    match = re.fullmatch(r"(?:宝箱|Chest|chest)(\d+)(?:(?:一共|共|[xX*×])(\d+)个?)?", compact)
     if not match:
         return None
+    resolved_amount = parse_amount_token(match.group(2)) if match.group(2) else amount
     return {
         "RewardType": "Chest",
         "ChestId": parse_amount_token(match.group(1)),
-        "Amount": amount,
+        "Amount": resolved_amount,
     }
 
 
@@ -401,6 +421,17 @@ def build_generated_block(rows) -> str:
         lines.extend(["        },", "    },"])
     lines.extend(["}", END_MARKER])
     return "\n".join(lines)
+
+
+def sync_code_config() -> dict:
+    rows, warnings = read_code_rows()
+    source = CONFIG_PATH.read_text(encoding="utf-8")
+    updated_source = replace_generated_block(source, build_generated_block(rows), BEGIN_MARKER, END_MARKER, CONFIG_PATH)
+    CONFIG_PATH.write_text(updated_source, encoding="utf-8", newline="\n")
+    return {
+        "codeRows": len(rows),
+        "warnings": warnings,
+    }
 
 
 def build_online_reward_row(reward: dict) -> str:
@@ -1313,12 +1344,22 @@ def read_skin_rows():
     workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
     skin_sheet = get_sheet(workbook, "皮肤表", 12)
     metadata = read_weapon_skin_metadata(workbook)
+    headers = find_header_columns(skin_sheet, 4)
+    required_headers = ["皮肤ID", "排序", "获得渠道", "钻石价格", "罗布币价格"]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing skin sheet headers: " + ", ".join(missing_headers))
+
+    game_pass_ids_by_skin_id = {
+        10002: 1830742687,
+        10008: 1927237014,
+    }
     rows = []
     for row_index in range(5, skin_sheet.max_row + 1):
-        skin_id = math_safe_int(skin_sheet.cell(row_index, 3).value, 0)
+        skin_id = math_safe_int(cell_by_header(skin_sheet, row_index, headers, "皮肤ID"), 0)
         if skin_id <= 0:
             continue
-        channel = math_safe_int(skin_sheet.cell(row_index, 4).value, 0)
+        channel = math_safe_int(cell_by_header(skin_sheet, row_index, headers, "获得渠道"), 0)
         if channel <= 0:
             continue
         info = metadata.get(skin_id)
@@ -1331,10 +1372,12 @@ def read_skin_rows():
             "TemplatePath": info["TemplatePath"],
             "IconImage": info["IconImage"],
             "PurchaseChannel": channel,
-            "DiamondPrice": math_safe_int(skin_sheet.cell(row_index, 5).value, 0),
-            "RobuxPrice": math_safe_int(skin_sheet.cell(row_index, 6).value, 0),
-            "GamePassId": 1830742687 if skin_id == 10002 else 0,
+            "SortOrder": math_safe_int(cell_by_header(skin_sheet, row_index, headers, "排序"), len(rows) + 1),
+            "DiamondPrice": math_safe_int(cell_by_header(skin_sheet, row_index, headers, "钻石价格"), 0),
+            "RobuxPrice": math_safe_int(cell_by_header(skin_sheet, row_index, headers, "罗布币价格"), 0),
+            "GamePassId": game_pass_ids_by_skin_id.get(skin_id, 0),
         })
+    rows.sort(key=lambda row: (row["SortOrder"], row["Id"]))
     return rows
 
 
@@ -1360,12 +1403,30 @@ def build_skin_generated_block(rows) -> str:
             f"        TemplatePath = {lua_value(row['TemplatePath'])},",
             f"        IconImage = {lua_value(row['IconImage'])},",
             f"        PurchaseChannel = SkinConfig.PurchaseChannel.{channel_name},",
+            f"        SortOrder = {row['SortOrder']},",
             f"        DiamondPrice = {row['DiamondPrice']},",
+            f"        RobuxPrice = {row['RobuxPrice']},",
             f"        GamePassId = {row['GamePassId']},",
             "    },",
         ])
     lines.extend(["}", SKIN_END_MARKER])
     return "\n".join(lines)
+
+
+def sync_skin_config() -> dict:
+    rows = read_skin_rows()
+    skin_source = SKIN_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_skin_source = replace_generated_block(
+        skin_source,
+        build_skin_generated_block(rows),
+        SKIN_BEGIN_MARKER,
+        SKIN_END_MARKER,
+        SKIN_CONFIG_PATH,
+    )
+    SKIN_CONFIG_PATH.write_text(updated_skin_source, encoding="utf-8", newline="\n")
+    return {
+        "skinRows": len(rows),
+    }
 
 
 def read_trail_rows():
@@ -1845,10 +1906,226 @@ def build_diamond_shop_generated_block(rows: list[dict]) -> str:
 
 
 def replace_generated_block(source: str, generated_block: str, begin_marker: str, end_marker: str, config_path: Path) -> str:
-    pattern = re.compile(re.escape(begin_marker) + r".*?" + re.escape(end_marker), re.S)
+    pattern = re.compile(r"^[ \t]*" + re.escape(begin_marker) + r".*?" + re.escape(end_marker), re.S | re.M)
     if not pattern.search(source):
         raise RuntimeError(f"Could not find generated block markers in {config_path}")
-    return pattern.sub(generated_block, source, count=1)
+    return pattern.sub(lambda _: generated_block, source, count=1)
+
+
+def read_level_weapon_progression_rows() -> list[dict]:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, LEVEL_PROGRESSION_SHEET_NAME, 3)
+    headers = build_header_map(worksheet, LEVEL_PROGRESSION_HEADER_ROW)
+    required_headers = ["档位序号", "档位", "起始等级", "结束等级", "模板名", "武器名字", "伤害", "最大数量"]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing level weapon mapping headers: " + ", ".join(missing_headers))
+
+    rows = []
+    previous_end_level = 0
+    for row_index in range(LEVEL_PROGRESSION_DATA_START_ROW, worksheet.max_row + 1):
+        combat_rank = math_safe_int(cell_by_header(worksheet, row_index, headers, "档位序号"), 0)
+        if combat_rank <= 0:
+            continue
+        tier = str(cell_by_header(worksheet, row_index, headers, "档位") or "").strip()
+        template_name = str(cell_by_header(worksheet, row_index, headers, "模板名") or "").strip()
+        display_name = str(cell_by_header(worksheet, row_index, headers, "武器名字") or "").strip()
+        min_level = math_safe_int(cell_by_header(worksheet, row_index, headers, "起始等级"), 0)
+        max_level = math_safe_int(cell_by_header(worksheet, row_index, headers, "结束等级"), 0)
+        damage = math_safe_int(cell_by_header(worksheet, row_index, headers, "伤害"), 0)
+        max_count = math_safe_int(cell_by_header(worksheet, row_index, headers, "最大数量"), 0)
+        if (
+            not tier
+            or not template_name
+            or not display_name
+            or min_level <= 0
+            or max_level < min_level
+            or damage <= 0
+            or max_count <= 0
+        ):
+            raise RuntimeError(f"Invalid level weapon mapping row {row_index}")
+        if combat_rank != len(rows) + 1:
+            raise RuntimeError(f"Combat rank must be sequential at row {row_index}")
+        if min_level != previous_end_level + 1:
+            raise RuntimeError(f"Level mapping must be contiguous at row {row_index}")
+        rows.append({
+            "CombatRank": combat_rank,
+            "Tier": tier,
+            "MinLevel": min_level,
+            "MaxLevel": max_level,
+            "TemplateName": template_name,
+            "DisplayName": display_name,
+            "Damage": damage,
+            "MaxCount": max_count,
+        })
+        previous_end_level = max_level
+
+    if not rows:
+        raise RuntimeError("No level weapon mapping rows found")
+    return rows
+
+
+def build_level_cap_generated_block(max_supported_level: int) -> str:
+    return "\n".join([
+        "    " + LEVEL_CAP_BEGIN_MARKER,
+        "    -- Source: IO_BaseBalanceDraft.xlsx / 等级武器映射. Update via tools/SyncCodeConfigFromWorkbook.py --level-progression-only.",
+        f"    MaxSupportedLevel = {max_supported_level},",
+        "    " + LEVEL_CAP_END_MARKER,
+    ])
+
+
+def build_level_experience_generated_block(max_supported_level: int, experience: int) -> str:
+    return "\n".join([
+        "        " + LEVEL_EXPERIENCE_BEGIN_MARKER,
+        "        -- Source: IO_BaseBalanceDraft.xlsx / 等级武器映射. Update via tools/SyncCodeConfigFromWorkbook.py --level-progression-only.",
+        f"        {{ MinLevel = 351, MaxLevel = {max_supported_level}, Experience = {experience} }},",
+        "        " + LEVEL_EXPERIENCE_END_MARKER,
+    ])
+
+
+def build_level_weapon_progression_generated_block(rows: list[dict]) -> str:
+    lines = [
+        LEVEL_WEAPON_PROGRESSION_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 等级武器映射. Update via tools/SyncCodeConfigFromWorkbook.py --level-progression-only.",
+        "local LEVEL_WEAPON_PROGRESSION_BANDS = {",
+    ]
+    for row in rows:
+        lines.append(
+            "    { CombatRank = %(CombatRank)d, MinLevel = %(MinLevel)d, MaxLevel = %(MaxLevel)d, Tier = %(Tier)s, TemplateName = %(TemplateName)s, DisplayName = %(DisplayName)s, Damage = %(Damage)d, MaxCount = %(MaxCount)d },"
+            % {
+                **row,
+                "Tier": lua_value(row["Tier"]),
+                "TemplateName": lua_value(row["TemplateName"]),
+                "DisplayName": lua_value(row["DisplayName"]),
+            }
+        )
+    lines.extend(["}", LEVEL_WEAPON_PROGRESSION_END_MARKER])
+    return "\n".join(lines)
+
+
+def sync_level_progression_config() -> dict:
+    rows = read_level_weapon_progression_rows()
+    max_supported_level = rows[-1]["MaxLevel"]
+    experience = 4000
+
+    game_config_source = LEVEL_PROGRESSION_GAME_CONFIG_PATH.read_text(encoding="utf-8")
+    game_config_source = replace_generated_block(
+        game_config_source,
+        build_level_cap_generated_block(max_supported_level),
+        LEVEL_CAP_BEGIN_MARKER,
+        LEVEL_CAP_END_MARKER,
+        LEVEL_PROGRESSION_GAME_CONFIG_PATH,
+    )
+    game_config_source = replace_generated_block(
+        game_config_source,
+        build_level_experience_generated_block(max_supported_level, experience),
+        LEVEL_EXPERIENCE_BEGIN_MARKER,
+        LEVEL_EXPERIENCE_END_MARKER,
+        LEVEL_PROGRESSION_GAME_CONFIG_PATH,
+    )
+    LEVEL_PROGRESSION_GAME_CONFIG_PATH.write_text(game_config_source, encoding="utf-8", newline="\n")
+
+    weapon_config_source = LEVEL_PROGRESSION_WEAPON_CONFIG_PATH.read_text(encoding="utf-8")
+    weapon_config_source = replace_generated_block(
+        weapon_config_source,
+        build_level_weapon_progression_generated_block(rows),
+        LEVEL_WEAPON_PROGRESSION_BEGIN_MARKER,
+        LEVEL_WEAPON_PROGRESSION_END_MARKER,
+        LEVEL_PROGRESSION_WEAPON_CONFIG_PATH,
+    )
+    LEVEL_PROGRESSION_WEAPON_CONFIG_PATH.write_text(weapon_config_source, encoding="utf-8", newline="\n")
+    return {
+        "maxSupportedLevel": max_supported_level,
+        "weaponProgressionBands": len(rows),
+        "maxCombatRank": rows[-1]["CombatRank"],
+        "maxWeaponDamage": rows[-1]["Damage"],
+    }
+
+
+def read_flash_config() -> dict:
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    worksheet = get_sheet(workbook, FLASH_SHEET_NAME, len(workbook.worksheets) - 1)
+    headers = build_header_map(worksheet, FLASH_HEADER_ROW)
+    required_headers = [
+        "技能Id",
+        "名称",
+        "距离Studs",
+        "持续秒数",
+        "冷却秒数",
+        "动作资源Id",
+        "最小移动输入",
+        "最小可移动距离",
+    ]
+    missing_headers = [header for header in required_headers if header not in headers]
+    if missing_headers:
+        raise RuntimeError("Missing flash skill sheet headers: " + ", ".join(missing_headers))
+
+    for row_index in range(FLASH_DATA_START_ROW, worksheet.max_row + 1):
+        skill_id = cell_by_header(worksheet, row_index, headers, "技能Id")
+        if is_blank(skill_id):
+            continue
+        if str(skill_id).strip().lower() != "flash":
+            continue
+
+        config = {
+            "Id": str(skill_id).strip(),
+            "Name": "" if is_blank(cell_by_header(worksheet, row_index, headers, "名称")) else str(cell_by_header(worksheet, row_index, headers, "名称")).strip(),
+            "DistanceStuds": math_safe_float(cell_by_header(worksheet, row_index, headers, "距离Studs"), 0),
+            "DurationSeconds": math_safe_float(cell_by_header(worksheet, row_index, headers, "持续秒数"), 0),
+            "CooldownSeconds": math_safe_float(cell_by_header(worksheet, row_index, headers, "冷却秒数"), 0),
+            "AnimationId": math_safe_int(cell_by_header(worksheet, row_index, headers, "动作资源Id"), 0),
+            "MinimumMoveDirectionMagnitude": math_safe_float(cell_by_header(worksheet, row_index, headers, "最小移动输入"), 0),
+            "MinimumTravelDistance": math_safe_float(cell_by_header(worksheet, row_index, headers, "最小可移动距离"), 0),
+        }
+        if (
+            config["DistanceStuds"] <= 0
+            or config["DurationSeconds"] <= 0
+            or config["CooldownSeconds"] <= 0
+            or config["AnimationId"] <= 0
+            or config["MinimumMoveDirectionMagnitude"] <= 0
+            or config["MinimumTravelDistance"] <= 0
+        ):
+            raise RuntimeError(f"Invalid Flash configuration at row {row_index}")
+        return config
+
+    raise RuntimeError("Missing Flash row in 技能 sheet")
+
+
+def build_flash_generated_block(config: dict) -> str:
+    return "\n".join([
+        FLASH_BEGIN_MARKER,
+        "-- Source: IO_BaseBalanceDraft.xlsx / 技能. Update via tools/SyncCodeConfigFromWorkbook.py.",
+        "GameConfig.FLASH = {",
+        "    Enabled = true,",
+        f"    Id = {lua_value(config['Id'])},",
+        f"    Name = {lua_value(config['Name'])},",
+        f"    DistanceStuds = {config['DistanceStuds']},",
+        f"    DurationSeconds = {config['DurationSeconds']},",
+        f"    CooldownSeconds = {config['CooldownSeconds']},",
+        f"    AnimationId = {lua_value('rbxassetid://' + str(config['AnimationId']))},",
+        f"    MinimumMoveDirectionMagnitude = {config['MinimumMoveDirectionMagnitude']},",
+        f"    MinimumTravelDistance = {config['MinimumTravelDistance']},",
+        "    CollisionPaddingStuds = 0.35,",
+        "}",
+        FLASH_END_MARKER,
+    ])
+
+
+def sync_flash_config() -> dict:
+    config = read_flash_config()
+    source = FLASH_CONFIG_PATH.read_text(encoding="utf-8")
+    updated_source = replace_generated_block(
+        source,
+        build_flash_generated_block(config),
+        FLASH_BEGIN_MARKER,
+        FLASH_END_MARKER,
+        FLASH_CONFIG_PATH,
+    )
+    FLASH_CONFIG_PATH.write_text(updated_source, encoding="utf-8", newline="\n")
+    return {
+        "flashId": config["Id"],
+        "flashDistanceStuds": config["DistanceStuds"],
+    }
 
 
 def sync_attribute_config() -> dict:
@@ -2055,12 +2332,17 @@ def main() -> None:
     parser.add_argument("--attribute-only", action="store_true", help="Only sync AttributeConfig.lua from attribute progression sheets.")
     parser.add_argument("--diamond-shop-only", action="store_true", help="Only sync ShopConfig.lua diamond products from the diamond purchase sheet.")
     parser.add_argument("--seven-day-only", action="store_true", help="Only sync SevenDayLoginRewardConfig.lua from the seven-day login reward sheet.")
+    parser.add_argument("--skin-only", action="store_true", help="Only sync SkinConfig.lua from the skin sheet and weapon metadata.")
     parser.add_argument("--trail-only", action="store_true", help="Only sync TrailConfig.lua from the trail sheet.")
     parser.add_argument("--title-only", action="store_true", help="Only sync TitleConfig.lua from the title sheet.")
     parser.add_argument("--task-only", action="store_true", help="Only sync TaskConfig.lua from the task sheet.")
     parser.add_argument("--special-event-only", action="store_true", help="Only sync SpecialEventConfig.lua from the special event sheet.")
     parser.add_argument("--monster-only", action="store_true", help="Only sync MonsterCatalog.lua from the monster catalog sheet.")
     parser.add_argument("--chest-only", action="store_true", help="Only sync ChestConfig.lua from the chest sheet.")
+    parser.add_argument("--code-only", action="store_true", help="Only sync CodeConfig.lua from the redeem code sheet.")
+    parser.add_argument("--wheel-only", action="store_true", help="Only sync WheelConfig.lua from the wheel reward sheet.")
+    parser.add_argument("--flash-only", action="store_true", help="Only sync GameConfig.FLASH from the skill sheet.")
+    parser.add_argument("--level-progression-only", action="store_true", help="Only sync the player level cap, experience cap, and hidden weapon progression.")
     args = parser.parse_args()
 
     if args.diamond_shop_only:
@@ -2071,6 +2353,12 @@ def main() -> None:
         return
     if args.seven_day_only:
         print(json.dumps(sync_seven_day_login_reward_config(), ensure_ascii=False))
+        return
+    if args.skin_only:
+        print(json.dumps({
+            **sync_skin_config(),
+            "warnings": [],
+        }, ensure_ascii=False))
         return
     if args.trail_only:
         print(json.dumps({
@@ -2102,6 +2390,18 @@ def main() -> None:
             "warnings": [],
         }, ensure_ascii=False))
         return
+    if args.code_only:
+        print(json.dumps(sync_code_config(), ensure_ascii=False))
+        return
+    if args.wheel_only:
+        print(json.dumps(sync_wheel_config(), ensure_ascii=False))
+        return
+    if args.flash_only:
+        print(json.dumps(sync_flash_config(), ensure_ascii=False))
+        return
+    if args.level_progression_only:
+        print(json.dumps(sync_level_progression_config(), ensure_ascii=False))
+        return
 
     attribute_result = sync_attribute_config()
     if args.attribute_only:
@@ -2113,10 +2413,7 @@ def main() -> None:
 
     potion_result = sync_potion_config()
 
-    rows, warnings = read_code_rows()
-    source = CONFIG_PATH.read_text(encoding="utf-8")
-    updated_source = replace_generated_block(source, build_generated_block(rows), BEGIN_MARKER, END_MARKER, CONFIG_PATH)
-    CONFIG_PATH.write_text(updated_source, encoding="utf-8", newline="\n")
+    code_result = sync_code_config()
 
     online_rows, online_warnings = read_online_reward_rows()
     online_source = ONLINE_REWARD_CONFIG_PATH.read_text(encoding="utf-8")
@@ -2131,16 +2428,7 @@ def main() -> None:
 
     seven_day_result = sync_seven_day_login_reward_config()
 
-    skin_rows = read_skin_rows()
-    skin_source = SKIN_CONFIG_PATH.read_text(encoding="utf-8")
-    updated_skin_source = replace_generated_block(
-        skin_source,
-        build_skin_generated_block(skin_rows),
-        SKIN_BEGIN_MARKER,
-        SKIN_END_MARKER,
-        SKIN_CONFIG_PATH,
-    )
-    SKIN_CONFIG_PATH.write_text(updated_skin_source, encoding="utf-8", newline="\n")
+    skin_result = sync_skin_config()
 
     trail_rows = read_trail_rows()
     trail_source = TRAIL_CONFIG_PATH.read_text(encoding="utf-8")
@@ -2159,12 +2447,13 @@ def main() -> None:
     wheel_result = sync_wheel_config()
     task_result = sync_task_config()
     special_event_result = sync_special_event_config()
+    flash_result = sync_flash_config()
     print(json.dumps({
-        "codeRows": len(rows),
+        "codeRows": code_result["codeRows"],
         "onlineRewardRows": len(online_rows),
         "sevenDayFirstCycleRows": seven_day_result["sevenDayFirstCycleRows"],
         "sevenDayRepeatCycleRows": seven_day_result["sevenDayRepeatCycleRows"],
-        "skinRows": len(skin_rows),
+        "skinRows": skin_result["skinRows"],
         "trailRows": len(trail_rows),
         "titleRows": title_result["titleRows"],
         **chest_result,
@@ -2174,7 +2463,8 @@ def main() -> None:
         **diamond_shop_result,
         **task_result,
         **special_event_result,
-        "warnings": warnings
+        **flash_result,
+        "warnings": code_result["warnings"]
             + online_warnings
             + seven_day_result["warnings"]
             + title_result["warnings"]

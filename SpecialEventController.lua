@@ -306,6 +306,20 @@ local function getEventLabelName(activeEvent)
     return tostring(activeEvent and activeEvent.textLabelName or "")
 end
 
+local function getLightingFolderName(activeEvent)
+    local eventName = tostring(activeEvent and activeEvent.name or "")
+    if eventName == "Football" then
+        return "Goal"
+    end
+
+    local scenePath = tostring(activeEvent and activeEvent.scenePath or "")
+    local pathName = scenePath:match("([^/]+)$")
+    if pathName and pathName ~= "" then
+        return pathName
+    end
+    return eventName
+end
+
 local function getEventStartKey(activeEvent)
     if type(activeEvent) ~= "table" then
         return ""
@@ -439,14 +453,14 @@ function SpecialEventController:_applyLightingForActiveEvent(activeEvent)
         return
     end
 
-    local eventName = tostring(activeEvent.name or "")
-    if eventName == "" then
+    local lightingFolderName = getLightingFolderName(activeEvent)
+    if lightingFolderName == "" then
         return
     end
 
-    local eventFolder = Lighting:FindFirstChild(eventName)
+    local eventFolder = Lighting:FindFirstChild(lightingFolderName)
     if not (eventFolder and eventFolder:IsA("Folder")) then
-        warn(string.format("[SpecialEventController] 找不到 Lighting/%s 事件天空文件夹", eventName))
+        warn(string.format("[SpecialEventController] 找不到 Lighting/%s 事件天空文件夹", lightingFolderName))
         return
     end
 

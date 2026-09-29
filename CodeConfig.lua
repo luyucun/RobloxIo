@@ -65,6 +65,17 @@ CodeConfig.ExcelRows = {
             { RewardType = 'Diamonds', Amount = 1000 },
         },
     },
+    {
+        Row = 8,
+        ['兑换码ID'] = 1002,
+        ['兑换码文本'] = '500Likes',
+        ['类型'] = '时间型',
+        ['失效时间'] = 46233,
+        ['使用人数上限'] = nil,
+        Rewards = {
+            { RewardType = 'Chest', ChestId = 101, Amount = 5 },
+        },
+    },
 }
 -- END GENERATED CODE ROWS
 
@@ -251,6 +262,7 @@ local function copyReward(reward)
     local result = {
         RewardType = rewardType,
         PotionId = tonumber(reward.PotionId or reward.potionId) or nil,
+        ChestId = tonumber(reward.ChestId or reward.chestId) or nil,
         Amount = math.max(1, math.floor(tonumber(reward.Amount or reward.amount) or 1)),
         Label = reward.Label or reward.label,
         Icon = reward.Icon or reward.icon,
@@ -273,6 +285,10 @@ local function copyReward(reward)
         result.Label = result.Label or "Spin"
         result.Icon = result.Icon or (spinIcon and spinIcon.Image) or ""
         result.AspectRatio = result.AspectRatio or (spinIcon and spinIcon.AspectRatio) or 1
+    elseif result.RewardType == "Chest" then
+        result.Label = result.Label or ("Chest " .. tostring(result.ChestId or ""))
+        result.Icon = result.Icon or ""
+        result.AspectRatio = result.AspectRatio or 1
     end
 
     return result
@@ -408,6 +424,10 @@ function CodeConfig.ValidateCodeEntry(entry)
             local potionId = tonumber(reward.PotionId)
             if not potionId or not PotionConfig.GetPotion(potionId) then
                 table.insert(warnings, "药水ID不存在: " .. tostring(reward.PotionId))
+            end
+        elseif rewardType == "Chest" then
+            if not tonumber(reward.ChestId) then
+                table.insert(warnings, "宝箱奖励缺少 ChestId")
             end
         elseif rewardType ~= "Diamonds" and rewardType ~= "WheelSpins" then
             table.insert(warnings, "不支持的奖励类型: " .. rewardType)

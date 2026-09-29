@@ -24,8 +24,22 @@ SkinConfig.Skins = {
         TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin001',
         IconImage = 'rbxassetid://123177643935146',
         PurchaseChannel = SkinConfig.PurchaseChannel.Diamonds,
+        SortOrder = 1,
         DiamondPrice = 15999,
+        RobuxPrice = 0,
         GamePassId = 0,
+    },
+    {
+        Id = 10008,
+        Name = 'Sausage',
+        TemplateName = 'Skin008',
+        TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin008',
+        IconImage = 'rbxassetid://127903390161619',
+        PurchaseChannel = SkinConfig.PurchaseChannel.GamePass,
+        SortOrder = 2,
+        DiamondPrice = 0,
+        RobuxPrice = 69,
+        GamePassId = 1927237014,
     },
     {
         Id = 10002,
@@ -34,7 +48,9 @@ SkinConfig.Skins = {
         TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin002',
         IconImage = 'rbxassetid://96062173104075',
         PurchaseChannel = SkinConfig.PurchaseChannel.GamePass,
+        SortOrder = 3,
         DiamondPrice = 0,
+        RobuxPrice = 299,
         GamePassId = 1830742687,
     },
     {
@@ -43,8 +59,10 @@ SkinConfig.Skins = {
         TemplateName = 'Skin003',
         TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin003',
         IconImage = 'rbxassetid://106240490422146',
-        PurchaseChannel = SkinConfig.PurchaseChannel.Wheel,
-        DiamondPrice = 0,
+        PurchaseChannel = SkinConfig.PurchaseChannel.Diamonds,
+        SortOrder = 4,
+        DiamondPrice = 15999,
+        RobuxPrice = 0,
         GamePassId = 0,
     },
     {
@@ -54,7 +72,9 @@ SkinConfig.Skins = {
         TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin006',
         IconImage = 'rbxassetid://107965659960902',
         PurchaseChannel = SkinConfig.PurchaseChannel.SevenDayLoginReward,
+        SortOrder = 5,
         DiamondPrice = 0,
+        RobuxPrice = 0,
         GamePassId = 0,
     },
     {
@@ -64,7 +84,21 @@ SkinConfig.Skins = {
         TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin007',
         IconImage = 'rbxassetid://97879805462753',
         PurchaseChannel = SkinConfig.PurchaseChannel.SevenDayLoginReward,
+        SortOrder = 6,
         DiamondPrice = 0,
+        RobuxPrice = 0,
+        GamePassId = 0,
+    },
+    {
+        Id = 10009,
+        Name = 'Butter',
+        TemplateName = 'Skin009',
+        TemplatePath = 'ReplicatedStorage/Model/Weapon/Skin009',
+        IconImage = 'rbxassetid://86208668737282',
+        PurchaseChannel = SkinConfig.PurchaseChannel.Wheel,
+        SortOrder = 7,
+        DiamondPrice = 0,
+        RobuxPrice = 0,
         GamePassId = 0,
     },
 }
@@ -75,8 +109,9 @@ SkinConfig.ByTemplateName = {}
 
 for index, skin in ipairs(SkinConfig.Skins) do
     skin.Id = math.floor(tonumber(skin.Id) or 0)
-    skin.SortOrder = index
+    skin.SortOrder = math.max(0, math.floor(tonumber(skin.SortOrder) or index))
     skin.DiamondPrice = math.max(0, math.floor(tonumber(skin.DiamondPrice) or 0))
+    skin.RobuxPrice = math.max(0, math.floor(tonumber(skin.RobuxPrice) or 0))
     skin.GamePassId = math.max(0, math.floor(tonumber(skin.GamePassId) or 0))
     SkinConfig.ById[skin.Id] = skin
     SkinConfig.ByTemplateName[tostring(skin.TemplateName or "")] = skin
@@ -121,7 +156,9 @@ function SkinConfig.CopyForClient(skin)
         templateName = skin.TemplateName,
         iconImage = skin.IconImage,
         purchaseChannel = skin.PurchaseChannel,
+        sortOrder = skin.SortOrder,
         diamondPrice = skin.DiamondPrice,
+        robuxPrice = skin.RobuxPrice,
         gamePassId = skin.GamePassId,
     }
 end

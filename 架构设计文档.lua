@@ -42,7 +42,7 @@
 3.`RemoteNames`
 - 集中声明 RemoteEvent 文件夹和事件名。
 3.1.`GameConfig.ACTIVITY_RSVP_PROMPT`
-- 配置 Roblox Experience Event 活动预约系统弹窗，当前 `EventId = "1688050057217180267"`，玩家进服 90 秒后由服务端请求客户端调起官方 RSVP Prompt；客户端会先查询 RSVP 状态，已 `Going` 的玩家不再弹出取消预约弹窗。
+- 配置 Roblox Experience Event 活动预约系统弹窗，当前 `EventId = "1761422313611461386"`，玩家进服 90 秒后由服务端请求客户端调起官方 RSVP Prompt；客户端会先查询 RSVP 状态，已 `Going` 的玩家不再弹出取消预约弹窗。
 4.`OnlineRewardConfig`
 - 由 `IO_BaseBalanceDraft.xlsx / 在线奖励` 同步在线奖励定义，包含奖励类型、数量、图标和本轮所需在线秒数；当前通过 `tools/SyncCodeConfigFromWorkbook.py` 与兑换码配置一起刷新。
 4.1.`SevenDayLoginRewardConfig`
@@ -53,6 +53,8 @@
 4.3.`TrailConfig`
 - 由 `IO_BaseBalanceDraft.xlsx / 尾迹` 同步尾迹配置；V5.9 新增 `SortOrder`、`IsBoxOnly`、`ExperienceBonus`。
 - `IsBoxOnly` 的尾迹不能通过钻石或 Robux 购买，未拥有时客户端显示 `BoxOpen` 入口；`ExperienceBonus` 只在当前装备该尾迹时计入总经验倍率。
+4.4.`GameConfig.FLASH`
+- 由 `IO_BaseBalanceDraft.xlsx / 技能` 同步 Flash 的距离、时长、冷却、动画资源和安全阈值；当前为 12 studs / 0.2 秒 / 5 秒。
 5.`MonsterCatalog`
 - 由 `IO_BaseBalanceDraft.xlsx / 怪物基础信息草稿` 同步怪物定义，包含模板、权重、击杀积分、基础战斗数值、经验和动画配置。
 - 普通小怪随机池由 `TypeName = 普通小怪` 且 `SpawnWeight > 0` 的定义组成；当前为 `Monster001`-`Monster008`。
@@ -79,6 +81,10 @@
 - 管理 SpawnLocation、Map2.Portals.Portal、Battle。
 - 处理 Portal 触碰弹出 JoinGame、离开 Portal 范围关闭 JoinGame、接收 Join/Cancel 请求、随机落点、返回出生点。
 - 负责玩家本次服务器会话的首次进战场判定：首次成功进入战场发放 60 秒新手护盾，复活后再次进入战场继续发放现有 10 秒入场护盾。
+- `IsPositionInsideBattle` 与 `ClampPositionInsideBattle` 为服务端能力提供 Battle 边界校验和安全落点裁剪。
+4.1.`FlashService`
+- 接收无参数 `RequestFlash`，只接受使用意图；读取服务端角色实际移动方向，验证 Alive/IsInArena/冷却并按分段 `PivotTo` 运行 0.2 秒突进。
+- 每段 Raycast 排除角色和 `Workspace.Runtime`，阻挡时停在墙前；同时裁剪到 Battle 边界。服务端播放 Action 优先级 R15 动画，`FlashFeedback` 只反馈开始、拒绝、完成或中断与冷却/实际距离。
 5.`WeaponService`
 - 按等级解析武器组，创建和维护服务端武器判定实例。
 - 运行时优先使用武器模板下的 `Aura` BasePart 作为命中盒体；缺少时按模型包围盒创建不可见 fallback Aura。
@@ -109,6 +115,10 @@
 - Boss 仍处理目标获取、脱战待机、追击、接触伤害、受武器伤害、死亡掉落经验和 Boss 掉 Buff。
 13.`BossService`
 - 按时间间隔调用 `MonsterService:SpawnMonster` 生成 Boss，并广播 Boss 反馈。
+- 特殊事件批量刷新 Boss 时，会在 Battle 内先批量采样非 Safe 区候选点，优先选择与现有 Boss、本批次已选 Boss 的 X/Z 平面距离最远的位置；若合法空间不足，会按 `GameConfig.BOSS.EventSpawnMinSpacing*` 配置逐步降低间距要求，最后回退到最佳候选点以保证事件仍能刷新。
+13.1.`BossSkillService`
+- V6.0 新增 Boss 技能运行层；当前 `GameConfig.BOSS_SKILLS` 将 `Boss2005` / `2005` 绑定到 `FootballKick`，服务端克隆 `ReplicatedStorage.Effect.SkillMessi` 到 `Workspace.Runtime.BossSkills` 并沿 Boss 前方发射。
+- `FootballKick` 命中真实玩家时只执行击飞和临时清空武器，不造成伤害且不被护盾抵挡；足球移动距离当前为 100 studs，命中优先按 `SkillMessi` 模型下的 `Aura` BasePart 盒体判定，并对上一帧到当前帧的 Aura 移动路径做扫掠检测，缺少 Aura 时才使用半径兜底。清剑后复用 `WeaponService` 现有逐把恢复逻辑恢复武器，击飞瞬间由服务端短暂接管角色物理，进入 Physics/PlatformStand 失控状态，施加强上抛、水平冲量和翻滚角速度，落地后不额外弹跳，并通过 Battle 范围持续夹取避免玩家被推出战斗区。
 14.`LeaderboardService`
 - 构建单服排行榜，读写全局 OrderedDataStore，广播 `LeaderboardSync`。
 - 所有 DataStore / OrderedDataStore 名称必须通过 `GameConfig` 的环境隔离接口获取；线上保持正式库名，Studio 默认不持久化。
@@ -134,7 +144,7 @@
 - 管理 V5.9 宝箱数量同步、服务器权威开箱、权重抽奖、限时奖励排除、宝箱消耗、待领取奖励记录、弹框关闭确认后发奖和领奖弹框回传。
 - 宝箱数量保存在 `PlayerStateService` 的 `state.Chests`，由 `RebirthService` 保存/读取快照；通用奖励入口可通过 `RewardType = "Chest"` 发放宝箱。
 - 开 1 个/开全部均由服务端校验数量；开全部时相同奖励合并显示，限时奖励在玩家已拥有或本轮已抽中后不会继续进入候选。
-- Studio GM 支持 `/chestadd <chestId> <amount>`、`/addbox101 <amount>`、`/chestclear [chestId]`、`/chestopen <chestId> <one|all>`，线上拒绝执行。
+- Studio GM 支持 `/chestadd <chestId> <amount>`、`/addbox101 <amount>`、`/chestclear [chestId]`、`/chestopen <chestId> <one|all>`、`/skingrant <skinId>`；`/skingrant` 复用 `SkinService:GrantSkin` 校验、存档和状态同步，线上拒绝执行。
 20.`ActivityRsvpPromptService`
 - 管理 Experience Event 活动预约系统弹窗触发：玩家加入后按 `GameConfig.ACTIVITY_RSVP_PROMPT.DelaySeconds` 延迟发送 `PromptActivityRsvp`，客户端执行 Roblox 官方 `SocialService:PromptRsvpToEventAsync`，并通过 `ActivityRsvpPromptStarted` / `ActivityRsvpPromptResult` 回传埋点结果；本次会话每名玩家最多请求一次，不新增自定义 UI。
 21.`FavoritePlacePromptService`
@@ -163,13 +173,14 @@
 9.`CombatService:Init`
 10.`ExperienceOrbService:Init`
 11.`MonsterService:Init`
-12.`BossService:Init`
-13.`LeaderboardService:Init`
-14.`ArenaProgressService:Init`
-15.`NukeService:Init`
-16.`SpecialEventService:Init`
-17.`PlayerStateService:BindSystems`
-18.`BotService:BindSystems`
+12.`BossSkillService:Init`
+13.`BossService:Init`
+14.`LeaderboardService:Init`
+15.`ArenaProgressService:Init`
+16.`NukeService:Init`
+17.`SpecialEventService:Init`
+18.`PlayerStateService:BindSystems`
+19.`BotService:BindSystems`
 
 七、关键路径
 1.玩家入场：
@@ -185,7 +196,7 @@
 6.小怪：
 `LocalMonsterController:_maintainPopulation -> 请求 LocalMonsterSpawnToken -> 按 MonsterCatalog 权重本地生成普通小怪 -> 全部物化为所属客户端可见模型 -> Dormant 静默待机 / CombatActive 预算内追击攻击 -> 本地武器命中 -> LocalMonsterRewardService 校验攻击/击杀 -> 服务端结算经验 -> 击杀者客户端播放经验块表现`
 7.Boss/Buff：
-`BossService:_step -> MonsterService:SpawnMonster(IsBoss) -> Boss 死亡 -> DropExperience + BuffService:DropBuffs -> BuffService:ApplyDamageBuff`
+`BossService:_step -> MonsterService:SpawnMonster(IsBoss) -> BossSkillService:RegisterBoss -> Boss2005 FootballKick(服务端 SkillMessi 投射物/击飞/临时清剑) -> Boss 死亡 -> DropExperience + BuffService:DropBuffs -> BuffService:ApplyDamageBuff`
 8.排行榜：
 `PlayerStateService / AddKillCount / AddExperience 标记 dirty -> LeaderboardService 定时广播 LeaderboardSync -> 非 Studio 环境同步全局 OrderedDataStore`
 9.场中进度表现：
@@ -203,7 +214,7 @@
 14.好友邀请提示：
 `InviteTipsController -> 玩家在线 2 分钟后请求 FriendsRankingStateSync -> 客户端刷新 GetFriendsOnlineAsync -> 从“曾玩过本体验且当前在线”的好友中按 highestLevelReached 选择最高者 -> 显示 PlayerGui.Main.InviteTips 5 秒 -> 点击 InviteButton 后用 ExperienceInviteOptions.InviteUser 调起 SocialService:PromptGameInvite；本次登录已弹过的好友不再重复弹出，之后每 5 分钟继续检查剩余候选。`
 15.活动预约提示：
-`PlayerAdded -> ActivityRsvpPromptService 延迟 90 秒 -> PromptActivityRsvp -> ActivityRsvpPromptController 查询 SocialService:GetEventRsvpStatusAsync("1688050057217180267") -> 未 Going 时调用 SocialService:PromptRsvpToEventAsync -> ActivityRsvpPromptStarted / ActivityRsvpPromptResult 回传服务端埋点；已 Going 时直接回传 AlreadyGoing 且不弹系统取消预约弹窗。`
+`PlayerAdded -> ActivityRsvpPromptService 延迟 90 秒 -> PromptActivityRsvp -> ActivityRsvpPromptController 查询 SocialService:GetEventRsvpStatusAsync("1761422313611461386") -> 未 Going 时调用 SocialService:PromptRsvpToEventAsync -> ActivityRsvpPromptStarted / ActivityRsvpPromptResult 回传服务端埋点；已 Going 时直接回传 AlreadyGoing 且不弹系统取消预约弹窗。`
 16.每日/每周任务：
 `TaskConfig -> TaskService 初始化并规范化 PlayerState.TaskState -> PlayerStateService/WheelService/InviteTipsController 等来源上报进度 -> TaskStateSync(shortTitle/shortDescription/rewards[]) -> TaskController 渲染 Main.Right.Daily 红点、Main.TaskBgNew 左侧任务列表、右侧任务详情和重置倒计时 -> RequestTaskClaim -> TaskService 校验并逐项发放奖励 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful。Studio GM /taskprogress、/taskcomplete、/taskreset 仅在 RunService:IsStudio() 下可用。`
 17.宝箱与宝箱尾迹：
@@ -266,13 +277,28 @@
 14.`InviteTipsController` 负责 V5.2 好友邀请提示，仅绑定既有 `StarterGui/Main/InviteTips`，复用 `FriendsRankingStateSync` 的历史好友数据和客户端 `GetFriendsOnlineAsync` 在线状态，不新增 RemoteEvent、不启用模态遮罩或 Blur。
 15.`ActivityRsvpPromptController` 负责 Roblox 官方活动预约系统弹窗，不绑定或动态创建 `StarterGui` 节点；收到服务端 `PromptActivityRsvp` 后调用 `SocialService:GetEventRsvpStatusAsync` 和 `SocialService:PromptRsvpToEventAsync`，并将 started/result 回传给服务端。
 16.`TaskController` 负责 V5.8 任务面板，仅绑定既有 `StarterGui/Main/TaskBgNew` 和 `Main.Right.Daily`；面板打开/关闭使用本地 `UIScale + TweenService`，不走模态遮罩、不隐藏其它 HUD、不启用 Blur。正式任务内容使用 `TaskBgNew.Content.TaskList.ScrollingFrame.Template` 生成左侧任务入口，并用 `TaskBgNew.Content.TaskDetail` 显示选中任务详情、进度、领取按钮、完成状态和 `RewardList.RewardTemplate` 多奖励列表；Daily/Weekly 页签切换只切换按钮背景状态，选中为黄色，未选中恢复为非黄色，不覆盖文字颜色；右侧详情 `ProgressBg.Progress` 保持 UI 默认大小，不按进度改变长度；时间类进度按分钟数量显示为 `(x/y)`，例如 `(1/15)`，不显示 `59s/15m`；未完成任务的 Claim 保持原文字和样式，点击无反应，不改成 Wait、不额外置灰。旧 `TaskBg` 不再由正式 `TaskController` 驱动。领取请求仍只发 taskId，最终进度校验和 1 到多个奖励逐项发放均由服务端判定。
-17.`ChestController` 负责 V5.9 宝箱面板，仅绑定既有 `StarterGui/Main/ChestRewards` 和 `Main.Left.Box`；首版固定展示宝箱 `101`，刷新 `CountText = You have: xx`、入口数量气泡、`Window.CountdownTime` 每周六北京时间 20:00 的手动内容更新说明倒计时，以及右侧掉落列表，点击 `OpenOneButton` / `OpenAllButton` 只发送开箱意图。开箱成功反馈返回后，客户端临时创建 `Main.ChestOpenEffect` 居中展示宝箱和 `rbxassetid://1598630577` 光圈，自动抖动结束后再进入通用领奖弹框；宝箱奖励真正发放由 `ShopController` 在玩家关闭该弹框后发送 `RequestChestRewardClaim` 触发。倒计时只展示 `Rewards Refresh In: xx:yy` 文案，不触发宝箱池自动刷新。
+17.`ChestController` 负责 V5.9 宝箱面板，仅绑定既有 `StarterGui/Main/ChestRewards` 和 `Main.Left.Box`；首版固定展示宝箱 `101`，刷新 `CountText = You have: xx`、入口数量气泡、`Window.CountdownTime` 每周六北京时间 22:00 的手动内容更新说明倒计时，以及右侧掉落列表，点击 `OpenOneButton` / `OpenAllButton` 只发送开箱意图。开箱成功反馈返回后，客户端临时创建 `Main.ChestOpenEffect` 居中展示宝箱和 `rbxassetid://1598630577` 光圈，自动抖动结束后再进入通用领奖弹框；宝箱奖励真正发放由 `ShopController` 在玩家关闭该弹框后发送 `RequestChestRewardClaim` 触发。倒计时只展示 `Rewards Refresh In: xx:yy` 文案，不触发宝箱池自动刷新。
 18.`SkinController` 的尾迹页消费 `SkinStateSync.trails[]` 的 `sortOrder`、`isBoxOnly`、`experienceBonus`：按排序字段显示，`TrailRowTemplate.Add` 显示 `Exp*1.x`，未拥有的宝箱尾迹只显示 `BoxOpen` 并打开 `ChestRewards`。
 19.`PotionController` 的 `LuckLabel` 继续显示服务端 `totalExperienceMultiplier`，`Tooltip.Trail` 显示 `Trail:Exp*1.x`，没有尾迹加成时显示 `Trail:Exp*1`。
 20.`GameNewsController` 负责绑定 `StarterGui/Main/TopRightGui/Log` 到既有 `Main.GameNews` 面板；点击 `Log.Button` 打开公告界面，点击 `GameNews.CloseButton` 关闭，打开/关闭复用 `ModalUiController` 的模态遮罩、Blur 和面板动效，不新增 RemoteEvent。
-21.Studio-only GM `/testinvite` / `/invitetips` 由 `GMCommandService` 随机抽取当前玩家好友，经 `FriendsRankingStateSync` 发送 `studioInviteTipsTest = true` 测试 payload，客户端仅在 `RunService:IsStudio()` 下直接弹出 `Main.InviteTips`；V5.3 额外提供 `/taskprogress <taskId> <amount>`、`/taskcomplete <taskId>`、`/taskreset daily|weekly|all` 便于编辑器测试任务进度和周期重置。V5.9 额外提供 `/chestadd <chestId> <amount>`、`/addbox101 <amount>`、`/chestclear [chestId]`、`/chestopen <chestId> <one|all>`。
+21.Studio-only GM `/testinvite` / `/invitetips` 由 `GMCommandService` 随机抽取当前玩家好友，经 `FriendsRankingStateSync` 发送 `studioInviteTipsTest = true` 测试 payload，客户端仅在 `RunService:IsStudio()` 下直接弹出 `Main.InviteTips`；V5.3 额外提供 `/taskprogress <taskId> <amount>`、`/taskcomplete <taskId>`、`/taskreset daily|weekly|all` 便于编辑器测试任务进度和周期重置。V5.9 额外提供 `/chestadd <chestId> <amount>`、`/addbox101 <amount>`、`/chestclear [chestId]`、`/chestopen <chestId> <one|all>`；皮肤验证使用 `/skingrant <skinId>`，并由 `SkinService` 处理。
+22.`FlashController` 仅绑定现有 `Main.Flash.Info.TextButton`、`Q`、`ButtonX` 和 Studio 已放置的 `CooldownMask`；仅在存活战斗区、未打开模态 UI、且有移动输入时消费键盘/手柄输入。HUD 冷却遮罩和自动战斗暂停均是客户端表现，权威移动和冷却由 `FlashService` 决定。
+
+V6.2 等级上限与隐藏武器战力补充：
+1.`GameConfig.PLAYER.MaxSupportedLevel` 由 `IO_BaseBalanceDraft.xlsx / 等级武器映射` 通过 `tools/SyncCodeConfigFromWorkbook.py --level-progression-only` 生成，当前为 `610`；同一窄同步会生成 Lv351-Lv610 的 4000 经验段。
+2.`PlayerStateService` 的等级归一化、经验循环、Studio 设置等级、存档恢复、半等级复活均读取上述上限；`GameConfig.GetMaxHealthForLevel` 与 `AttributeConfig.GetTotalSkillPointsForLevel` 不对 Lv400 截断，因此 Lv401-Lv610 继续成长。
+3.`WeaponTierConfig.ResolveLoadoutForLevel` 读取生成的 61 个等级武器档。Lv401-Lv610 返回可见 `T40`、`TierIndex = 40`、`Weapon040`，同时为每把运行时武器传递独立 `CombatRank` 和 `Damage`。
+4.`WeaponService` 使用可见模板复用运行时实例，并把隐藏 `CombatRank` 与伤害写入服务端武器状态；`CombatService` 只在武器对撞胜负时比较 `CombatRank`，对客户端反馈继续使用可见 `TierIndex`。
+5.`WeaponUnlockRewardService` 仍通过 `TierIndex` 判定可领取的可见武器解锁，因此 Lv400 升至 Lv401 不会产生额外的武器解锁奖励或弹窗。
+
+V6.3 皮肤表排序与 10008 通行证补充：
+1.`tools/SyncCodeConfigFromWorkbook.py --skin-only` 按 `皮肤表` 的表头读取 `皮肤ID`、`排序`、`获得渠道`、`钻石价格`、`罗布币价格`，再合并 `武器数值` 页的皮肤模型、名称和图标，生成 `SkinConfig.Skins`。
+2.`SkinConfig` 和 `SkinStateSync.skins[]` 均携带 `sortOrder`、`robuxPrice`、`gamePassId`；`SkinController` 先按 `sortOrder`、再按皮肤 ID 排序，并以 `LayoutOrder` 驱动现有横向 `UIListLayout`。
+3.皮肤 `10008` 配置为 `Skin008 / Sausage`、图标 `rbxassetid://127903390161619`、`SortOrder = 2`、`GamePassId = 1927237014`；`SkinService` 复用现有通行证校验、购买回调和授予链路。
+4.皮肤配置只定义外观模板名，实际模型仍由 Studio 资产 `ReplicatedStorage.Model.Weapon.Skin008` 提供；若缺失，`WeaponService` 回退为当前等级的基础武器模板。
 
 =====================================================
 文档结束
 =====================================================
+
 ]]

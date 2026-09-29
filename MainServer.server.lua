@@ -65,6 +65,8 @@ local ExperienceOrbService = requireServerModule("ExperienceOrbService")
 local LocalMonsterRewardService = requireServerModule("LocalMonsterRewardService")
 local MonsterService = requireServerModule("MonsterService")
 local BossService = requireServerModule("BossService")
+local BossSkillService = requireServerModule("BossSkillService")
+local FlashService = requireServerModule("FlashService")
 local BuffService = requireServerModule("BuffService")
 local LeaderboardService = requireServerModule("LeaderboardService")
 local FriendsRankingService = requireServerModule("FriendsRankingService")
@@ -440,8 +442,18 @@ MonsterService:Init({
     PotionService = PotionService,
     RemoteEventService = RemoteEventService,
 })
+BossSkillService:Init({
+    PlayerStateService = PlayerStateService,
+    WeaponService = WeaponService,
+})
+FlashService:Init({
+    PlayerStateService = PlayerStateService,
+    ArenaService = ArenaService,
+    RemoteEventService = RemoteEventService,
+})
 BossService:Init({
     MonsterService = MonsterService,
+    BossSkillService = BossSkillService,
     RemoteEventService = RemoteEventService,
     ArenaService = ArenaService,
 })
@@ -490,6 +502,7 @@ GMCommandService:Init({
     GameAnalyticsService = GameAnalyticsService,
     TaskService = TaskService,
     ChestService = ChestService,
+    SkinService = SkinService,
 })
 PlayerStateService:BindSystems({
     WeaponService = WeaponService,

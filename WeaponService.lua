@@ -886,7 +886,8 @@ function WeaponService:_buildDistributedAngles(totalCount, anchorAngle)
     return angles
 end
 
-function WeaponService:_createWeaponState(actor, tier, weaponIndex, totalCount, previousState, forcedAngle)
+function WeaponService:_createWeaponState(actor, desiredWeapon, weaponIndex, totalCount, previousState, forcedAngle)
+    local tier = tostring(desiredWeapon and desiredWeapon.Tier or "None")
     local tierConfig = WeaponTierConfig.Tiers[tier]
     if not tierConfig then
         return nil
@@ -934,8 +935,9 @@ function WeaponService:_createWeaponState(actor, tier, weaponIndex, totalCount, 
     weaponState.OwnerUserId = ownerUserId
     weaponState.Tier = tier
     weaponState.TierIndex = tierConfig.TierIndex or WeaponTierConfig.GetTierIndex(tier)
-    weaponState.TierBaseDamage = tierConfig.Damage
-    weaponState.BaseDamage = self:_getFinalWeaponDamage(actor, tierConfig.Damage)
+    weaponState.CombatRank = math.max(1, math.floor(tonumber(desiredWeapon and desiredWeapon.CombatRank) or weaponState.TierIndex))
+    weaponState.TierBaseDamage = math.max(1, tonumber(desiredWeapon and desiredWeapon.Damage) or tierConfig.Damage)
+    weaponState.BaseDamage = self:_getFinalWeaponDamage(actor, weaponState.TierBaseDamage)
     weaponState.IconImage = tierConfig.IconImage or WeaponTierConfig.GetIconImageForTier(tier)
     weaponState.VisualSkinId = equippedSkin and equippedSkin.Id or nil
     weaponState.VisualTemplateName = visualTemplateName
@@ -1254,6 +1256,7 @@ function WeaponService:_buildDesiredWeaponList(resolved)
                 SlotIndex = weaponIndex,
                 Tier = resolved.Tier,
                 TierIndex = resolved.TierIndex,
+                CombatRank = resolved.CombatRank or resolved.TierIndex,
             })
         end
     end
@@ -1388,7 +1391,8 @@ function WeaponService:_rebuildWeaponsForActorToCount(actor, targetCount)
         end
     end
 
-    local function takeReusableWeaponState(tier)
+    local function takeReusableWeaponState(desiredWeapon)
+        local tier = tostring(desiredWeapon and desiredWeapon.Tier or "None")
         for _, previousState in ipairs(reusableWeaponStates) do
             local previousId = tostring(previousState.Id)
             if previousState.Tier == tier and usedPreviousWeaponIds[previousId] ~= true then
@@ -1404,12 +1408,12 @@ function WeaponService:_rebuildWeaponsForActorToCount(actor, targetCount)
     for weaponIndex = 1, rebuildCount do
         local desiredWeapon = desiredWeapons[weaponIndex]
         local desiredTier = tostring(desiredWeapon.Tier or resolved.Tier or "None")
-        local previousState = selectedPreviousBySlot[weaponIndex] or takeReusableWeaponState(desiredTier)
+        local previousState = selectedPreviousBySlot[weaponIndex] or takeReusableWeaponState(desiredWeapon)
         local previousSlotState = previousWeaponBySlot[weaponIndex]
         local replacementAngle = previousSlotState and previousSlotState.CurrentAngle or nil
         local weaponState = self:_createWeaponState(
             actor,
-            desiredTier,
+            desiredWeapon,
             weaponIndex,
             rebuildCount,
             previousState,
@@ -1482,6 +1486,35 @@ end
 
 function WeaponService:RebuildWeaponsForPlayer(actor)
     return self:_rebuildWeaponsForActorToCount(actor, nil)
+end
+
+function WeaponService:ClearPlayerWeaponsForTemporaryRecovery(actor, options)
+    if not actor then
+        return
+    end
+
+    local state = self._playerStateService:GetState(actor)
+    if not (state and state.Alive and state.IsInArena) then
+        return self:ClearPlayerWeapons(actor)
+    end
+
+    local combatUserId = getCombatUserId(actor)
+    local resolved = WeaponTierConfig.ResolveLoadoutForLevel(state.Level)
+    local desiredCount = #self:_buildDesiredWeaponList(resolved)
+    self:_clearActorWeapons(combatUserId)
+    self._weaponsByCombatUserId[combatUserId] = {}
+    self._playerStateService:SetWeaponState(actor, "None", 0)
+    self._playerStateService:PushState(actor)
+    self:_fireWeaponStateSync(actor, "None", 0, {})
+
+    if desiredCount > 0 then
+        self:_refreshWeaponRestoration(actor, 0, desiredCount)
+        local restorationState = self._weaponRestorationByCombatUserId[combatUserId]
+        local restoreDelaySeconds = type(options) == "table" and tonumber(options.restoreDelaySeconds) or nil
+        if restorationState and restoreDelaySeconds and restoreDelaySeconds >= 0 then
+            restorationState.NextRestoreAt = os.clock() + restoreDelaySeconds
+        end
+    end
 end
 
 function WeaponService:AdjustAttackScore(actor, delta)

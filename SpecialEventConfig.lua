@@ -87,7 +87,7 @@ SpecialEventConfig.Events = {
     [104] = {
         Id = 104,
         Name = 'Diamond',
-        Weight = 0,
+        Weight = 20,
         ScenePath = 'ReplicatedStorage/EventScene/Diamond',
         IconImage = 'rbxassetid://128766305824014',
         EffectDescription = 'Defeat Gems x2 & +10 Gems every 5s!',
@@ -102,11 +102,11 @@ SpecialEventConfig.Events = {
         Weight = 20,
         ScenePath = 'ReplicatedStorage/EventScene/Goal',
         IconImage = 'rbxassetid://113012295658589',
-        EffectDescription = '全员拥有护盾，但是会被足球击飞',
+        EffectDescription = 'Stay shielded throughout the event.',
         TextLabelName = 'FootballEvent',
         DurationSeconds = 180,
         BossDefinitionId = '2005',
-        BossCount = 6,
+        BossCount = 4,
     },
 }
 -- END GENERATED SPECIAL EVENT ROWS
