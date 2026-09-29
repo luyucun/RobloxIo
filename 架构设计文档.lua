@@ -297,6 +297,12 @@ V6.3 皮肤表排序与 10008 通行证补充：
 3.皮肤 `10008` 配置为 `Skin008 / Sausage`、图标 `rbxassetid://127903390161619`、`SortOrder = 2`、`GamePassId = 1927237014`；`SkinService` 复用现有通行证校验、购买回调和授予链路。
 4.皮肤配置只定义外观模板名，实际模型仍由 Studio 资产 `ReplicatedStorage.Model.Weapon.Skin008` 提供；若缺失，`WeaponService` 回退为当前等级的基础武器模板。
 
+V6.4 服务端安全与付费完整性补充：
+1.`ArenaService.TryEnterArena` 增加 `state.Alive == true` 前置校验，死亡玩家（含尸体在 Portal 范围内或 8 秒待确认窗口内）经 `RequestJoinBattle` 入场一律返回 `Blocked/Defeated`；Bot 重建角色时 `OnCharacterAdded` 先置 `Alive = true` 再入场，不受影响。复活语义收口在 `RespawnService`，`SetInArena(true)` 不再隐式充当复活途径。
+2.`LocalMonsterRewardService._processLocalMonsterKill` 强制令牌 `Active == true` 且 `ActivatedAt` 距上报不小于 `GameConfig.MONSTER.LocalKillMinActiveSeconds`（0.2 秒），未激活/过快上报拒绝并计数 `KillsRejected`；`_handleSpawnTokenActivated` 记录 `ActivatedAt`，已激活未消费令牌超过 `LocalSpawnTokenMaxActive`（400）时丢弃新增激活，激活消耗令牌桶预算（突发 400、补充 40/秒）；令牌签发批量 25→10、击杀上报批量 24→12，压低持续刷取上限至约 40 击杀/秒。
+3.七日登录 `UnlockAll` 收据与 `RebirthService._processRevenge` / `_processDefeatedRevive` 在档案未加载（`_isPlayerLoaded` / `CanWritePersistentProgress` 不通过）时返回未处理等待 Roblox 重投，防止写入默认状态后被 `SetRebirthData` 覆盖造成已扣款丢发。
+4.`RebirthService` 统一收据幂等台账：`_processReceipt` 顶层按 `receiptInfo.PurchaseId` 查重（命中直接 `PurchaseGranted`），原分发逻辑更名 `_dispatchReceipt`；发货成功后登记台账并 MarkDirty，台账随存档字段 `processedPurchaseIds` 持久化（每玩家保留最近 60 条、30 天裁剪），玩家退出在保存之后清理内存表；`MarketplaceService.ProcessReceipt` 回调整体包 pcall（`_processReceiptSafely`），异常返回 `NotProcessedYet`。各子服务（七日登录、皮肤等）既有内部台账保持不变，作为双保险。
+
 =====================================================
 文档结束
 =====================================================

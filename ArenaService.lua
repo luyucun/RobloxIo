@@ -1329,6 +1329,14 @@ function ArenaService:TryEnterArena(actor, options)
         self:_fireTransitionFeedback(actor, "Blocked", "DataLoading")
         return false
     end
+    if self._playerStateService and self._playerStateService.GetState then
+        local actorState = self._playerStateService:GetState(actor)
+        if actorState and actorState.Alive ~= true then
+            -- 死亡玩家必须走 Defeated 面板由 RespawnService 复活，不得经入场通道满状态重进战场。
+            self:_fireTransitionFeedback(actor, "Blocked", "Defeated")
+            return false
+        end
+    end
     if not self._battlePart then
         self:_fireTransitionFeedback(actor, "Blocked", "BattleUnavailable")
         return false

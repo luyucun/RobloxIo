@@ -48,6 +48,7 @@ LocalMonsterRewardService._killReportWindows = {}
 LocalMonsterRewardService._hitReportWindows = {}
 LocalMonsterRewardService._recentKillIdsByUserId = {}
 LocalMonsterRewardService._spawnAuthorizationsByUserId = {}
+LocalMonsterRewardService._spawnTokenActivateBucketsByUserId = {}
 LocalMonsterRewardService._gameAnalyticsService = nil
 LocalMonsterRewardService._perfStats = nil
 LocalMonsterRewardService._nextPerfLogClock = 0
@@ -213,12 +214,17 @@ function LocalMonsterRewardService:_pruneAuthorizationsForUserId(userId)
     end
 
     local now = os.clock()
+    local activeTtlSeconds = math.max(300, tonumber(GameConfig.MONSTER.LocalSpawnTokenActiveTtlSeconds) or 1800)
     for token, authorization in pairs(authorizations) do
         if not authorization or authorization.Consumed == true then
             authorizations[token] = nil
         elseif authorization.Active == true then
             -- Active tokens belong to monsters that already exist on a client.
             -- Do not let a long fight turn into a valid kill with no reward.
+            -- 但仍受超长 TTL 约束，防止断线/异常客户端的激活令牌无限滞留占用上限。
+            if (tonumber(authorization.ActivatedAt) or 0) > 0 and now - authorization.ActivatedAt > activeTtlSeconds then
+                authorizations[token] = nil
+            end
         elseif (tonumber(authorization.ExpiresAt) or 0) <= now then
             authorizations[token] = nil
         end
@@ -268,6 +274,39 @@ function LocalMonsterRewardService:_createAuthorization(player)
     return authorizations[token], definition
 end
 
+function LocalMonsterRewardService:_consumeActivateBudget(player)
+    local userId = getUserId(player)
+    if userId <= 0 then
+        return false
+    end
+
+    local now = os.clock()
+    local capacity = math.max(1, math.floor(tonumber(GameConfig.MONSTER.LocalSpawnTokenActivateBurst)
+        or tonumber(GameConfig.MONSTER.LocalSpawnTokenMaxActive)
+        or tonumber(GameConfig.MONSTER.MaxActiveCount)
+        or 400))
+    local refillPerSecond = math.max(1, tonumber(GameConfig.MONSTER.LocalSpawnTokenActivatesPerSecond) or 40)
+
+    local bucket = self._spawnTokenActivateBucketsByUserId[userId]
+    if not bucket then
+        bucket = {
+            Tokens = capacity,
+            LastRefillClock = now,
+        }
+        self._spawnTokenActivateBucketsByUserId[userId] = bucket
+    end
+
+    local elapsed = math.max(0, now - (tonumber(bucket.LastRefillClock) or now))
+    bucket.Tokens = math.min(capacity, (tonumber(bucket.Tokens) or 0) + elapsed * refillPerSecond)
+    bucket.LastRefillClock = now
+
+    if (tonumber(bucket.Tokens) or 0) < 1 then
+        return false
+    end
+    bucket.Tokens -= 1
+    return true
+end
+
 function LocalMonsterRewardService:_handleSpawnTokenActivated(player, payload)
     local userId = getUserId(player)
     local token = tostring(payload and payload.token or payload and payload.Token or "")
@@ -286,7 +325,27 @@ function LocalMonsterRewardService:_handleSpawnTokenActivated(player, payload)
         return
     end
 
-    authorization.Active = true
+    if authorization.Active ~= true and not self:_consumeActivateBudget(player) then
+        return
+    end
+
+    if authorization.Active ~= true then
+        local maxActive = math.max(1, math.floor(tonumber(GameConfig.MONSTER.LocalSpawnTokenMaxActive)
+            or tonumber(GameConfig.MONSTER.MaxActiveCount)
+            or 400))
+        local activeCount = 0
+        for _, other in pairs(authorizations) do
+            if other and other.Consumed ~= true and other.Active == true then
+                activeCount += 1
+            end
+        end
+        if activeCount >= maxActive then
+            authorizations[token] = nil
+            return
+        end
+        authorization.Active = true
+        authorization.ActivatedAt = os.clock()
+    end
     self:_addPerfStat("TokenActivates")
 end
 
@@ -466,6 +525,14 @@ function LocalMonsterRewardService:_processLocalMonsterKill(player, payload, now
     if not (authorization and authorization.Consumed ~= true) then
         self:_addPerfStat("KillsRejected")
         return false, "InvalidToken"
+    end
+
+    -- 令牌必须已激活且激活满最小间隔，封堵"请求令牌→立刻上报击杀"的零交互刷取。
+    local minActiveSeconds = math.max(0, tonumber(GameConfig.MONSTER.LocalKillMinActiveSeconds) or 0.2)
+    local activatedAt = tonumber(authorization.ActivatedAt) or 0
+    if authorization.Active ~= true or activatedAt <= 0 or (now - activatedAt) < minActiveSeconds then
+        self:_addPerfStat("KillsRejected")
+        return false, "TokenNotActive"
     end
 
     local monsterDefinition = MonsterCatalog.GetDefinition(authorization.MonsterDefinitionId)
@@ -740,6 +807,7 @@ function LocalMonsterRewardService:OnPlayerRemoving(player)
         self._hitReportWindows[userId] = nil
         self._recentKillIdsByUserId[userId] = nil
         self._spawnAuthorizationsByUserId[userId] = nil
+        self._spawnTokenActivateBucketsByUserId[userId] = nil
     end
 end
 
@@ -757,6 +825,7 @@ function LocalMonsterRewardService:Init(dependencies)
     self._hitReportWindows = {}
     self._recentKillIdsByUserId = {}
     self._spawnAuthorizationsByUserId = {}
+    self._spawnTokenActivateBucketsByUserId = {}
     self:_resetPerfStats()
     self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
 

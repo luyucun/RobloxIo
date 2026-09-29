@@ -521,6 +521,10 @@ function SevenDayLoginRewardService:ProcessReceipt(receiptInfo)
     if not player then
         return true, Enum.ProductPurchaseDecision.NotProcessedYet
     end
+    -- 档案未加载完成时不得发货：写入的默认状态会被 SetRebirthData 读档覆盖，造成已扣款丢发。
+    if not self:_isPlayerLoaded(player) then
+        return true, Enum.ProductPurchaseDecision.NotProcessedYet
+    end
 
     local _playerState, rewardState, didChange, nowTimestamp = self:_getState(player, {
         AllowCycleReset = true,

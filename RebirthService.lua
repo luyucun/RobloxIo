@@ -609,6 +609,7 @@ function RebirthService:_loadPlayer(player)
     end
 
     local rebirth, rebirthScore, highestLevelReached, savedProgress = normalizeSavedData(data)
+    self:_mergePersistedPurchaseLedger(getUserId(player), type(data) == "table" and data.processedPurchaseIds or nil)
     self._playerStateService:SetRebirthData(player, rebirth, rebirthScore, highestLevelReached, savedProgress)
     self._savedProgressCacheByUserId[userId] = {
         snapshot = buildProgressSnapshot(rebirth, rebirthScore, highestLevelReached, savedProgress),
@@ -696,6 +697,7 @@ function RebirthService:_buildSavePayload(player, options)
         combatSnapshot = combatSnapshot,
         activePotions = self._playerStateService:GetActivePotions(player),
         activePotion = self._playerStateService:GetActivePotion(player),
+        processedPurchaseIds = self:_buildPersistedPurchaseLedger(getUserId(player)),
         updatedAt = os.time(),
     }
 
@@ -910,6 +912,9 @@ function RebirthService:_processRevenge(player)
     if not (player and player.Parent and self._revengeService and self._revengeService.RequestRevenge) then
         return false
     end
+    if not self:CanWritePersistentProgress(player) then
+        return false
+    end
 
     if self._revengeService.MarkRevengePurchasePending then
         return self._revengeService:MarkRevengePurchasePending(player)
@@ -920,6 +925,9 @@ end
 
 function RebirthService:_processDefeatedRevive(player)
     if not (player and player.Parent and self._respawnService and self._respawnService.GrantDefeatedRevivePurchase) then
+        return false
+    end
+    if not self:CanWritePersistentProgress(player) then
         return false
     end
 
@@ -942,7 +950,126 @@ function RebirthService:_processWheelPurchase(player, productId)
     return self._wheelService:GrantPurchasedSpins(player, productId)
 end
 
+local PROCESSED_PURCHASE_LEDGER_LIMIT = 60
+local PROCESSED_PURCHASE_RETENTION_SECONDS = 30 * 24 * 60 * 60
+
+function RebirthService:_isPurchaseProcessed(playerId, purchaseId)
+    if playerId <= 0 or purchaseId == "" then
+        return false
+    end
+    local ledger = self._processedPurchaseIdsByPlayerId[playerId]
+    return ledger ~= nil and ledger[purchaseId] ~= nil
+end
+
+function RebirthService:_recordProcessedPurchase(playerId, purchaseId)
+    if playerId <= 0 or purchaseId == "" then
+        return
+    end
+    local ledger = self._processedPurchaseIdsByPlayerId[playerId]
+    if not ledger then
+        ledger = {}
+        self._processedPurchaseIdsByPlayerId[playerId] = ledger
+    end
+    if ledger[purchaseId] then
+        return
+    end
+    ledger[purchaseId] = os.time()
+
+    -- 台账有界：超过上限时按登记时间逐条淘汰最旧记录。
+    local count = 0
+    for _ in pairs(ledger) do
+        count += 1
+    end
+    while count > PROCESSED_PURCHASE_LEDGER_LIMIT do
+        local oldestId, oldestAt = nil, math.huge
+        for id, recordedAt in pairs(ledger) do
+            if (tonumber(recordedAt) or 0) < oldestAt then
+                oldestAt = tonumber(recordedAt) or 0
+                oldestId = id
+            end
+        end
+        if not oldestId then
+            break
+        end
+        ledger[oldestId] = nil
+        count -= 1
+    end
+
+    -- 超过保留期的收据不再需要跨会话幂等。
+    local cutoff = os.time() - PROCESSED_PURCHASE_RETENTION_SECONDS
+    for id, recordedAt in pairs(ledger) do
+        if (tonumber(recordedAt) or 0) < cutoff then
+            ledger[id] = nil
+        end
+    end
+
+    local player = Players:GetPlayerByUserId(playerId)
+    if player and player.Parent then
+        self:MarkDirty(player)
+    end
+end
+
+function RebirthService:_mergePersistedPurchaseLedger(playerId, persisted)
+    if playerId <= 0 or type(persisted) ~= "table" then
+        return
+    end
+    local ledger = self._processedPurchaseIdsByPlayerId[playerId]
+    if not ledger then
+        ledger = {}
+        self._processedPurchaseIdsByPlayerId[playerId] = ledger
+    end
+    local cutoff = os.time() - PROCESSED_PURCHASE_RETENTION_SECONDS
+    for purchaseId, recordedAt in pairs(persisted) do
+        if type(purchaseId) == "string" and purchaseId ~= "" then
+            local recordedTimestamp = math.max(0, math.floor(tonumber(recordedAt) or 0))
+            if recordedTimestamp >= cutoff then
+                ledger[purchaseId] = math.max(recordedTimestamp, ledger[purchaseId] or 0)
+            end
+        end
+    end
+end
+
+function RebirthService:_buildPersistedPurchaseLedger(playerId)
+    local ledger = self._processedPurchaseIdsByPlayerId[playerId]
+    local persisted = {}
+    if not ledger then
+        return persisted
+    end
+    local cutoff = os.time() - PROCESSED_PURCHASE_RETENTION_SECONDS
+    for purchaseId, recordedAt in pairs(ledger) do
+        if (tonumber(recordedAt) or 0) >= cutoff then
+            persisted[purchaseId] = recordedAt
+        end
+    end
+    return persisted
+end
+
 function RebirthService:_processReceipt(receiptInfo)
+    local purchaseId = tostring(receiptInfo and receiptInfo.PurchaseId or "")
+    local playerId = math.max(0, math.floor(tonumber(receiptInfo and receiptInfo.PlayerId) or 0))
+    if purchaseId ~= "" and self:_isPurchaseProcessed(playerId, purchaseId) then
+        return Enum.ProductPurchaseDecision.PurchaseGranted
+    end
+
+    local decision = self:_dispatchReceipt(receiptInfo)
+    if decision == Enum.ProductPurchaseDecision.PurchaseGranted and purchaseId ~= "" then
+        self:_recordProcessedPurchase(playerId, purchaseId)
+    end
+    return decision
+end
+
+function RebirthService:_processReceiptSafely(receiptInfo)
+    local ok, decision = pcall(function()
+        return self:_processReceipt(receiptInfo)
+    end)
+    if ok and decision ~= nil then
+        return decision
+    end
+    warn("[RebirthService] ProcessReceipt 处理异常，返回 NotProcessedYet 等待重投: " .. tostring(decision))
+    return Enum.ProductPurchaseDecision.NotProcessedYet
+end
+
+function RebirthService:_dispatchReceipt(receiptInfo)
     local productId = receiptInfo.ProductId
     if self._skinService and self._skinService.ProcessReceipt then
         local handled, decision = self._skinService:ProcessReceipt(receiptInfo)
@@ -1119,6 +1246,7 @@ function RebirthService:Init(dependencies)
     self._loadStateByUserId = {}
     self._loadRetryClockByUserId = {}
     self._savedProgressCacheByUserId = {}
+    self._processedPurchaseIdsByPlayerId = {}
     self._nextSaveClock = os.clock() + math.max(5, tonumber(GameConfig.REBIRTH.AutoSaveIntervalSeconds) or 30)
     self._shutdownInProgress = false
 
@@ -1146,7 +1274,7 @@ function RebirthService:Init(dependencies)
     end
 
     MarketplaceService.ProcessReceipt = function(receiptInfo)
-        return self:_processReceipt(receiptInfo)
+        return self:_processReceiptSafely(receiptInfo)
     end
 
     if self._heartbeatConnection then
@@ -1178,6 +1306,8 @@ function RebirthService:OnPlayerRemoving(player)
     self._loadStateByUserId[userId] = nil
     self._loadRetryClockByUserId[userId] = nil
     self._savedProgressCacheByUserId[userId] = nil
+    -- 收据台账在保存落档之后才清理，退出瞬间的已发货收据仍会写入 processedPurchaseIds。
+    self._processedPurchaseIdsByPlayerId[userId] = nil
 end
 
 return RebirthService
