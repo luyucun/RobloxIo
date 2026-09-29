@@ -29,7 +29,7 @@ task.defer(function()
 		-- DEFAULT_MAP 内嵌于插件文件:本机 Studio 插件设置跨重启不持久,不能依赖 GetSetting。
 		-- 新增项目:更新 DEFAULT_MAP 后重启该项目窗口(流程见项目文档《多项目Studio接入方案.md》)。
 		local HttpService = game:GetService("HttpService")
-		local DEFAULT_MAP = { ["10760471685"] = 58741, ["10639368398"] = 58742, ["9971501998"] = 58743, ["10765643160"] = 58744, ["8904241985"] = 58745, ["10768438294"] = 58746 }
+		local DEFAULT_MAP = { ["10760471685"] = 58741, ["10639368398"] = 58742, ["9971501998"] = 58743, ["10765643160"] = 58744, ["8904241985"] = 58745, ["10768438294"] = 58746, ["10133052560"] = 58747 }
 		local targetPort = DEFAULT_MAP[tostring(game.GameId)]
 		local okRaw, raw = pcall(function() return plugin:GetSetting("MCP_PORT_MAP") end)
 		if okRaw and raw and raw ~= "" then

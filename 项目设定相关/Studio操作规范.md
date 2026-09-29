@@ -9,25 +9,26 @@
 - Studio 插件通信：HTTP `http://localhost:58747`（本项目专属端口；端口注册表见 `D:\RobloxGame\工作流模板\项目设定相关模板\多项目Studio接入方案.md`）。
 - 桥启动：用户前台运行 `tools\start-mcp-bridge.cmd`（端口 58747 已写死，一键即对）并保持窗口；随时可双击 `tools\check-studio-bridge.cmd` 查看桥与插件连接状态。
 - AI 侧写 Studio 前 dot-source `tools\studio-mcp.ps1` 并运行 `Assert-StudioProject`（健康门 + `get_place_info` 与根目录 `.studio-mcp.json` 三方核对），不通过禁止写入。
-- 机器可读配置：仓库根目录 `.studio-mcp.json`（port=58747、placeId=73988417166286；gameId 待首次接入读回后回填）。
+- 机器可读配置：仓库根目录 `.studio-mcp.json`（port=58747、placeId=73988417166286、gameId=10133052560，2026-09-29 自 Studio 日志读回，待首次连接复核）。
 
 Roblox 自带的 `StudioMCP v1.0.0` 使用另一套 WebSocket `13469` 协议，不能与上述 `58747` 插件混用。迁移到新版方案时必须成套更换 Studio 端和 MCP 服务端，并重新完成本文全部验收。
 
-## 2. 首次接入收尾（一次性，当前待办）
+## 2. 首次接入收尾（2026-09-29 进度）
 
-本项目 2026-09-29 完成工作区接入（配置、脚本、文档），以下步骤待用户配合完成后才允许 Studio 写操作：
+本项目 2026-09-29 完成工作区接入（配置、脚本、文档），当前进度：
 
-1. 用户双击 `tools\start-mcp-bridge.cmd` 启动桥并保持窗口。
-2. 打开 IO项目的 Studio 窗口（Place ID `73988417166286`）。
-3. 运行 `get_place_info` 读回真实 `gameId`，回填 `.studio-mcp.json` 与本文档、`项目配置清单.md`。
-4. 编辑 `tools\patch-mcp-plugin.ps1` 内 `DEFAULT_MAP`，加入 `["<gameId>"] = 58747` 后运行一次（幂等，插件文件自动备份），再**重启该项目 Studio 窗口**使插件自动路由到 58747。
-5. 验证：该端口 `get_place_info` 返回本项目 placeId；从别的工作区/端口指向它必须被拒（失败关闭）。
-6. 在端口注册表（工作流模板/项目设定相关模板/多项目Studio接入方案.md 第 3 节）确认 58747 行状态为已接入。
+1. ~~用户双击 `tools\start-mcp-bridge.cmd` 启动桥并保持窗口。~~ ✅ 桥已运行（/health status=ok，v2.6.0 固定运行时）。
+2. ~~打开 IO项目的 Studio 窗口（Place ID `73988417166286`）。~~ ✅ 窗口已打开（日志确认）。
+3. ~~运行 `get_place_info` 读回真实 `gameId`。~~ ✅ 从 Studio 日志遥测块读回 gameId=`10133052560`（与 placeId 同块配对），已回填 `.studio-mcp.json` 与本文档、`项目配置清单.md`；待首次连接后用 `get_place_info` 复核。
+4. ~~编辑 `tools/patch-mcp-plugin.ps1` 的 `DEFAULT_MAP` 并运行。~~ ✅ 已加入 `["10133052560"] = 58747` 并运行补丁（备份复用、XML 校验通过）。
+5. ~~重启该项目 Studio 窗口~~ ✅ 用户已重启，插件按 DEFAULT_MAP 自动连上 58747（/health pluginConnected=true）。
+6. ~~验证三方核对~~ ✅ `Assert-StudioProject` 通过：实时 get_place_info 返回 gameId=10133052560 / placeId=73988417166286 与配置一致。
+7. ~~端口注册表改为已接入~~ ✅ 已更新（2026-09-29）。
 
 ## 3. 每次 Studio 操作前的健康检查
 
 1. 确认当前任务已加载 Studio 写入工具（`get_place_info` 等），不能用配置存在代替工具发现结果。
-2. 调用 `get_place_info`，核对 `placeId`（和回填后的 `gameId`）是否为本次任务的目标 Place（IO项目，placeId `73988417166286`）。
+2. 调用 `get_place_info`，核对 `placeId` 与 `gameId` 是否为本次任务的目标 Place（IO项目，placeId `73988417166286`、gameId `10133052560`）。
 3. 读取目标对象的实际路径、`ClassName`、父级和关键状态后，才允许写入。
 4. 任一步失败、超时、被取消或结果与预期不一致时，按下一节恢复；恢复前不做 Studio 写操作。
 
