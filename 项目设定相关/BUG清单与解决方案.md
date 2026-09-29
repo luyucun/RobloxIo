@@ -9,7 +9,7 @@
 | # | 标题 | 位置 | 问题与方案 | 状态 |
 |---|---|---|---|---|
 | P0-1 | 死亡玩家可绕过 Defeated 免费满状态复活 | `ArenaService.lua:1317-1364`、`PlayerStateService.lua:3953-3963`、入口 `ArenaService.lua:1118-1165` | `TryEnterArena` 不校验 `state.Alive`，`SetInArena(true)` 隐式置 Alive=true 并回满血。Nuke 击杀全服玩家后尸体留在 Portal 范围内即可发 RequestJoinBattle 满血满级重进。方案：两处入口加 Alive 校验；复活语义收口到 RespawnService | 已修复待验证（2026-09-29，V6.4） |
-| P0-2 | 小怪击杀上报不校验令牌激活，可零战斗刷经验 | `LocalMonsterRewardService.lua:465-477` | `_processLocalMonsterKill` 只查 Consumed 不查 Active。令牌签发 4次/秒×25=100个/秒，击杀限速按批次计。方案：强制 Active==true；已激活令牌总量上限；激活事件限速；激活-击杀最小时间差 | 已修复待验证（2026-09-29，V6.4：击杀强制 Active+ActivatedAt≥0.2s；激活令牌桶 40/s 突发 400；激活上限 400；签发批量 25→10、击杀批量 24→12） |
+| P0-2 | 小怪击杀上报不校验令牌激活，可零战斗刷经验 | `LocalMonsterRewardService.lua:465-477` | `_processLocalMonsterKill` 只查 Consumed 不查 Active。令牌签发 4次/秒×25=100个/秒，击杀限速按批次计。方案：强制 Active==true；已激活令牌总量上限；激活事件限速；激活-击杀最小时间差 | 已修复待验证（2026-09-29，V6.4 + 自检轮：击杀与核弹扫荡均强制 Active；激活令牌桶 40/s 突发 400；激活上限 400 + Active 1800s 过期；签发批量 25→10、击杀批量 24→12；最小间隔参数默认 0——自检确认正值会误拒同 tick 合法速杀） |
 | P0-3 | 七日登录 UnlockAll 付费商品缺"数据已加载"守卫 | `SevenDayLoginRewardService.lua:514-551`；同构 `RebirthService.lua:909-931`（复仇/保级复活） | 读档飞行中购买写入默认状态，随后被 SetRebirthData 覆盖，已返回 PurchaseGranted 但玩家没拿到。方案：对照 `SkinService.lua:846-848` 补 `_isPlayerLoaded` / `CanWritePersistentProgress` 守卫，返回 NotProcessedYet | 已修复待验证（2026-09-29，V6.4） |
 | P0-4 | Robux 发货缺 PurchaseId 台账 + 分发器无 pcall | `RebirthService.lua:945-1082、1148-1150`；`ShopService.lua:482-517` 等 | 除七日登录外所有发货路径无持久化幂等；`_processReceipt` 异常或崩溃后 Roblox 重投即双倍发货。方案：统一 ProcessedPurchaseIds 持久化台账；分发器整体 pcall，异常返回 NotProcessedYet | 已修复待验证（2026-09-29，V6.4：分发更名 _dispatchReceipt，新 _processReceipt 顶层台账查重+登记，随存档 processedPurchaseIds 持久化 60条/30天；ProcessReceipt 走 _processReceiptSafely pcall 包装） |
 

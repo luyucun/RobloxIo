@@ -776,11 +776,13 @@ function LocalMonsterRewardService:ConsumeNukeSweepTokens(player, tokens)
             break
         end
 
-        local token = tostring(rawToken or "")
-        if token ~= "" and not seenTokens[token] then
-            seenTokens[token] = true
-            local authorization = self:_getAuthorization(player, token)
-            if authorization and authorization.Consumed ~= true then
+            local token = tostring(rawToken or "")
+            if token ~= "" and not seenTokens[token] then
+                seenTokens[token] = true
+                local authorization = self:_getAuthorization(player, token)
+                -- 扫荡与普通击杀同样要求令牌已激活：真实怪物生成后客户端才会 Activate，
+                -- 未激活令牌不允许经核弹扫荡批量兑换奖励。
+                if authorization and authorization.Consumed ~= true and authorization.Active == true then
                 local definition = MonsterCatalog.GetDefinition(authorization.MonsterDefinitionId)
                 if MonsterCatalog.IsNormalMonsterDefinition(definition) then
                     authorization.Consumed = true
