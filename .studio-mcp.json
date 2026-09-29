@@ -1,0 +1,8 @@
+{
+    "port":  58747,
+    "placeName":  "IO项目",
+    "gameId":  0,
+    "note":  "IO项目(对剑) MCP 配置(机器可读唯一真源)。多项目方案:每项目一个专属端口;通用约定见 D:\\RobloxGame\\工作流模板\\项目设定相关模板\\多项目Studio接入方案.md。gameId 待首次接入时用 get_place_info 读回后回填(回填前 Assert-StudioProject 只核对 placeId,仍是失败关闭)。写入前用 tools/studio-mcp.ps1 的 Assert-StudioProject 三方核对。",
+    "healthUrl":  "http://127.0.0.1:58747/health",
+    "placeId":  73988417166286
+}
