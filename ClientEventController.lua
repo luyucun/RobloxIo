@@ -49,6 +49,12 @@ ClientEventController._audioSettings = nil
 ClientEventController._perfStats = nil
 ClientEventController._nextPerfLogClock = 0
 
+ClientEventController._collectPulse = nil
+ClientEventController._collectPulseClock = nil
+ClientEventController._nextCollectFeedbackClock = 0
+ClientEventController._nextLevelUpFeedbackClock = 0
+ClientEventController._activeLevelUpEffect = nil
+
 local LEVEL_UP_TEXT_SLIDE_OFFSET = UDim2.fromScale(0, 0.35)
 local LEVEL_UP_TEXT_TWEEN_INFO = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 local EXPERIENCE_FALLBACK_COLORS = {
@@ -339,7 +345,73 @@ function ClientEventController:_trimLocalOrbsToBudget()
     end
 end
 
+function ClientEventController:_clearExperienceVisuals(includeLevelUp)
+    for index = #self._localOrbs, 1, -1 do
+        self:_destroyLocalOrbAt(index)
+    end
+    if self._collectPulse then
+        self._collectPulse:Destroy()
+        self._collectPulse = nil
+    end
+    self._collectPulseClock = nil
+    self._nextCollectFeedbackClock = 0
+    if includeLevelUp and self._activeLevelUpEffect then
+        self._activeLevelUpEffect:Destroy()
+        self._activeLevelUpEffect = nil
+    end
+end
+
+function ClientEventController:_playExperienceCollectFeedback(rootPart, now)
+    if now < self._nextCollectFeedbackClock then
+        return
+    end
+    self._nextCollectFeedbackClock = now + 0.16
+    local pulse = self._collectPulse
+    if not pulse then
+        pulse = Instance.new("Part")
+        pulse.Name = "ExperienceCollectPulse_Client"
+        pulse.Shape = Enum.PartType.Ball
+        pulse.Material = Enum.Material.Neon
+        pulse.Color = Color3.fromRGB(173, 255, 167)
+        pulse.Anchored = true
+        pulse.CanCollide = false
+        pulse.CanTouch = false
+        pulse.CanQuery = false
+        pulse.CastShadow = false
+        self._collectPulse = pulse
+    end
+    pulse.Size = Vector3.one * 0.5
+    pulse.Transparency = 0.45
+    pulse.CFrame = CFrame.new(rootPart.Position)
+    pulse.Parent = self._localOrbFolder
+    self._collectPulseClock = now
+    if self._audioSettings and self._audioSettings.PlaySfxOneShotByPath then
+        self._audioSettings:PlaySfxOneShotByPath("UI", { "Banana collect 18" }, {
+            volumeScale = 0.25, playbackSpeed = 1.12 + math.random() * 0.12,
+        })
+    end
+end
+
+function ClientEventController:_stepExperienceCollectPulse(rootPart, now)
+    if not (self._collectPulse and self._collectPulseClock) then
+        return
+    end
+    local alpha = math.clamp((now - self._collectPulseClock) / 0.2, 0, 1)
+    if alpha >= 1 or not rootPart then
+        self._collectPulse.Parent = nil
+        self._collectPulseClock = nil
+        return
+    end
+    self._collectPulse.CFrame = CFrame.new(rootPart.Position)
+    self._collectPulse.Size = Vector3.one * (0.5 + alpha * 2)
+    self._collectPulse.Transparency = 0.45 + alpha * 0.55
+end
+
 function ClientEventController:_spawnExperienceDrop(payload)
+    local state = self._latestPlayerState
+    if state and not (state.alive and state.isInArena) then
+        return
+    end
     if not (payload and typeof(payload.orbs) == "table") then
         return
     end
@@ -407,11 +479,18 @@ function ClientEventController:_spawnExperienceDrop(payload)
 end
 
 function ClientEventController:_updateLocalExperienceOrbs(deltaTime)
+    local state = self._latestPlayerState
+    if state and not (state.alive and state.isInArena) then
+        self:_clearExperienceVisuals()
+        return
+    end
     local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
     local rootPart = getCharacterRoot(self._localPlayer)
     local now = os.clock()
     local updatedCount = 0
     local destroyedCount = 0
+    local collected = false
+    self:_stepExperienceCollectPulse(rootPart, now)
 
     for index = #self._localOrbs, 1, -1 do
         local orbState = self._localOrbs[index]
@@ -455,6 +534,7 @@ function ClientEventController:_updateLocalExperienceOrbs(deltaTime)
         local offset = rootPart.Position - orb.Position
         local distance = offset.Magnitude
         if distance <= orbState.ConsumeRadius then
+            collected = true
             self:_destroyLocalOrbAt(index)
             destroyedCount += 1
         elseif distance > 0 then
@@ -463,6 +543,10 @@ function ClientEventController:_updateLocalExperienceOrbs(deltaTime)
             orb.CFrame = CFrame.new(orb.Position + (offset.Unit * stepDistance))
             updatedCount += 1
         end
+    end
+
+    if collected then
+        self:_playExperienceCollectFeedback(rootPart, now)
     end
 
     if startedAt then
@@ -634,7 +718,10 @@ function ClientEventController:_playCombatFeedbackSound(payload)
     if payload.eventType == "WeaponHitWeapon" then
         self:_playSfxByPath("Audio", { "Sword", "Sword Hit" })
     elseif payload.eventType == "WeaponHitPlayer" then
-        self:_playSfxByPath("Audio", { "Sword", "SwordHitRelease" })
+        local sound = SoundService:FindFirstChild("SFX_Hit_Sword_Medium_01")
+        if self._audioSettings and self._audioSettings.PlaySfxOneShot then
+            self._audioSettings:PlaySfxOneShot(sound)
+        end
     end
 end
 
@@ -717,7 +804,11 @@ function ClientEventController:_spawnLevelUpEffect()
         return
     end
 
+    if self._activeLevelUpEffect then
+        self._activeLevelUpEffect:Destroy()
+    end
     local effect = template:Clone()
+    self._activeLevelUpEffect = effect
     effect.Name = "LevelUpEffect_Client"
     effect.Anchored = false
     effect.CanCollide = false
@@ -770,10 +861,18 @@ function ClientEventController:_spawnLevelUpEffect()
         if effect and effect.Parent then
             effect:Destroy()
         end
+        if self._activeLevelUpEffect == effect then
+            self._activeLevelUpEffect = nil
+        end
     end)
 end
 
 function ClientEventController:_playLevelUpFeedback()
+    local now = os.clock()
+    if now < self._nextLevelUpFeedbackClock then
+        return
+    end
+    self._nextLevelUpFeedbackClock = now + 0.35
     local audioConfig = GameConfig.AUDIO or {}
     self:_spawnLevelUpEffect()
     self:_playSound(audioConfig.LevelUpSoundName or "LevelUp01", audioConfig.LevelUpSoundId or "rbxassetid://371274037")
@@ -787,8 +886,15 @@ function ClientEventController:Init(dependencies)
         self._renderConnection:Disconnect()
         self._renderConnection = nil
     end
+    self:_clearExperienceVisuals(true)
+    self._nextLevelUpFeedbackClock = 0
     self:_createLocalOrbFolder()
     self:_resetPerfStats()
+    if self._localPlayer then
+        table.insert(self._connections, self._localPlayer.CharacterAdded:Connect(function()
+            self:_clearExperienceVisuals(true)
+        end))
+    end
     self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
 
     if self._audioSettings and self._audioSettings.BindPlayerGuiButtonClicks and self._localPlayer then
@@ -803,7 +909,11 @@ function ClientEventController:Init(dependencies)
     local battleEventsFolder = eventsFolder:WaitForChild(RemoteNames.BattleEventsFolder)
 
     connectEvent(self._connections, systemEventsFolder:WaitForChild(RemoteNames.System.PlayerStateSync), function(payload)
+        local wasInArena = self._latestPlayerState and self._latestPlayerState.isInArena
         self._latestPlayerState = payload
+        if not (payload and payload.alive and payload.isInArena) then
+            self:_clearExperienceVisuals(wasInArena or not (payload and payload.alive))
+        end
     end)
 
     connectEvent(self._connections, systemEventsFolder:WaitForChild(RemoteNames.System.ArenaTransitionFeedback), function(payload)

@@ -195,9 +195,9 @@ GameConfig.FLASH = {
     Enabled = true,
     Id = 'Flash',
     Name = 'Flash',
-    DistanceStuds = 30.0,
+    DistanceStuds = 24.0,
     DurationSeconds = 0.3,
-    CooldownSeconds = 5.0,
+    CooldownSeconds = 8.0,
     AnimationId = 'rbxassetid://122960903142690',
     MinimumMoveDirectionMagnitude = 0.05,
     MinimumTravelDistance = 1.0,
@@ -408,7 +408,7 @@ GameConfig.DATASTORE = {
 }
 
 GameConfig.FAVORITE_PROMPT = {
-    Enabled = true,
+    Enabled = false,
     DelaySeconds = 300,
     DebugEnabled = false,
 }
@@ -416,7 +416,13 @@ GameConfig.FAVORITE_PROMPT = {
 GameConfig.ACTIVITY_RSVP_PROMPT = {
     Enabled = true,
     EventId = "1761422313611461386",
-    DelaySeconds = 10,
+    DelaySeconds = 180,
+}
+
+-- Presentation only: keep task progress, chest inventory and their services intact.
+GameConfig.UI_ENTRY_VISIBILITY = {
+    Tasks = false,
+    Chests = false,
 }
 
 GameConfig.MONETIZATION = {

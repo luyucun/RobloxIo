@@ -304,8 +304,9 @@ function RespawnService:RevivePlayer(player)
     return self:_revivePlayerNow(player)
 end
 
-function RespawnService:_finishLobbyRevive(player, halfLevelSnapshot)
-    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+function RespawnService:_restoreLobbyProgress(player, halfLevelSnapshot)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and halfLevelSnapshot
+        and self._playerStateService and self._playerStateService.RestoreCombatProgress) then
         return false
     end
 
@@ -314,95 +315,70 @@ function RespawnService:_finishLobbyRevive(player, halfLevelSnapshot)
         self._weaponService:ClearPlayerWeapons(player)
     end
 
-    if halfLevelSnapshot and self._playerStateService.RestoreCombatProgress then
-        local restored = self._playerStateService:RestoreCombatProgress(player, halfLevelSnapshot, {
-            restoreFullHealth = true,
-            rebuildWeapons = false,
-            restoreToLobby = true,
-        })
-        if not restored then
-            return false
-        end
-    else
-        local state = self._playerStateService:GetState(player)
-        state.Alive = true
-        state.IsInArena = false
-        state.Buffs = {}
-        state.MaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
-        state.CurrentHealth = state.MaxHealth
-        self._playerStateService:SyncCharacterState(player)
-        self._playerStateService:UpdateOverheadHealthBar(player)
-        self._playerStateService:PushState(player)
-    end
-
-    if self._arenaService and self._arenaService.TeleportPlayerToSpawnLocation then
-        return self._arenaService:TeleportPlayerToSpawnLocation(player) == true
-    end
-    return true
+    return self._playerStateService:RestoreCombatProgress(player, halfLevelSnapshot, {
+        restoreFullHealth = true,
+        rebuildWeapons = false,
+        restoreToLobby = true,
+    }) == true
 end
 
 function RespawnService:_revivePlayerToLobby(player, defeatRecord)
-    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService
+        and self._arenaService and self:IsCurrentDefeatRecord(player, defeatRecord)) then
         return false
     end
-
-    local halfLevelSnapshot = buildHalfLevelRespawnSnapshot(defeatRecord and defeatRecord.combatSnapshot)
-    self:_clearDefeatRecord(player)
-
+    local halfLevelSnapshot = buildHalfLevelRespawnSnapshot(defeatRecord.combatSnapshot)
+    if not halfLevelSnapshot then
+        return false
+    end
     local humanoid = ActorUtils.GetHumanoid(player)
     local rootPart = ActorUtils.GetRootPart(player)
-    if not (humanoid and rootPart and humanoid.Health > 0) then
-        local didLoad = pcall(function()
+    local needsCharacter = not (humanoid and rootPart and humanoid.Health > 0)
+    self._arenaService:PrepareForLobbyReturn(player)
+    -- 先恢复正确的大厅进度，再进入 LoadCharacter 的 yield 窗口。
+    -- CharacterAdded/退出存档看到的都是半等级，而不是死亡 ResetCombatState 的 Lv1。
+    if not self:_restoreLobbyProgress(player, halfLevelSnapshot) then
+        return false
+    end
+    local didLoad = true
+    if needsCharacter then
+        didLoad = pcall(function()
             player:LoadCharacter()
         end)
         if didLoad then
-            task.defer(function()
-                if player and player.Parent and self:_waitForUsableCharacter(player, 3) then
-                    self:_finishLobbyRevive(player, halfLevelSnapshot)
-                end
-            end)
+            didLoad = self:_waitForUsableCharacter(player, 3)
         end
-        return didLoad == true
     end
-
-    return self:_finishLobbyRevive(player, halfLevelSnapshot)
+    if not player.Parent or self:GetDefeatRecord(player) ~= defeatRecord then
+        return false
+    end
+    if didLoad and self._arenaService:TeleportPlayerToSpawnLocation(player) == true then
+        self:_clearDefeatRecord(player)
+        return true
+    end
+    -- 保留原死亡快照供重试，不重复减半，也不把失败计为复活成功。
+    local state = self._playerStateService:GetState(player)
+    state.Alive = false
+    self._playerStateService:PushState(player)
+    if self._arenaTransitionFeedbackEvent then
+        self._arenaTransitionFeedbackEvent:FireClient(player, {
+            status = "Blocked",
+            spawnMode = "LobbyReviveFailed",
+            timestamp = os.clock(),
+        })
+    end
+    return false
 end
 
 function RespawnService:_tryGrantFreeRespawn(player, defeatRecord)
-    if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+    if not self:_revivePlayerToLobby(player, defeatRecord) then
         return false
     end
-    if not self:IsCurrentDefeatRecord(player, defeatRecord) then
-        return false
-    end
-
-    local snapshot = defeatRecord.combatSnapshot
-    if type(snapshot) ~= "table" then
-        return false
-    end
-
-    local revived = self:_revivePlayerNow(player, {
-        preserveDefeatRecord = true,
-    })
-    if not revived then
-        return false
-    end
-
-    if self._playerStateService.RestoreCombatProgress then
-        local halfLevelSnapshot = buildHalfLevelRespawnSnapshot(snapshot)
-        self._playerStateService:RestoreCombatProgress(player, halfLevelSnapshot, {
-            restoreFullHealth = true,
-            rebuildWeapons = true,
-        })
-    end
-
     if self._gameAnalyticsService then
-        trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedFreeRespawn", 3, "FreeRespawnedSuccessfully", {
+        trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedFreeRespawn", 3, "FreeRespawnedToLobby", {
             source = "defeated",
         })
     end
-
-    self:_clearDefeatRecord(player)
     return true
 end
 

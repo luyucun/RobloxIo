@@ -720,6 +720,11 @@ def read_wheel_reward_rows() -> tuple[list[dict], list[dict]]:
             "GiftName": "" if is_blank(cell_by_header(worksheet, row_index, headers, "对应转盘子节点")) else str(cell_by_header(worksheet, row_index, headers, "对应转盘子节点")).strip(),
             "TargetRotation": math_safe_int(cell_by_header(worksheet, row_index, headers, "对应旋转角度"), 0),
         })
+        if row["RewardType"] == "PendingWeaponSkin":
+            duplicate_diamonds = cell_by_header(worksheet, row_index, headers, "重复皮肤补偿钻石")
+            if is_blank(duplicate_diamonds) or math_safe_int(duplicate_diamonds, 0) <= 0:
+                raise RuntimeError(f"Wheel skin reward row {row_index} requires positive duplicate compensation diamonds")
+            row["DuplicateDiamonds"] = math_safe_int(duplicate_diamonds, 0)
         rows.append(row)
     rows.sort(key=lambda row: row["Slot"])
     return rows, warnings
@@ -749,6 +754,7 @@ def build_wheel_reward_generated_block(rows: list[dict]) -> str:
             lines.append(f"        Amount = {math_safe_int(row.get('Amount'), 1)},")
         elif row["RewardType"] == "PendingWeaponSkin":
             lines.append(f"        SkinId = {math_safe_int(row.get('SkinId'), 0)},")
+            lines.append(f"        DuplicateDiamonds = {row['DuplicateDiamonds']},")
             lines.append("        Pending = true,")
         elif row["RewardType"] in {"WheelSpins", "Diamonds"}:
             lines.append(f"        Amount = {math_safe_int(row.get('Amount'), 0)},")

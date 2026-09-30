@@ -67,12 +67,12 @@ local function getSyncInterval()
     return math.max(0.25, tonumber(WheelConfig.StateSyncIntervalSeconds) or 1)
 end
 
-local function copyRewardForClient(reward)
+local function copyRewardForClient(reward, actualAward)
     if type(reward) ~= "table" then
         return nil
     end
 
-    return {
+    local payload = {
         slot = reward.Slot,
         id = reward.Id,
         rewardType = reward.RewardType,
@@ -83,8 +83,26 @@ local function copyRewardForClient(reward)
         durationSeconds = reward.DurationSeconds,
         potionId = reward.PotionId,
         skinId = reward.SkinId,
+        duplicateDiamonds = reward.DuplicateDiamonds,
         pending = reward.Pending == true,
     }
+    if type(actualAward) == "table" then
+        payload.duplicateCompensation = actualAward.duplicateCompensation == true
+        payload.awardedRewardType = actualAward.awardedRewardType
+        payload.awardedAmount = actualAward.awardedAmount
+        payload.awardedGiftName = actualAward.awardedGiftName
+        payload.pending = actualAward.pending == true
+    end
+    return payload
+end
+
+local function getDiamondGiftName()
+    for _, reward in ipairs(WheelConfig.Rewards) do
+        if reward.RewardType == "Diamonds" then
+            return reward.GiftName
+        end
+    end
+    return nil
 end
 
 function WheelService:_isPlayerLoaded(player)
@@ -206,8 +224,42 @@ function WheelService:_grantReward(player, reward)
         if not (self._skinService and self._skinService.GrantSkin) then
             return false, "SkinServiceUnavailable"
         end
-        local success, reason = self._skinService:GrantSkin(player, reward.SkinId, "Wheel")
-        return success == true, reason
+        -- The skin service intentionally treats ownership as a successful grant.
+        -- Resolve duplicates here so other skin acquisition paths stay unchanged.
+        local duplicateDiamonds = math.floor(tonumber(reward.DuplicateDiamonds) or 0)
+        local diamondGiftName = getDiamondGiftName()
+        if duplicateDiamonds <= 0 or not diamondGiftName then
+            return false, "InvalidDuplicateCompensation"
+        end
+
+        local alreadyOwned = self._playerStateService:OwnsSkin(player, reward.SkinId)
+        if not alreadyOwned then
+            local success, reason = self._skinService:GrantSkin(player, reward.SkinId, "Wheel")
+            if success ~= true then
+                return false, reason
+            end
+            alreadyOwned = reason == "AlreadyOwned"
+            if not alreadyOwned then
+                return true, reason, {
+                    awardedRewardType = "Skin",
+                    awardedGiftName = reward.GiftName,
+                    pending = false,
+                }
+            end
+        end
+
+        self._playerStateService:AddDiamonds(player, duplicateDiamonds, {
+            source = "wheel_duplicate_skin",
+            productGroup = "wheel",
+            itemSku = tostring(reward.Id or reward.SkinId),
+        })
+        return true, "DuplicateConverted", {
+            duplicateCompensation = true,
+            awardedRewardType = "Diamonds",
+            awardedAmount = duplicateDiamonds,
+            awardedGiftName = diamondGiftName,
+            pending = false,
+        }
     elseif reward.Pending == true then
         return true, "PendingReward"
     end
@@ -274,7 +326,7 @@ function WheelService:_handleSpinRequest(player)
     end
 
     local reward = WheelConfig.RollReward(self._random)
-    local granted, reason = self:_grantReward(player, reward)
+    local granted, reason, actualAward = self:_grantReward(player, reward)
     self._spinInProgressByUserId[userId] = nil
 
     if not granted then
@@ -298,13 +350,14 @@ function WheelService:_handleSpinRequest(player)
     end
 
     self:_markDirty(player)
+    local clientReward = copyRewardForClient(reward, actualAward)
     self:_fireSpinResult(player, {
         ok = true,
-        reward = copyRewardForClient(reward),
+        reward = clientReward,
         targetRotation = reward.TargetRotation,
         remainingSpins = remainingSpins,
         state = self:BuildStatePayload(player),
-        pending = reward.Pending == true,
+        pending = clientReward.pending,
         reason = reason,
     })
     self:SyncState(player)

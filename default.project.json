@@ -298,9 +298,6 @@
           "LeaveTipsController": {
             "$path": "LeaveTipsController.lua"
           },
-          "LocalLeaderboardController": {
-            "$path": "LocalLeaderboardController.lua"
-          },
           "LocalMonsterController": {
             "$path": "LocalMonsterController.lua"
           },

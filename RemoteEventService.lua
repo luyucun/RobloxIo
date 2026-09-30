@@ -28,6 +28,11 @@ local function requireSharedModule(moduleName)
 end
 
 local RemoteNames = requireSharedModule("RemoteNames")
+-- V6.14: existing attribute requests accept FlashCooldown/FlashDistance through
+-- server config validation. PlayerStateSync carries their levels/caps/final stats;
+-- FlashFeedback carries the approved per-use cooldown/distance. No new remotes.
+-- V6.11: StudioAttributes.PassUiPreview is replicated as a Player attribute by
+-- GMCommandService after its Studio guard. Do not register it as a RemoteEvent.
 
 local RemoteEventService = {}
 RemoteEventService._events = {}
@@ -88,11 +93,13 @@ function RemoteEventService:Init()
         { Key = "AttributeUpgradeFeedback", Parent = systemEvents, Name = RemoteNames.System.AttributeUpgradeFeedback },
         { Key = "RequestAttributeCapUpgrade", Parent = systemEvents, Name = RemoteNames.System.RequestAttributeCapUpgrade },
         { Key = "AttributeCapUpgradeFeedback", Parent = systemEvents, Name = RemoteNames.System.AttributeCapUpgradeFeedback },
+        -- V6.5: Entering/PortalReady/Blocked feedback; ReturnHome also ends the previous Auto round.
         { Key = "ArenaTransitionFeedback", Parent = systemEvents, Name = RemoteNames.System.ArenaTransitionFeedback },
         { Key = "DeathFeedback", Parent = systemEvents, Name = RemoteNames.System.DeathFeedback },
         { Key = "KillInfoFeedback", Parent = systemEvents, Name = RemoteNames.System.KillInfoFeedback },
         { Key = "StudioBotCommand", Parent = systemEvents, Name = RemoteNames.System.StudioBotCommand },
         { Key = "LevelUpFeedback", Parent = systemEvents, Name = RemoteNames.System.LevelUpFeedback },
+        -- Retain the legacy event for compatibility; direct Portal entry never sends Show.
         { Key = "PortalJoinPrompt", Parent = systemEvents, Name = RemoteNames.System.PortalJoinPrompt },
         { Key = "RequestJoinBattle", Parent = systemEvents, Name = RemoteNames.System.RequestJoinBattle },
         { Key = "RequestFlash", Parent = systemEvents, Name = RemoteNames.System.RequestFlash },
@@ -100,6 +107,7 @@ function RemoteEventService:Init()
         { Key = "FlashCompleted", Parent = systemEvents, Name = RemoteNames.System.FlashCompleted },
         { Key = "RequestRebirth", Parent = systemEvents, Name = RemoteNames.System.RequestRebirth },
         { Key = "RebirthFeedback", Parent = systemEvents, Name = RemoteNames.System.RebirthFeedback },
+        -- FreeRespawn/Lobby/Close now restore to the lobby; paid actions retain their behavior.
         { Key = "RequestDefeatedAction", Parent = systemEvents, Name = RemoteNames.System.RequestDefeatedAction },
         { Key = "RequestPotionAction", Parent = systemEvents, Name = RemoteNames.System.RequestPotionAction },
         { Key = "PotionFeedback", Parent = systemEvents, Name = RemoteNames.System.PotionFeedback },
@@ -121,6 +129,7 @@ function RemoteEventService:Init()
         { Key = "RequestWheelStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestWheelStateSync },
         { Key = "WheelStateSync", Parent = systemEvents, Name = RemoteNames.System.WheelStateSync },
         { Key = "RequestWheelSpin", Parent = systemEvents, Name = RemoteNames.System.RequestWheelSpin },
+        -- WheelSpinResult.reward includes optional server-authoritative awarded* duplicate-skin compensation.
         { Key = "WheelSpinResult", Parent = systemEvents, Name = RemoteNames.System.WheelSpinResult },
         { Key = "RequestSkinStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestSkinStateSync },
         { Key = "SkinStateSync", Parent = systemEvents, Name = RemoteNames.System.SkinStateSync },
@@ -167,6 +176,7 @@ function RemoteEventService:Init()
         { Key = "BuffFeedback", Parent = battleEvents, Name = RemoteNames.Battle.BuffFeedback },
         { Key = "BossFeedback", Parent = battleEvents, Name = RemoteNames.Battle.BossFeedback },
         { Key = "BossHitFeedback", Parent = battleEvents, Name = RemoteNames.Battle.BossHitFeedback },
+        -- Payload: global/self/timestamp. The removed custom local board used server rows.
         { Key = "LeaderboardSync", Parent = battleEvents, Name = RemoteNames.Battle.LeaderboardSync },
         { Key = "ArenaProgressSync", Parent = battleEvents, Name = RemoteNames.Battle.ArenaProgressSync },
         { Key = "NukeCinematic", Parent = battleEvents, Name = RemoteNames.Battle.NukeCinematic },

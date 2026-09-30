@@ -55,7 +55,6 @@ AutoBattleController._resumeAutoAfterJoin = false
 AutoBattleController._isAutoMoving = false
 AutoBattleController._flashSuspendEndsAt = 0
 AutoBattleController._bindRetryQueued = false
-AutoBattleController._portalJoinPromptEvent = nil
 AutoBattleController._requestJoinBattleEvent = nil
 AutoBattleController._playerControls = nil
 AutoBattleController._lastAutoJoinRequestClock = 0
@@ -769,6 +768,42 @@ function AutoBattleController:_setAutoJoinEnabled(enabled, options)
     self:_updateAutoButtonUi()
 end
 
+function AutoBattleController:_stopCurrentRound()
+    self._wantsAutoBattle = false
+    self._resumeAutoAfterJoin = false
+    self._isAutoEnabled = false
+    self._isAutoJoining = false
+    self._flashSuspendEndsAt = 0
+    self._lastAutoJoinRequestClock = 0
+    self:_setAutoJoinAttribute(false)
+    self:_stopMovement()
+    self:_resetAutoTargetState()
+    self:_updateBottomVisibility()
+    self:_updateAutoButtonUi()
+end
+
+function AutoBattleController:_onPlayerStateSync(payload)
+    if type(payload) ~= "table" then
+        return
+    end
+    local wasInArena = self:_isInArena()
+    self._latestState = payload
+    self:_updateBottomVisibility()
+    if payload.alive ~= true or (wasInArena and not self:_isInArena()) then
+        self:_stopCurrentRound()
+    elseif self:_isActiveInArena() then
+        if self._isAutoJoining then
+            self:_setAutoJoinEnabled(false, { PreserveWanted = true })
+        end
+        if self._wantsAutoBattle then
+            self:_setAutoEnabled(true)
+        end
+    elseif not self._isAutoJoining then
+        -- 大厅刷新不能恢复上轮 Auto；手动新开的自动进场则继续执行。
+        self:_stopCurrentRound()
+    end
+end
+
 function AutoBattleController:_requestAutoJoinBattle(force)
     if not self._requestJoinBattleEvent then
         return
@@ -784,6 +819,9 @@ function AutoBattleController:_requestAutoJoinBattle(force)
 end
 
 function AutoBattleController:_handleAutoButtonActivated()
+    if self._latestState and self._latestState.alive ~= true then
+        return
+    end
     if self._isAutoEnabled then
         self._resumeAutoAfterJoin = false
         self:_setAutoEnabled(false)
@@ -1197,9 +1235,7 @@ function AutoBattleController:_stepAutoBattle()
         return
     end
     if not self:_isActiveInArena() then
-        self:_setAutoEnabled(false, {
-            PreserveWanted = self._wantsAutoBattle == true,
-        })
+        self:_stopCurrentRound()
         return
     end
 
@@ -1209,9 +1245,7 @@ function AutoBattleController:_stepAutoBattle()
         return
     end
     if humanoid.Health <= 0 then
-        self:_setAutoEnabled(false, {
-            PreserveWanted = self._wantsAutoBattle == true,
-        })
+        self:_stopCurrentRound()
         return
     end
 
@@ -1420,48 +1454,22 @@ function AutoBattleController:Init(dependencies)
     local eventsFolder = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
     local systemEventsFolder = eventsFolder:WaitForChild(RemoteNames.SystemEventsFolder)
     local playerStateSyncEvent = systemEventsFolder:WaitForChild(RemoteNames.System.PlayerStateSync)
-    self._portalJoinPromptEvent = systemEventsFolder:WaitForChild(RemoteNames.System.PortalJoinPrompt)
     self._requestJoinBattleEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestJoinBattle)
     table.insert(self._connections, playerStateSyncEvent.OnClientEvent:Connect(function(payload)
-        self._latestState = payload
-        self:_updateBottomVisibility()
-        if self:_isInArena() and self._isAutoJoining then
-            self._resumeAutoAfterJoin = true
-            self:_setAutoJoinEnabled(false, {
-                PreserveWanted = true,
-            })
-            self:_setAutoEnabled(true)
-        elseif self._resumeAutoAfterJoin and self:_isActiveInArena() then
-            self:_setAutoEnabled(true)
-        elseif self:_isActiveInArena() then
-            if self._wantsAutoBattle then
-                self:_setAutoEnabled(true)
-            end
-        elseif not self:_isInArena() then
-            self._resumeAutoAfterJoin = false
-            self:_setAutoEnabled(false, {
-                PreserveWanted = self._wantsAutoBattle == true,
-            })
-            if self._wantsAutoBattle then
-                self:_setAutoJoinEnabled(true, {
-                    PreserveWanted = true,
-                })
-            end
-        elseif not self:_isActiveInArena() then
-            self._resumeAutoAfterJoin = false
-            self:_setAutoEnabled(false, {
-                PreserveWanted = self._wantsAutoBattle == true,
-            })
+        self:_onPlayerStateSync(payload)
+    end))
+    local transitionEvent = systemEventsFolder:WaitForChild(RemoteNames.System.ArenaTransitionFeedback)
+    table.insert(self._connections, transitionEvent.OnClientEvent:Connect(function(payload)
+        if type(payload) == "table" and payload.status == "ReturnHome" then
+            self:_stopCurrentRound()
         end
     end))
-
-    table.insert(self._connections, self._portalJoinPromptEvent.OnClientEvent:Connect(function(payload)
-        local eventType = payload and tostring(payload.eventType or "") or ""
-        if self._isAutoJoining and eventType == "Show" then
-            self._lastAutoJoinRequestClock = 0
-        elseif self._isAutoJoining and eventType == "Hide" and not self:_isInArena() then
-            self._lastAutoJoinRequestClock = 0
-        end
+    local deathEvent = systemEventsFolder:WaitForChild(RemoteNames.System.DeathFeedback)
+    table.insert(self._connections, deathEvent.OnClientEvent:Connect(function()
+        self:_stopCurrentRound()
+    end))
+    table.insert(self._connections, self._localPlayer.CharacterAdded:Connect(function()
+        self:_stopCurrentRound()
     end))
 
     table.insert(self._connections, UserInputService.InputBegan:Connect(function(inputObject, gameProcessed)

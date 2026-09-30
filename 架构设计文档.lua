@@ -83,8 +83,8 @@
 - 负责玩家本次服务器会话的首次进战场判定：首次成功进入战场发放 60 秒新手护盾，复活后再次进入战场继续发放现有 10 秒入场护盾。
 - `IsPositionInsideBattle` 与 `ClampPositionInsideBattle` 为服务端能力提供 Battle 边界校验和安全落点裁剪。
 4.1.`FlashService`
-- 接收无参数 `RequestFlash`，只接受使用意图；读取服务端角色实际移动方向，验证 Alive/IsInArena/冷却并按分段 `PivotTo` 运行 0.2 秒突进。
-- 每段 Raycast 排除角色和 `Workspace.Runtime`，阻挡时停在墙前；同时裁剪到 Battle 边界。服务端播放 Action 优先级 R15 动画，`FlashFeedback` 只反馈开始、拒绝、完成或中断与冷却/实际距离。
+- 接收无参数 `RequestFlash`，只接受使用意图；读取服务端角色实际移动方向，验证 Alive/IsInArena/冷却后计算并批准终点。客户端按下发终点播放 0.3 秒突进，服务端在完成时校正落点，不接受客户端上传距离或终点。
+- 请求时 Raycast 排除角色和 `Workspace.Runtime`，阻挡时沿边界裁剪后的方向停在墙前；同时裁剪到 Battle 边界。服务端播放 Action 优先级 R15 动画，`FlashFeedback` 反馈开始、拒绝、完成或中断，以及本次冷却、批准终点和实际距离。V6.14 冷却/距离读取玩家的服务端最终属性。
 5.`WeaponService`
 - 按等级解析武器组，创建和维护服务端武器判定实例。
 - 运行时优先使用武器模板下的 `Aura` BasePart 作为命中盒体；缺少时按模型包围盒创建不可见 fallback Aura。
@@ -120,7 +120,7 @@
 - V6.0 新增 Boss 技能运行层；当前 `GameConfig.BOSS_SKILLS` 将 `Boss2005` / `2005` 绑定到 `FootballKick`，服务端克隆 `ReplicatedStorage.Effect.SkillMessi` 到 `Workspace.Runtime.BossSkills` 并沿 Boss 前方发射。
 - `FootballKick` 命中真实玩家时只执行击飞和临时清空武器，不造成伤害且不被护盾抵挡；足球移动距离当前为 100 studs，命中优先按 `SkillMessi` 模型下的 `Aura` BasePart 盒体判定，并对上一帧到当前帧的 Aura 移动路径做扫掠检测，缺少 Aura 时才使用半径兜底。清剑后复用 `WeaponService` 现有逐把恢复逻辑恢复武器，击飞瞬间由服务端短暂接管角色物理，进入 Physics/PlatformStand 失控状态，施加强上抛、水平冲量和翻滚角速度，落地后不额外弹跳，并通过 Battle 范围持续夹取避免玩家被推出战斗区。
 14.`LeaderboardService`
-- 构建单服排行榜，读写全局 OrderedDataStore，广播 `LeaderboardSync`。
+- 读写全局 OrderedDataStore，广播全局榜及本人排名的 `LeaderboardSync`；本服玩家列表由 Roblox PlayerList/leaderstats 提供。
 - 所有 DataStore / OrderedDataStore 名称必须通过 `GameConfig` 的环境隔离接口获取；线上保持正式库名，Studio 默认不持久化。
 15.`ArenaProgressService`
 - 构建当前战场内真实玩家等级进度数据，通过 `ArenaProgressSync` 广播给客户端。
@@ -184,7 +184,7 @@
 
 七、关键路径
 1.玩家入场：
-`PlayerAdded -> PlayerStateService:OnPlayerAdded -> CharacterAdded -> ArenaService:TeleportPlayerToSpawnLocation -> 触碰 Map2.Portals.Portal -> PortalJoinPrompt(Show) -> JoinGameController 显示 StarterGui/Main/JoinGame、隐藏其它 Main UI、开启 Lighting.Blur -> 点击 Join -> RequestJoinBattle(Join) -> ArenaService 校验已触发 Portal 弹窗且入场确认资格仍在 8 秒有效期内 -> TryEnterArena -> PlayerStateService:SetInArena(true) -> 首次成功进战场发 60 秒护盾、复活进战场发 10 秒护盾 -> WeaponService:RebuildWeaponsForPlayer`
+`PlayerAdded -> OnCharacterAdded -> 大厅出生 -> 主动进入 Portal -> ArenaService 校验实时范围/存活/加载/防抖 -> TryEnterArena -> SetInArena(true) -> 原入场护盾 -> RebuildWeaponsForPlayer`。V6.5 无确认弹框；实际战斗节点为 Workspace.Battle01.Battle。
 2.Studio Bot：
 `RunService:IsStudio -> ensureStudioBots -> BotService:SpawnBots -> RegisterBot -> TryEnterArena -> WeaponService 创建武器 -> Bot 追敌/找经验`
 3.经验升级：
@@ -208,13 +208,13 @@
 12.特殊事件：
 `SpecialEventService:_step -> 按权重生成当前事件和未来两场 -> 应用服务端 EventEffects 并刷新 PlayerStateService 派生属性与战场内头顶事件图标/事件护盾/Football Battle 透明度 -> 刷新事件 Boss -> SpecialEventSync -> SpecialEventController 本地克隆 ReplicatedStorage/EventScene/<事件> 到 Workspace -> 更新 BattleSenceEventBoard / HomeEventBoard 倒计时 -> 显示 Main.EventDescribe 图标/倒计时/效果描述并播放 Main.EventStart 开始弹窗 -> 事件结束后清除服务端效果并由客户端清理本地克隆和事件 UI`
 13.在线奖励：
-`PlayerAdded -> OnlineRewardService:OnPlayerAdded 记录 StartedAt -> OnlineRewardStateSync -> OnlineRewardController 更新 Main.Right.Online 倒计时/红点和 Main.OnlineReward 奖励列表 -> RequestOnlineRewardClaim -> OnlineRewardService 校验在线秒数和已领取状态 -> 发放奖励 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful；UnlockAll 购买成功由 RebirthService.ProcessReceipt 委托 OnlineRewardService 解锁本轮全部奖励。`
+`PlayerAdded -> OnCharacterAdded -> 大厅出生 -> 主动进入 Portal -> ArenaService 校验实时范围/存活/加载/防抖 -> TryEnterArena -> SetInArena(true) -> 原入场护盾 -> RebuildWeaponsForPlayer`。V6.5 无确认弹框；实际战斗节点为 Workspace.Battle01.Battle。
 13.1.七日登录奖励：
-`PlayerAdded -> SevenDayLoginRewardService:OnPlayerAdded 等待玩家数据加载 -> SevenDayLoginRewardStateSync(hasClaimableReward) -> SevenDayLoginRewardController 显示 TopRight.SevenDays 红点，并在本次会话内对新的 cycleId/dayIndex 可领奖励自动打开 Main.Sevendays 或 Main.SevendaysRepeat 一次 -> RequestSevenDayLoginRewardClaim -> SevenDayLoginRewardService 服务端校验并发奖。`
+`PlayerAdded -> OnCharacterAdded -> 大厅出生 -> 主动进入 Portal -> ArenaService 校验实时范围/存活/加载/防抖 -> TryEnterArena -> SetInArena(true) -> 原入场护盾 -> RebuildWeaponsForPlayer`。V6.5 无确认弹框；实际战斗节点为 Workspace.Battle01.Battle。
 14.好友邀请提示：
 `InviteTipsController -> 玩家在线 2 分钟后请求 FriendsRankingStateSync -> 客户端刷新 GetFriendsOnlineAsync -> 从“曾玩过本体验且当前在线”的好友中按 highestLevelReached 选择最高者 -> 显示 PlayerGui.Main.InviteTips 5 秒 -> 点击 InviteButton 后用 ExperienceInviteOptions.InviteUser 调起 SocialService:PromptGameInvite；本次登录已弹过的好友不再重复弹出，之后每 5 分钟继续检查剩余候选。`
 15.活动预约提示：
-`PlayerAdded -> ActivityRsvpPromptService 延迟 90 秒 -> PromptActivityRsvp -> ActivityRsvpPromptController 查询 SocialService:GetEventRsvpStatusAsync("1761422313611461386") -> 未 Going 时调用 SocialService:PromptRsvpToEventAsync -> ActivityRsvpPromptStarted / ActivityRsvpPromptResult 回传服务端埋点；已 Going 时直接回传 AlreadyGoing 且不弹系统取消预约弹窗。`
+`PlayerAdded -> OnCharacterAdded -> 大厅出生 -> 主动进入 Portal -> ArenaService 校验实时范围/存活/加载/防抖 -> TryEnterArena -> SetInArena(true) -> 原入场护盾 -> RebuildWeaponsForPlayer`。V6.5 无确认弹框；实际战斗节点为 Workspace.Battle01.Battle。
 16.每日/每周任务：
 `TaskConfig -> TaskService 初始化并规范化 PlayerState.TaskState -> PlayerStateService/WheelService/InviteTipsController 等来源上报进度 -> TaskStateSync(shortTitle/shortDescription/rewards[]) -> TaskController 渲染 Main.Right.Daily 红点、Main.TaskBgNew 左侧任务列表、右侧任务详情和重置倒计时 -> RequestTaskClaim -> TaskService 校验并逐项发放奖励 -> ShopRewardFeedback -> ShopController 播放 Main.ClaimSuccessful。Studio GM /taskprogress、/taskcomplete、/taskreset 仅在 RunService:IsStudio() 下可用。`
 17.宝箱与宝箱尾迹：
@@ -266,7 +266,7 @@
 3.功能型面板打开时统一走模态 UI：隐藏 `PlayerGui.Main` 下除当前面板外的其他同级 `GuiObject`，开启 `Lighting.Blur`，关闭动效结束后恢复原始显示状态和 Blur 状态；打开和关闭都必须播放面板动效。
 4.`PlayerStateService` 负责角色头顶血条的创建和同步，血条主体和特殊事件图标都只有 `Alive = true` 且 `IsInArena = true` 时显示；准备区、大厅、死亡或退出战斗状态时隐藏 `OverheadHealthBar.Root.BarBackground.Event`。
 5.当前已实现客户端控制器为 `WeaponFxController`，负责隐藏真实玩家服务端武器视觉、按 `ownerUserId` 为本地和远端玩家创建本地视觉武器并按同步数据绕对应玩家旋转。
-6.`JoinGameController` 负责监听 `PortalJoinPrompt(Show/Hide)`，显示/隐藏 `StarterGui/Main/JoinGame`；显示时隐藏 `PlayerGui.Main` 下除 `JoinGame` 外的同级 UI 并开启 `Lighting.Blur`，关闭时恢复；绑定 `Join` 和 `Wait` 按钮缩放反馈，并在点击 Join/Wait 时分别发送 `RequestJoinBattle(Join/Cancel)`。服务端在 `PortalJoinPrompt(Show)` 后保留 8 秒入场确认资格，避免玩家轻微离开 Portal 范围后点击 Join 被误拦截。 `Join` 只有在服务端真正传送成功后才会关闭弹窗，失败则保留当前弹窗状态。
+6.`JoinGameController`（V6.5）隐藏旧 JoinGame，移除 Join/Wait 与模态逻辑，监听 ArenaTransitionFeedback 并用现有 Portal 门牌显示准备/失败反馈；直接入场由 ArenaService 处理，不使用旧 8 秒待确认资格。
 7.`SpecialEventController` 负责监听 `SpecialEventSync`，按服务端状态在客户端本地复制/移除特殊事件场景，同步 `Workspace.Map2.BattleSenceEventBoard` 与 `Workspace.Map2.HomeEventBoard` 的事件倒计时文本，并维护 `Main.EventDescribe`、`Main.EventStart` 和废弃隐藏的 `Main.EventEnd`。
 8.`ArenaProgressController` 负责监听 `ArenaProgressSync` 和本地 `PlayerStateSync`，只有本地玩家在战场且存活时显示 `PlayerGui.Main.Progress`，并按服务端同步的场内玩家等级区间渲染头像位置。
 9.`TopStatsController` 负责监听 `PlayerStateSync`，以原始整数显示永久击杀数和钻石数，并在钻石增加时播放客户端飞入动画；客户端不决定数值增减。
@@ -303,8 +303,62 @@ V6.4 服务端安全与付费完整性补充：
 3.七日登录 `UnlockAll` 收据与 `RebirthService._processRevenge` / `_processDefeatedRevive` 在档案未加载（`_isPlayerLoaded` / `CanWritePersistentProgress` 不通过）时返回未处理等待 Roblox 重投，防止写入默认状态后被 `SetRebirthData` 覆盖造成已扣款丢发。
 4.`RebirthService` 统一收据幂等台账：`_processReceipt` 顶层按 `receiptInfo.PurchaseId` 查重（命中直接 `PurchaseGranted`），原分发逻辑更名 `_dispatchReceipt`；发货成功后登记台账并 MarkDirty，台账随存档字段 `processedPurchaseIds` 持久化（每玩家保留最近 60 条、30 天裁剪），玩家退出在保存之后清理内存表；`MarketplaceService.ProcessReceipt` 回调整体包 pcall（`_processReceiptSafely`），异常返回 `NotProcessedYet`。各子服务（七日登录、皮肤等）既有内部台账保持不变，作为双保险。
 
+V6.5 直接入场与免费复活回大厅（覆盖前文旧确认链路）：
+1.ArenaService 统一 Portal 触碰、范围兜底及 Auto 的 RequestJoinBattle(Join)：只接受当前在 Portal 内的存活玩家，使用既有 EnterDebounceSeconds 限频；移除旧待确认宽限。离开范围取消重试，回大厅清空请求并等待离开触发区后重新允许入场。
+2.JoinGameController 隐藏旧 JoinGame，不绑定 Join/Wait 或开启模态；仅用现有 Portal.Title.Billboard.Bg.Text 显示本地准备中/失败反馈。PortalJoinPrompt 保留兼容注册，不再发送 Show。回大厅失败使用 Blocked/LobbyReviveFailed 重开 Defeated，原死亡快照保留供重试。
+3.ArenaTransitionFeedback 保留 status/spawnMode/timestamp，补充 Entering/Portal、PortalReady/Portal；Blocked 保留原因。所有入场入口仍走 TryEnterArena 的存活和读档校验；漏斗第 4/5 步改为 PortalReached/DirectEntryRequested。
+4.RespawnService.FreeRespawn 复用 Lobby/Close 回大厅流程；先恢复半等级和原清零规则，再 LoadCharacter，最后确认角色可用并传送大厅。GrantDefeatedRevivePurchase、RevivePlayer/复仇场内续战不变。
+5.AutoBattleController 在死亡、CharacterAdded、ReturnHome 或退出战场时清除 wanted/join/resume/path；大厅主动开启 Auto 后，普通状态刷新保留新意图，成功入场后正常 Auto。
+6.Remote 名称/数量不变；RequestJoinBattle 仅 Auto/兼容入口且检查实时位置；RequestDefeatedAction.FreeRespawn 目的地改大厅。无新增持久化字段或数值修改。
+
 =====================================================
 文档结束
 =====================================================
 
+
+V6.6 小怪反馈链路：
+1.LocalMonsterController 在销毁模型前立即冲刷致命伤害桶，旧延迟回调因桶失效自动退出；独立爆点池由现有 RenderStepped 驱动，到期回收，离场/重置销毁；击杀粒子只表现预测结果，奖励仍等待服务端 token 验证。
+2.ClientEventController 只消费现有 ExperienceFeedback.ExperienceDrop 生成经验球；实际吸收到当前角色才触发单例收集脉冲，不由视觉到达再次发奖励。PlayerStateSync 离场/死亡、CharacterAdded、Init 清除视觉；升级特效合并并替换旧实例。
+3.AudioSettingsController.PlaySfxOneShotByPath 支持可选 presentationOptions（volumeScale/playbackSpeed），仅修改临时副本，有范围钳制，沿用 __RuntimeSfx 静音与销毁路径。原调用兼容。
+4.不变更数值表与任何 Remote/状态协议；命中爆点预算和视觉时间是表现常量，不参与战斗结算。
+
+V6.6 回收补充：LocalMonsterController 的伤害锚点与爆点直接挂客户端 Workspace，不依赖 CurrentCamera 生命周期；死亡/离场清理对象池与待显示桶。
+
+
+V6.7 血条与命中音效：
+1.StarterGui.LocalMonsterHealthBar 为禁用的 BillboardGui 正式模板，含 Track/Fill 和 Percentage；LocalMonsterController 只克隆/绑定模板，按 CurrentHealth/MaxHealth 更新比例与百分比。仅 Alive、CombatActive 且 0<HP<MaxHP 时显示；实例回收/休眠/死亡销毁血条引用，重新活跃可重建。
+2.命中声音统一引用 SoundService.SFX_Hit_Sword_Medium_01（既有 Sound）。AudioSettingsController 增加 PlaySfxOneShot(sound, options)，复用原临时副本、静音与生命周期；PlaySfxOneShotByPath 解析后委托，保留原调用兼容。
+3.LocalMonsterController 在每次正伤害命中时调用一次，不在击杀上报/重试处重复调用；移除 V6.6 小怪命中音效限频。ClientEventController 仅替换 WeaponHitPlayer 分支，WeaponHitWeapon 原分支不变。
+4.无新增 Remote、服务端/持久化状态或数值表更改。MonsterState.HealthBar 为纯客户端视觉引用，不参与奖励或命中判定。
+
+
+V6.7.1 血条样式：StarterGui.LocalMonsterHealthBar 删除 Percentage，控制器仅校验 Track/Fill 并更新 Fill.Size；模板 Size=UDim2.fromScale(4,0.24)，利用 BillboardGui 世界尺寸自动透视缩放，无需逐帧计算距离。模板部署工具将旧样式迁移至 StyleVersion=2，后续重复执行保留手调样式；未改通信协议、战斗数值或音频。
+
+V6.7.2：LocalMonsterController 播放临时命中音效时传入 volumeScale=0.8，不改共享 Sound 原始音量；BGM 文件夹及子目录 10 首既有 Sound.Volume 从 0.5 改为 0.325。仅表现混音，无协议或战斗数值更改。
+
+V6.8 养成收口：
+1. IO_BaseBalanceDraft.xlsx 的属性养成配置 BladeRecovery.MaxCap=30，经导表更新 AttributeConfig；客户端沿用 GetCapUpgradeInfo 自动展示满级。共享开发者商品配置保留供其他属性使用。
+2. PlayerStateService 在普通规范化与快照恢复时回收合法旧 31–40 级投入，最多 10 技能点，先计算再钳制保证幂等。legacyBladeRecoveryCap 仅服务端加载、状态、缓存及保存保留历史 31–40 上限，不发到客户端，不发补偿。
+3. ApplyRebirth 在任何 yield 前验证并扣除重生前门槛，再增加 Rebirth；失败返回原因且不改状态。RebirthService 对每玩家保存中的重生事务加锁并确保异常释放，沿用既有反馈与持久化通道。
+4. 属性与重生无新增 Remote 或客户端字段；转盘按下述追加授权扩展结果字段。
+V6.8 转盘补偿：转盘规划新增“重复皮肤补偿钻石”列，导出每个皮肤奖励的 DuplicateDiamonds。WheelService 仅在该次转盘发皮肤返回 AlreadyOwned 时转发钻石，保持次数加载守卫和单次结算；不改全局 GrantSkin 幂等语义。结果保留原 slot/giftName/targetRotation 定位皮肤格，另附实际奖品信息用于中奖弹窗。正式模板提供补偿说明，复用已有钻石奖励模板，补偿钻石使用独立经济来源便于统计。
+V6.8 WheelSpinResult.reward 扩展字段：duplicateCompensation:boolean、awardedRewardType:string、awardedAmount:number、awardedGiftName:string、duplicateDiamonds:number。重复时实际奖励 Diamonds/配置金额/Gift5；slot/giftName/targetRotation 保留原皮肤落点，客户端只展示，不发奖励。补偿前用服务端 OwnsSkin 判重以避免重复解锁提示，并兼容 GrantSkin 返回 AlreadyOwned 的并发兜底。
+V6.8 正式 UI 模板：StarterGui.Main.WheelBg.DuplicateNotice 为转盘面板底部固定说明，不随盘面旋转；StarterGui.Main.WheelClaim.ResultNotice 为重复中奖转换说明，默认隐藏，控制器只绑定文本与可见性。实际钻石图标复用 ReplicatedStorage.UI.WheelBg.WheelColorBg.Gift5，数量按 awardedAmount 覆盖。部署工具 tools/EnsureWheelDuplicateNotice.luau 仅 Edit 模式创建缺失标签并保留已有样式。
+V6.9：删除 StarterGui.Main.Leaderboard 和 StarterPlayer.StarterPlayerScripts.Controllers.LocalLeaderboardController；移除本地控制器文件、MainClient require/Init 及 Rojo 映射。LeaderboardService 删除 _buildServerRows 与 payload.server，LeaderboardSync 保留 global/self/timestamp，供 GlobalLeaderboardController 使用；好友榜通道不变。CoreGuiController 仅禁用默认 Health，保持默认 PlayerList 与 Tab；PlayerStateService._syncLeaderstats 持续更新 Level 和 Kills。本轮无数值表/存档字段变更。
+V6.10：ShopController 绑定 StarterGui.Main.PhantomReaperOffer，复用当前 FeaturedSkinId=10002 的购买意图、GamePassId、ShopStateSync.featuredSkinOwned / SkinStateSync.skins[].owned 和服务器发放。名称克隆商城 Name/Secret1/Secret2，使用同一个可见性门控渐变循环；UIScale 呼吸、Light 旋转 Tween 隐藏即停止。价格使用 utf8.char(0xE002) 与实时 PriceInRobux 连排，失败有限重试后保留省略号。拥有状态使用 ModalUiController:SetRestoredVisible 同步模态恢复值。购买来源使用既有 source 字段的 PhantomReaperOffer 值，领奖后回到 HUD；仅客户端/正式模板变化，数值表和网络协议不变。
+V6.11：GMCommandService 既有服务端聊天入口接受 /passui [on|off]，仅 Studio；通过 Player boolean Attribute StudioPassUiPreview（RemoteNames.StudioAttributes.PassUiPreview）通知本玩家客户端，缺省 false，不入档、不进入 PlayerState。ShopController/SkinController 监听属性并重算纯展示拥有状态，真实状态仍接收最新快照；GamePass 预览点击在购买意图之前返回，预览状态请求不自动补领礼包。RemoteEventService 不创建同名 Remote。当前覆盖新手礼包 1838079007、Sausage 1927237014、Phantom Reaper 1830742687；后续皮肤依据 GamePass 购买渠道自动覆盖。
+V6.11.1：ShopController 的无限往返呼吸改为顺序 Tween（放大→轻摆→缩回→停顿），循环周期约 4.32 秒。用独立活动标志覆盖 Tween 间隙/停顿，序列号令隐藏/重绑后的旧任务失效；取消时恢复 UIScale 与原始 Rotation。不改价格/名称渐变/柔光/GM 预览和购买协议。
+V6.12：TaskController 可选绑定详情 StatusText/ProgressTrack.Fill，任务条目保持原三行结构。正式模板沿用原尺寸、半透明底板、蓝色渐变标题、亮蓝条目与紫色奖励格；字体参考 Shop，标题参考 ChestRewards，黄色 Claim 直接使用 Idlecoin.Claim 的字体/描边/渐变。任务选择只定位行级 Stroke，页签保持橙黄/灰底白字但不再写 UIScale，正常按钮不错误置灰。按任务 ID/周期复用列表行、相同奖励复用图标节点；原 ProgressBg 固定背景、描述与分钟格式不变，新细条使用服务端下发 progress/target 显示比例。保持现有任务窗口 HUD 行为、未完成 Claim 文本/点击语义、服务端领取幂等及任务协议；不新增 Remote 或经济状态。
+V6.13 入口暂藏与解锁流畅性：
+1. GameConfig 提供任务/宝箱入口的共享表现开关；客户端绑定与状态重绘遵守开关，正式 StarterGui 模板同步隐藏 HUD 入口和外观宝箱跳转。保持 MainClient 初始化、所有服务端/Remote/持久化和在线奖励行为。
+2. GameConfig.ACTIVITY_RSVP_PROMPT.DelaySeconds=180；FAVORITE_PROMPT.Enabled=false。二者为现有手工维护的运营提示配置，非导表战斗/经济数值。
+3. NewWeaponUnlockController 统一 Claim 与空白点击为既有 RequestWeaponUnlockReward 意图；输入需在当前弹窗打开后开始且满足点击而非拖动，动画/请求拥有独立取消与去重状态。客户端只控制视觉和重试，服务端既有按队首逐档授奖与反馈协议不变。
+4. 无新增 Remote、存档或奖励数值；不删除任务/宝箱代码。验证必须覆盖点击空白、Claim、重复输入、失败重试、连续解锁和模态恢复。
+
+V6.14 冲刺属性：
+1. 数值表技能行修订为 24 studs / 0.3 秒 / 8 秒；属性养成配置新增独立键 FlashCooldown、FlashDistance，InitialCap=8、MaxCap=10，PerLevelValue=-0.4/+3。导表继续是生成段唯一来源。
+2. AttributeConfig 引用同级 GameConfig 计算 FlashCooldownSeconds / FlashDistanceStuds；PlayerStateService 暴露对应只读 getter。Normalize/CopyNumberMap、RebirthService 保存和快照沿用配置驱动流程，旧档默认补齐，不迁移被禁用 Damage/MoveSpeed 的权益。
+3. PlayerStateSync.attributeState.finalStats / attributeFinalStats 新增上述两个服务端数值；attributeLevels/attributeCaps 支持两项新键。沿用现有加点及上限购买 Remote；FlashFeedback.cooldownSeconds/requestedDistanceStuds 使用服务端本次计算结果，字段形状不变。RemoteNames/RemoteEventService 同步协议注释，无新增事件。
+4. FlashService 请求通过玩家状态检查后读取最终属性，起冲时固定冷却/距离。边界裁剪后的射线方向与安全落点一致，避免增加距离后沿旧方向退让绕过边界墙；客户端沿用批准落点和下发冷却遮罩。
+5. StarterGui.Main.AttributeUpgrade.Window.Content.StatsGrid 新增两张原样式卡片；AttributeUpgradeOut.Window.StatsList 新增两行上限卡片。保留原窗口尺寸、位置、配色与按钮样式，内部网格调整为四行两列，避免遮挡点数栏和底部文字。tools/EnsureFlashAttributes.luau 在 Edit 模式幂等创建并校验，模板 FlashAttributeVersion=2。
 ]]

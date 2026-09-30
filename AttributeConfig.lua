@@ -5,6 +5,7 @@ Studio path: ReplicatedStorage/Shared/AttributeConfig
 Purpose: Shared config and helpers for in-battle attribute upgrades.
 ]]
 
+local GameConfig = require(script.Parent:WaitForChild("GameConfig"))
 local AttributeConfig = {}
 
 AttributeConfig.SkillPointLevelInterval = 2
@@ -27,6 +28,8 @@ AttributeConfig.Order = {
     'HealthRegen',
     'ExpGain',
     'BladeRecovery',
+    'FlashCooldown',
+    'FlashDistance',
 }
 
 AttributeConfig.Attributes = {
@@ -98,9 +101,27 @@ AttributeConfig.Attributes = {
         CapDisplayName = 'Blade Recovery Cap',
         CardName = 'BladeRecovery',
         InitialCap = 8,
-        MaxCap = 40,
+        MaxCap = 30,
         PerLevelValue = -0.2,
         ValueType = 'Seconds',
+    },
+    FlashCooldown = {
+        DisplayName = 'Flash Cooldown',
+        CapDisplayName = 'Flash Cooldown Cap',
+        CardName = 'FlashCooldown',
+        InitialCap = 8,
+        MaxCap = 10,
+        PerLevelValue = -0.4,
+        ValueType = 'FlashCooldownSeconds',
+    },
+    FlashDistance = {
+        DisplayName = 'Flash Distance',
+        CapDisplayName = 'Flash Distance Cap',
+        CardName = 'FlashDistance',
+        InitialCap = 8,
+        MaxCap = 10,
+        PerLevelValue = 3,
+        ValueType = 'FlashDistanceStuds',
     },
 }
 
@@ -403,16 +424,14 @@ AttributeConfig.CapUpgradePrices = {
         { FromCap = 27, ToCap = 28, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
         { FromCap = 28, ToCap = 29, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
         { FromCap = 29, ToCap = 30, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 30, ToCap = 31, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 31, ToCap = 32, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 32, ToCap = 33, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 33, ToCap = 34, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 34, ToCap = 35, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 35, ToCap = 36, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 36, ToCap = 37, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 37, ToCap = 38, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 38, ToCap = 39, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
-        { FromCap = 39, ToCap = 40, GemCost = 10000, GemEnabled = true, RobuxEnabled = true },
+    },
+    FlashCooldown = {
+        { FromCap = 8, ToCap = 9, GemCost = 1000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 9, ToCap = 10, GemCost = 2500, GemEnabled = true, RobuxEnabled = true },
+    },
+    FlashDistance = {
+        { FromCap = 8, ToCap = 9, GemCost = 1000, GemEnabled = true, RobuxEnabled = true },
+        { FromCap = 9, ToCap = 10, GemCost = 2500, GemEnabled = true, RobuxEnabled = true },
     },
 }
 -- END GENERATED ATTRIBUTE CONFIG ROWS
@@ -767,6 +786,11 @@ function AttributeConfig.CalculateFinalStats(levels, caps)
         AttributeConfig.MinBladeRecoverySeconds,
         AttributeConfig.BaseBladeRecoverySeconds + (levelFor("BladeRecovery") * AttributeConfig.Attributes.BladeRecovery.PerLevelValue)
     )
+    local flashConfig = GameConfig.FLASH
+    local flashCooldownSeconds = math.max(0,
+        flashConfig.CooldownSeconds + levelFor("FlashCooldown") * AttributeConfig.Attributes.FlashCooldown.PerLevelValue)
+    local flashDistanceStuds = math.max(0,
+        flashConfig.DistanceStuds + levelFor("FlashDistance") * AttributeConfig.Attributes.FlashDistance.PerLevelValue)
 
     return {
         WeaponDamageMultiplier = 1 + damageBonus,
@@ -777,6 +801,8 @@ function AttributeConfig.CalculateFinalStats(levels, caps)
         HealthRegenPercentPerSecond = healthRegenPercentPerSecond,
         ExpGainBonus = expGainBonus,
         BladeRecoverySeconds = bladeRecoverySeconds,
+        FlashCooldownSeconds = flashCooldownSeconds,
+        FlashDistanceStuds = flashDistanceStuds,
     }
 end
 
@@ -787,7 +813,12 @@ function AttributeConfig.FormatEffect(attributeKey, level)
         return ""
     end
 
-    local normalizedLevel = normalizeInteger(level, 0)
+    local normalizedLevel = math.clamp(normalizeInteger(level, 0), 0, AttributeConfig.GetMaxCap(key))
+    if definition.ValueType == "FlashCooldownSeconds" then
+        return string.format("%.1fs", GameConfig.FLASH.CooldownSeconds + normalizedLevel * definition.PerLevelValue)
+    elseif definition.ValueType == "FlashDistanceStuds" then
+        return string.format("%g studs", GameConfig.FLASH.DistanceStuds + normalizedLevel * definition.PerLevelValue)
+    end
     if definition.ValueType == "Seconds" then
         local seconds = math.max(
             AttributeConfig.MinBladeRecoverySeconds,

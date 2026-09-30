@@ -9,26 +9,32 @@ local RemoteNames = {
     RootFolder = "Events",
     SystemEventsFolder = "SystemEvents",
     BattleEventsFolder = "BattleEvents",
+    -- Ephemeral Player attributes for Studio presentation tools, not RemoteEvents.
+    StudioAttributes = {
+        PassUiPreview = "StudioPassUiPreview",
+    },
     System = {
+        -- V6.14: attribute maps include FlashCooldown/FlashDistance; finalStats includes
+        -- FlashCooldownSeconds/FlashDistanceStuds. RequestFlash remains intent-only.
         PlayerStateSync = "PlayerStateSync",
         RequestPlayerStateSync = "RequestPlayerStateSync",
         RequestAttributeUpgrade = "RequestAttributeUpgrade",
         AttributeUpgradeFeedback = "AttributeUpgradeFeedback",
         RequestAttributeCapUpgrade = "RequestAttributeCapUpgrade",
         AttributeCapUpgradeFeedback = "AttributeCapUpgradeFeedback",
-        ArenaTransitionFeedback = "ArenaTransitionFeedback",
+        ArenaTransitionFeedback = "ArenaTransitionFeedback", -- V6.5: Entering/PortalReady + existing results; ReturnHome stops Auto.
         DeathFeedback = "DeathFeedback",
         KillInfoFeedback = "KillInfoFeedback",
         StudioBotCommand = "StudioBotCommand",
         LevelUpFeedback = "LevelUpFeedback",
-        PortalJoinPrompt = "PortalJoinPrompt",
-        RequestJoinBattle = "RequestJoinBattle",
+        PortalJoinPrompt = "PortalJoinPrompt", -- V6.5 legacy registration only; no confirmation UI.
+        RequestJoinBattle = "RequestJoinBattle", -- Auto/legacy Join; server checks current Portal range.
         RequestFlash = "RequestFlash",
         FlashFeedback = "FlashFeedback",
         FlashCompleted = "FlashCompleted",
         RequestRebirth = "RequestRebirth",
         RebirthFeedback = "RebirthFeedback",
-        RequestDefeatedAction = "RequestDefeatedAction",
+        RequestDefeatedAction = "RequestDefeatedAction", -- FreeRespawn/Lobby/Close -> lobby; paid revive/revenge unchanged.
         RequestPotionAction = "RequestPotionAction",
         PotionFeedback = "PotionFeedback",
         SpecialEventSync = "SpecialEventSync",
@@ -49,6 +55,8 @@ local RemoteNames = {
         RequestWheelStateSync = "RequestWheelStateSync",
         WheelStateSync = "WheelStateSync",
         RequestWheelSpin = "RequestWheelSpin",
+        -- reward may carry duplicateCompensation / awardedRewardType / awardedAmount /
+        -- awardedGiftName / duplicateDiamonds; original slot and rotation remain unchanged.
         WheelSpinResult = "WheelSpinResult",
         RequestSkinStateSync = "RequestSkinStateSync",
         SkinStateSync = "SkinStateSync",
@@ -96,6 +104,7 @@ local RemoteNames = {
         BuffFeedback = "BuffFeedback",
         BossFeedback = "BossFeedback",
         BossHitFeedback = "BossHitFeedback",
+        -- Global boards and self ranks only; native PlayerList reads leaderstats.
         LeaderboardSync = "LeaderboardSync",
         ArenaProgressSync = "ArenaProgressSync",
         NukeCinematic = "NukeCinematic",

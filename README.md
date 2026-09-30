@@ -5,9 +5,9 @@
 
 ## 当前状态（2026-09-29）
 
-- 主线版本 V6.3：等级 Lv610 / 武器 T1-T40（Lv401+ 隐藏战力）/ 皮肤 10008 已接入；当前实现明细见 `框架设计.md` 与 `架构设计文档.lua`。
-- 全量代码审查已完成：4 个 P0 + 27 项 P1 已登记 `项目设定相关/BUG清单与解决方案.md`，修复排期见 `项目设定相关/开发顺序规划.md`，未开始修复。
-- Studio MCP 接入中（端口 58747）：工作区配置与脚本已就位，待用户启动桥并读回 gameId 收尾（见 `项目设定相关/Studio操作规范.md` 第 2 节）。
+- 主线版本 V6.5：Portal 直接入场，普通免费复活半等级回大厅，死亡/回大厅结束上轮 Auto；付费保级、复仇和核弹不变。等级 Lv610 / 武器 T1-T40 / 皮肤 10008 保留。
+- V6.4 四个 P0 已修复，其他问题及验证边界见 `项目设定相关/BUG清单与解决方案.md`；V6.5 验证记录见 `开发记录.md`。
+- Studio MCP 已接入（端口 58747，Place 73988417166286）；每次操作仍须实时健康与身份检查。
 
 ## 新对话开工前
 
@@ -56,7 +56,7 @@
 - 场景约定必须严格保持一致：
   - 默认出生点：`workspace.SpawnLocation`
   - 准备区域入口：`workspace.Map2.Portals.Portal`
-  - 入场确认弹框：`StarterGui.Main.JoinGame`
+  - 旧入场确认模板：`StarterGui.Main.JoinGame`（V6.5 保留隐藏，不绑定 Join/Wait，不启用入场 Blur）
   - 入场弹框背景模糊：`Lighting.Blur`
   - 战斗区域范围：`workspace.Battle`
 - 新增脚本文件必须在开头标注清楚：脚本名字 / 脚本文件 / 脚本类型 / Studio 放置路径。
@@ -120,3 +120,17 @@
 3. 已运行与风险相称的检查（Rojo sourcemap/build、MCP 读回、get_script_analysis、导表核对等），并给出实际结果。
 4. 架构、Remote、Studio 独立变动和待人工测试项已登记（文档链 + `开发记录.md`）。
 5. 明确区分"已验证""待用户验证"和"推断"。
+
+## V6.6 小怪反馈交付说明
+
+小怪致命伤害即时显示、命中/击杀爆点与音效、经验吸收反馈已同步 Studio 编辑态。战斗与奖励数值不变；12 项隔离回归通过，实际观感/混音/移动端性能待 Playtest。复测入口为 tools/VerifyMonsterFeedback.luau，操作场景见项目设定相关/验证与验收清单.md。
+
+## V6.7 血条与音效交付说明
+
+新增 StarterGui.LocalMonsterHealthBar 正式模板；工具 tools/EnsureMonsterHealthBar.luau 可在通过项目检查后的 Studio 编辑态重建缺失模板。受伤存活小怪显示百分比血条，秒杀不显示；小怪和玩家身体逐次命中使用根节点 SFX_Hit_Sword_Medium_01，刀剑碰撞保持原声。16 项隔离检查通过，实际画面/声音待 Playtest。
+
+V6.7.1 样式更新：血条现为无文字细长条，使用世界尺寸自动近大远小；模板工具可将 V6.7 百分比样式迁移至 StyleVersion=2。
+
+### Studio 通行证界面预览
+
+在 Studio 测试的聊天框输入 `/passui` 切换所有通行证为未购买时的展示；`/passui on` 开启，`/passui off` 恢复。覆盖新手礼包、Sausage、Phantom Reaper（含右上入口）。仅改变 UI，保留实际拥有和装备；预览期间通行证点击不购买、不补领奖。退出测试恢复默认，线上不可用。

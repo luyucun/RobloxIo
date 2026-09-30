@@ -419,6 +419,19 @@ function GMCommandService:_handleChatCommand(player, message)
     end
 
     local commandName = parseCommandName(message)
+    if commandName == "passui" then
+        local argument = string.lower(tostring(message or ""):match("^%s*/%S+%s*(.-)%s*$") or "")
+        if argument ~= "" and argument ~= "on" and argument ~= "off" then
+            warn("[GMCommandService] Usage: /passui [on|off]")
+            return false, "InvalidArgument"
+        end
+        local attribute = RemoteNames.StudioAttributes.PassUiPreview
+        local enabled = argument == "on" or (argument == "" and player:GetAttribute(attribute) ~= true)
+        player:SetAttribute(attribute, enabled)
+        print("[GMCommandService] " .. player.Name .. " GamePass UI preview " .. (enabled and "ON" or "OFF")
+            .. (enabled and " (display only; pass purchases disabled)" or " (actual ownership restored)"))
+        return true, enabled
+    end
     if commandName == "diamond" or commandName == "addgems" or commandName == "kill" then
         if not self._playerStateService then
             warn("[GMCommandService] PlayerStateService is unavailable")

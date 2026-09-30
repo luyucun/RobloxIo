@@ -67,6 +67,7 @@ RebirthService._loadedByUserId = {}
 RebirthService._loadStateByUserId = {}
 RebirthService._loadRetryClockByUserId = {}
 RebirthService._savedProgressCacheByUserId = {}
+RebirthService._rebirthInProgressByUserId = {}
 RebirthService._heartbeatConnection = nil
 RebirthService._nextSaveClock = 0
 RebirthService._shutdownInProgress = false
@@ -85,6 +86,20 @@ end
 
 local function asNonNegativeInteger(value)
     return math.max(0, math.floor(tonumber(value) or 0))
+end
+
+local function readLegacyBladeRecoveryCap(value)
+    local cap = tonumber(value)
+    -- Only archive legitimate caps from the retired V6.7 range; never grant rewards here.
+    if not cap or cap % 1 ~= 0 or cap < 31 or cap > 40 then
+        return 0
+    end
+    return cap
+end
+
+local function getLegacyBladeRecoveryCap(caps, savedLegacyCap)
+    local rawCap = type(caps) == "table" and caps.BladeRecovery or nil
+    return math.max(readLegacyBladeRecoveryCap(rawCap), readLegacyBladeRecoveryCap(savedLegacyCap))
 end
 
 local function shouldBypassCombatSnapshotMaxAge(respawnMode)
@@ -195,6 +210,7 @@ local function normalizeSavedData(data)
             ownedTitles = {},
             equippedTitleId = nil,
             attributeCaps = AttributeConfig.BuildDefaultCaps(),
+            legacyBladeRecoveryCap = 0,
             totalDeaths = 0,
             totalDiamondsEarned = 0,
             totalOnlineSeconds = 0,
@@ -363,7 +379,9 @@ local function normalizeSavedData(data)
         equippedTitleId = nil
     end
 
-    local attributeCaps = AttributeConfig.NormalizeCaps(data.attributeCaps or data.AttributeCaps)
+    local rawAttributeCaps = data.attributeCaps or data.AttributeCaps
+    local legacyBladeRecoveryCap = getLegacyBladeRecoveryCap(rawAttributeCaps, data.legacyBladeRecoveryCap or data.LegacyBladeRecoveryCap)
+    local attributeCaps = AttributeConfig.NormalizeCaps(rawAttributeCaps)
 
     local function normalizeWeaponUnlockRewards(rewards)
         if type(rewards) ~= "table" then
@@ -486,6 +504,7 @@ local function normalizeSavedData(data)
         ownedTitles = ownedTitles,
         equippedTitleId = equippedTitleId,
         attributeCaps = attributeCaps,
+        legacyBladeRecoveryCap = legacyBladeRecoveryCap,
         totalDeaths = asNonNegativeInteger(data.totalDeaths or data.TotalDeaths),
         totalDiamondsEarned = asNonNegativeInteger(data.totalDiamondsEarned or data.TotalDiamondsEarned),
         totalOnlineSeconds = asNonNegativeInteger(data.totalOnlineSeconds or data.TotalOnlineSeconds),
@@ -689,6 +708,7 @@ function RebirthService:_buildSavePayload(player, options)
         ownedTitles = state.OwnedTitles or {},
         equippedTitleId = state.EquippedTitleId,
         attributeCaps = AttributeConfig.CopyNumberMap(state.AttributeCaps),
+        legacyBladeRecoveryCap = getLegacyBladeRecoveryCap(state.AttributeCaps, state.LegacyBladeRecoveryCap),
         totalDeaths = math.max(0, math.floor(tonumber(state.TotalDeaths) or 0)),
         totalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)),
         totalOnlineSeconds = math.max(0, math.floor(tonumber(state.TotalOnlineSeconds) or 0)),
@@ -737,6 +757,7 @@ function RebirthService:_savePlayer(player, options)
                 ownedTitles = payload.ownedTitles,
                 equippedTitleId = payload.equippedTitleId,
                 attributeCaps = payload.attributeCaps,
+                legacyBladeRecoveryCap = payload.legacyBladeRecoveryCap,
                 totalDeaths = payload.totalDeaths,
                 totalDiamondsEarned = payload.totalDiamondsEarned,
                 totalOnlineSeconds = payload.totalOnlineSeconds,
@@ -767,6 +788,7 @@ function RebirthService:GetSavedProgressSnapshot(playerOrUserId)
             ownedTitles = state.OwnedTitles or {},
             equippedTitleId = state.EquippedTitleId,
             attributeCaps = AttributeConfig.CopyNumberMap(state.AttributeCaps),
+            legacyBladeRecoveryCap = getLegacyBladeRecoveryCap(state.AttributeCaps, state.LegacyBladeRecoveryCap),
             totalDeaths = state.TotalDeaths,
             totalDiamondsEarned = state.TotalDiamondsEarned,
             totalOnlineSeconds = state.TotalOnlineSeconds,
@@ -863,17 +885,47 @@ function RebirthService:TryRebirth(player, options)
         return false
     end
 
-    local paid = options and options.paid == true
-    if not paid and not self._playerStateService:CanRebirth(player) then
-        self:_fireFeedback(player, "Failed", "Requirement not met")
+    local paid = type(options) == "table" and options.paid == true
+    local userId = getUserId(player)
+    if self._rebirthInProgressByUserId[userId] then
+        if not paid then
+            self:_fireFeedback(player, "Failed", "Rebirth in progress")
+        end
         return false
     end
 
-    local state = self._playerStateService:ApplyRebirth(player, not paid)
-    self:MarkDirty(player)
-    self:_savePlayer(player, { includeCombatSnapshot = self._shutdownInProgress == true })
-    self:_fireFeedback(player, paid and "PaidSuccess" or "Success")
-    return true, state
+    local requestToken = {}
+    self._rebirthInProgressByUserId[userId] = requestToken
+    local appliedState = nil
+    local completed, success, result = pcall(function()
+        local state, reason = self._playerStateService:ApplyRebirth(player, not paid)
+        if not state then
+            self:_fireFeedback(player, "Failed", reason or "Requirement not met")
+            return false
+        end
+
+        appliedState = state
+        self:MarkDirty(player)
+        self:_savePlayer(player, { includeCombatSnapshot = self._shutdownInProgress == true })
+        self:_fireFeedback(player, paid and "PaidSuccess" or "Success")
+        return true, state
+    end)
+    if self._rebirthInProgressByUserId[userId] == requestToken then
+        self._rebirthInProgressByUserId[userId] = nil
+    end
+
+    if not completed then
+        if appliedState then
+            -- The grant already happened. Keep it dirty for a save retry; a paid receipt
+            -- must not grant it again. This success describes settlement, not persistence.
+            self._dirtyByUserId[userId] = true
+            warn("[RebirthService] Rebirth 已结算但后续处理异常，保留待保存状态: " .. tostring(success))
+            return true, appliedState
+        end
+        warn("[RebirthService] Rebirth 未结算，请求异常: " .. tostring(success))
+        return false
+    end
+    return success, result
 end
 
 function RebirthService:_processDoubleLevel(player)
@@ -1246,6 +1298,7 @@ function RebirthService:Init(dependencies)
     self._loadStateByUserId = {}
     self._loadRetryClockByUserId = {}
     self._savedProgressCacheByUserId = {}
+    self._rebirthInProgressByUserId = {}
     self._processedPurchaseIdsByPlayerId = {}
     self._nextSaveClock = os.clock() + math.max(5, tonumber(GameConfig.REBIRTH.AutoSaveIntervalSeconds) or 30)
     self._shutdownInProgress = false
@@ -1306,6 +1359,7 @@ function RebirthService:OnPlayerRemoving(player)
     self._loadStateByUserId[userId] = nil
     self._loadRetryClockByUserId[userId] = nil
     self._savedProgressCacheByUserId[userId] = nil
+    self._rebirthInProgressByUserId[userId] = nil
     -- 收据台账在保存落档之后才清理，退出瞬间的已发货收据仍会写入 processedPurchaseIds。
     self._processedPurchaseIdsByPlayerId[userId] = nil
 end

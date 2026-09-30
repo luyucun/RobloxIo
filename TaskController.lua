@@ -30,7 +30,13 @@ local function requireSharedModule(moduleName)
     ))
 end
 
+local GameConfig = requireSharedModule("GameConfig")
 local RemoteNames = requireSharedModule("RemoteNames")
+
+local function isTaskEntryVisible()
+    local entryVisibility = GameConfig.UI_ENTRY_VISIBILITY
+    return type(entryVisibility) ~= "table" or entryVisibility.Tasks ~= false
+end
 
 local TaskController = {}
 
@@ -41,6 +47,10 @@ TaskController._rowBindings = {}
 TaskController._detailBindings = {}
 TaskController._generatedRows = {}
 TaskController._generatedRewardRows = {}
+TaskController._rowEntriesByTaskId = {}
+TaskController._rewardRenderSignature = nil
+TaskController._detailClaimSignature = nil
+TaskController._detailClaimButton = nil
 TaskController._mainGui = nil
 TaskController._entryRoot = nil
 TaskController._entryButton = nil
@@ -78,9 +88,9 @@ local OPEN_OVERSHOOT_DURATION = 0.16
 local OPEN_SETTLE_DURATION = 0.1
 local CLOSE_TO_SCALE = 0.78
 local CLOSE_DURATION = 0.14
-local HOVER_SCALE = 1.05
+local HOVER_SCALE = 1.035
 local ENTRY_HOVER_SCALE = 1.1
-local PRESS_SCALE = 0.92
+local PRESS_SCALE = 0.97
 local HOVER_ROTATION = 20
 local HOVER_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local PRESS_TWEEN_INFO = TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -91,6 +101,15 @@ local BIND_RETRY_WARNING_SECONDS = 12
 local DISABLED_TINT = Color3.fromRGB(155, 155, 155)
 local SELECTED_TAB_BACKGROUND_COLOR = Color3.fromRGB(255, 170, 0)
 local DEFAULT_IDLE_TAB_BACKGROUND_COLOR = Color3.fromRGB(100, 100, 100)
+local SELECTED_TAB_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
+local IDLE_TAB_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
+local SELECTED_ROW_BACKGROUND_COLOR = Color3.fromRGB(0, 170, 255)
+local IDLE_ROW_BACKGROUND_COLOR = Color3.fromRGB(0, 170, 255)
+local SELECTED_ROW_STROKE_COLOR = Color3.fromRGB(255, 221, 37)
+local IDLE_ROW_STROKE_COLOR = Color3.fromRGB(85, 255, 255)
+local READY_TEXT_COLOR = Color3.fromRGB(255, 221, 37)
+local CLAIMED_TEXT_COLOR = Color3.fromRGB(0, 255, 0)
+local PROGRESS_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -172,43 +191,22 @@ local function restoreDefaultSize(guiObject)
     guiObject.Size = UDim2.new(defaultXScale, defaultXOffset, defaultYScale, defaultYOffset)
 end
 
-local function colorsAlmostEqual(left, right)
-    return math.abs(left.R - right.R) < 0.01
-        and math.abs(left.G - right.G) < 0.01
-        and math.abs(left.B - right.B) < 0.01
-end
-
-local function getIdleTabBackgroundColor(guiObject)
-    if not (guiObject and guiObject:IsA("GuiObject")) then
-        return DEFAULT_IDLE_TAB_BACKGROUND_COLOR
-    end
-
-    local storedColor = guiObject:GetAttribute("TaskIdleTabBackgroundColor3")
-    if typeof(storedColor) == "Color3" then
-        return storedColor
-    end
-
-    local currentColor = guiObject.BackgroundColor3
-    local idleColor = colorsAlmostEqual(currentColor, SELECTED_TAB_BACKGROUND_COLOR)
-        and DEFAULT_IDLE_TAB_BACKGROUND_COLOR
-        or currentColor
-    guiObject:SetAttribute("TaskIdleTabBackgroundColor3", idleColor)
-    return idleColor
-end
-
 local function applyTabButtonStyle(root, selected)
     if not (root and root:IsA("GuiObject")) then
         return
     end
 
-    local idleColor = getIdleTabBackgroundColor(root)
-    root.BackgroundColor3 = selected == true and SELECTED_TAB_BACKGROUND_COLOR or idleColor
+    root.BackgroundColor3 = selected == true and SELECTED_TAB_BACKGROUND_COLOR or DEFAULT_IDLE_TAB_BACKGROUND_COLOR
+    local label = root:FindFirstChild("ButtonLabel", true)
+    if label and (label:IsA("TextLabel") or label:IsA("TextButton")) then
+        label.TextColor3 = selected == true and SELECTED_TAB_TEXT_COLOR or IDLE_TAB_TEXT_COLOR
+    end
 end
 
 local function setButtonEnabled(button, enabled)
     if button and button:IsA("GuiButton") then
         button.Active = enabled == true
-        button.AutoButtonColor = enabled == true
+        button.AutoButtonColor = false
         button.Selectable = enabled == true
     end
 end
@@ -229,7 +227,10 @@ local function tintGuiTree(root, enabled)
         return
     end
 
-    local tint = enabled == true and nil or DISABLED_TINT
+    local tint = nil
+    if enabled ~= true then
+        tint = DISABLED_TINT
+    end
     local nodes = { root }
     for _, descendant in ipairs(root:GetDescendants()) do
         table.insert(nodes, descendant)
@@ -422,6 +423,24 @@ local function buildProgressText(task)
     return formatInteger(progress) .. "/" .. formatInteger(target)
 end
 
+local function applyTaskStatus(label, taskData)
+    if not (label and (label:IsA("TextLabel") or label:IsA("TextButton"))) then
+        return
+    end
+    if not taskData then
+        label.Text = ""
+    elseif taskData.isClaimed == true then
+        label.Text = "Claimed"
+        label.TextColor3 = CLAIMED_TEXT_COLOR
+    elseif taskData.isClaimable == true then
+        label.Text = "Ready"
+        label.TextColor3 = READY_TEXT_COLOR
+    else
+        label.Text = "In progress"
+        label.TextColor3 = PROGRESS_TEXT_COLOR
+    end
+end
+
 local function cloneReward(reward)
     if type(reward) ~= "table" then
         return nil
@@ -578,6 +597,7 @@ function TaskController:_bindButton(button, onActivated, options, targetBindings
 
     button.Active = true
     button.Selectable = true
+    button.AutoButtonColor = false
 
     local scaleTarget = type(options) == "table" and options.ScaleTarget or button
     local rotationTarget = type(options) == "table" and options.RotationTarget or nil
@@ -665,6 +685,7 @@ function TaskController:_bindButton(button, onActivated, options, targetBindings
     end))
 
     table.insert(targetBindings or self._buttonBindings, binding)
+    return binding
 end
 
 function TaskController:_cancelPanelTweens()
@@ -820,7 +841,13 @@ function TaskController:_hasClaimableTask()
 end
 
 function TaskController:_renderEntryState()
-    setVisible(self._entryRedPoint, self:_hasClaimableTask())
+    local entryVisible = isTaskEntryVisible()
+    setVisible(self._entryRoot, entryVisible)
+    setVisible(self._entryRedPoint, entryVisible and self:_hasClaimableTask())
+    if self._entryButton then
+        self._entryButton.Active = entryVisible
+        self._entryButton.Selectable = entryVisible
+    end
 end
 
 function TaskController:_renderCountdown()
@@ -838,10 +865,6 @@ function TaskController:_applyTabs()
         if not root then
             return
         end
-        local uiScale = ensureUiScale(root)
-        if uiScale then
-            uiScale.Scale = selected and 1.04 or 1
-        end
         setVisible(root:FindFirstChild("SelectedBg"), selected)
         setVisible(root:FindFirstChild("IdleBg"), not selected)
         applyTabButtonStyle(root, selected)
@@ -849,6 +872,7 @@ function TaskController:_applyTabs()
 
     applyTab(self._dailyTabRoot, dailySelected)
     applyTab(self._weeklyTabRoot, weeklySelected)
+    setText(findNested(self._panel, "TitleBg/Title"), dailySelected and "Daily Tasks" or "Weekly Tasks")
 end
 
 function TaskController:_clearRows()
@@ -859,6 +883,7 @@ function TaskController:_clearRows()
         end
     end
     table.clear(self._generatedRows)
+    table.clear(self._rowEntriesByTaskId)
 
     if self._scrollingFrame then
         for _, child in ipairs(self._scrollingFrame:GetChildren()) do
@@ -870,6 +895,7 @@ function TaskController:_clearRows()
 end
 
 function TaskController:_clearRewardRows()
+    self._rewardRenderSignature = nil
     for _, row in ipairs(self._generatedRewardRows) do
         if row and row.Parent then
             row:Destroy()
@@ -921,6 +947,22 @@ function TaskController:_renderRewardList(taskData)
         return
     end
 
+    local signatureParts = {}
+    for _, reward in ipairs(taskData.rewards or {}) do
+        table.insert(signatureParts, tostring(reward.icon or "") .. ":" .. tostring(reward.amount or 0))
+    end
+    local signature = table.concat(signatureParts, "|")
+    local rowsValid = #self._generatedRewardRows == #(taskData.rewards or {})
+    for _, row in ipairs(self._generatedRewardRows) do
+        if row.Parent ~= self._rewardList then
+            rowsValid = false
+            break
+        end
+    end
+    if self._rewardRenderSignature == signature and rowsValid then
+        return
+    end
+
     self:_clearRewardRows()
     for index, reward in ipairs(taskData.rewards or {}) do
         local rewardRow = self._rewardTemplate:Clone()
@@ -940,14 +982,16 @@ function TaskController:_renderRewardList(taskData)
         setImage(icon, reward.icon)
         setText(amountLabel, "x" .. formatCompactInteger(reward.amount))
     end
+    self._rewardRenderSignature = signature
 end
 
 function TaskController:_bindDetailClaimButton(taskData)
-    self:_disconnectBindings(self._detailBindings)
-
     local claimButton, claimRoot = findButtonByName(self._taskDetailRoot, "ClaimButton")
     local completeRoot = self._taskDetailRoot and self._taskDetailRoot:FindFirstChild("Complete", true)
     if not taskData then
+        self:_disconnectBindings(self._detailBindings)
+        self._detailClaimSignature = nil
+        self._detailClaimButton = nil
         setVisible(claimRoot or claimButton, false)
         setVisible(completeRoot, false)
         return
@@ -960,6 +1004,19 @@ function TaskController:_bindDetailClaimButton(taskData)
     setVisible(completeRoot, taskData.isClaimed == true)
     setButtonText(claimRoot or claimButton, isPending and "Claiming" or "Claim")
     tintGuiTree(claimRoot or claimButton, not isPending)
+
+    local signature = table.concat({
+        tostring(taskData.taskId),
+        tostring(canClaim),
+        tostring(isPending),
+        tostring(taskData.isClaimed == true),
+    }, ":")
+    if self._detailClaimSignature == signature and self._detailClaimButton == claimButton then
+        return
+    end
+    self:_disconnectBindings(self._detailBindings)
+    self._detailClaimSignature = signature
+    self._detailClaimButton = claimButton
 
     if claimButton then
         self:_bindButton(claimButton, function()
@@ -982,16 +1039,20 @@ function TaskController:_bindDetailClaimButton(taskData)
         end, {
             ScaleTarget = claimRoot or claimButton,
         }, self._detailBindings)
-        setButtonEnabled(claimButton, true)
+        setButtonEnabled(claimButton, not isPending)
     end
 end
 
 function TaskController:_applyRowSelectedState(row, selected)
     setVisible(row and row:FindFirstChild("SelectedBg"), selected == true)
     setVisible(row and row:FindFirstChild("IdleBg"), selected ~= true)
-    local stroke = row and row:FindFirstChildWhichIsA("UIStroke", true)
-    if stroke then
-        stroke.Enabled = selected == true
+    if row and row:IsA("GuiObject") then
+        row.BackgroundColor3 = selected == true and SELECTED_ROW_BACKGROUND_COLOR or IDLE_ROW_BACKGROUND_COLOR
+    end
+    local stroke = row and (row:FindFirstChild("SelectionStroke") or row:FindFirstChildOfClass("UIStroke"))
+    if stroke and stroke:IsA("UIStroke") then
+        stroke.Enabled = true
+        stroke.Color = selected == true and SELECTED_ROW_STROKE_COLOR or IDLE_ROW_STROKE_COLOR
     end
 end
 
@@ -1000,33 +1061,61 @@ function TaskController:_renderRows(tasks, selectedTask)
         return
     end
 
-    self:_clearRows()
     self._template.Visible = false
+
+    local wantedTaskIds = {}
+    local periodKey = self:_getSelectedPeriodKey()
+    for _, taskData in ipairs(tasks) do
+        wantedTaskIds[taskData.taskId] = true
+    end
+    for taskId, entry in pairs(self._rowEntriesByTaskId) do
+        if not wantedTaskIds[taskId] or entry.period ~= periodKey or entry.row.Parent ~= self._scrollingFrame then
+            if entry.binding then
+                self:_disconnectBindings({ entry.binding })
+                local bindingIndex = table.find(self._rowBindings, entry.binding)
+                if bindingIndex then
+                    table.remove(self._rowBindings, bindingIndex)
+                end
+            end
+            local rowIndex = table.find(self._generatedRows, entry.row)
+            if rowIndex then
+                table.remove(self._generatedRows, rowIndex)
+            end
+            entry.row:Destroy()
+            self._rowEntriesByTaskId[taskId] = nil
+        end
+    end
 
     local selectedTaskId = selectedTask and selectedTask.taskId or 0
     for index, taskData in ipairs(tasks) do
-        local row = self._template:Clone()
-        row.Name = "Task_" .. tostring(taskData.taskId)
-        row.Visible = true
+        local entry = self._rowEntriesByTaskId[taskData.taskId]
+        if not entry then
+            local row = self._template:Clone()
+            row.Name = "Task_" .. tostring(taskData.taskId)
+            row.Visible = true
+            row:SetAttribute(GENERATED_ROW_ATTRIBUTE, true)
+            row.Parent = self._scrollingFrame
+            table.insert(self._generatedRows, row)
+            entry = { row = row, period = periodKey, taskId = taskData.taskId }
+            self._rowEntriesByTaskId[taskData.taskId] = entry
+
+            local clickTarget = resolveClickTarget(row, "TaskRowClickTarget")
+            entry.binding = self:_bindButton(clickTarget, function()
+                self:_selectTask(entry.taskId)
+            end, {
+                ScaleTarget = row,
+                HoverScale = 1.02,
+                PressScale = 0.98,
+            }, self._rowBindings)
+        end
+        local row = entry.row
         row.LayoutOrder = index
-        row:SetAttribute(GENERATED_ROW_ATTRIBUTE, true)
-        row.Parent = self._scrollingFrame
-        table.insert(self._generatedRows, row)
 
         setText(row:FindFirstChild("PeriodTag", true), taskData.period == "weekly" and "Weekly" or "Daily")
         setText(row:FindFirstChild("TaskTitle", true), buildTaskTitle(taskData))
         setText(row:FindFirstChild("TaskSubtitle", true), buildTaskSubtitle(taskData))
         setVisible(row:FindFirstChild("RedPoint", true), taskData.isClaimable == true and taskData.isClaimed ~= true)
         self:_applyRowSelectedState(row, taskData.taskId == selectedTaskId)
-
-        local clickTarget = resolveClickTarget(row, "TaskRowClickTarget")
-        self:_bindButton(clickTarget, function()
-            self:_selectTask(taskData.taskId)
-        end, {
-            ScaleTarget = row,
-            HoverScale = 1.02,
-            PressScale = 0.98,
-        }, self._rowBindings)
     end
 end
 
@@ -1036,18 +1125,35 @@ function TaskController:_renderDetail(taskData)
     end
 
     local titleLabel = self._taskDetailRoot:FindFirstChild("TaskTitle", true)
+    local subtitleLabel = self._taskDetailRoot:FindFirstChild("TaskSubtitle", true)
+        or self._taskDetailRoot:FindFirstChild("TaskDescription", true)
+        or self._taskDetailRoot:FindFirstChild("Description", true)
+    applyTaskStatus(self._taskDetailRoot:FindFirstChild("StatusText", true), taskData)
+    setText(subtitleLabel, taskData and buildTaskSubtitle(taskData) or "")
+
+    local progressFill = findNested(self._taskDetailRoot, "ProgressTrack/Fill")
+    if progressFill and progressFill:IsA("GuiObject") then
+        local ratio = taskData and math.clamp((tonumber(taskData.progress) or 0) / math.max(1, tonumber(taskData.target) or 1), 0, 1) or 0
+        progressFill.Size = UDim2.new(ratio, 0, progressFill.Size.Y.Scale, progressFill.Size.Y.Offset)
+        progressFill.Visible = ratio > 0
+    end
+
+    local progressBg = self._taskDetailRoot:FindFirstChild("ProgressBg", true)
+    setVisible(progressBg, taskData ~= nil)
     if not taskData then
         setText(titleLabel, "")
+        local progressLabel = progressBg and (
+            progressBg:FindFirstChild("Num")
+            or progressBg:FindFirstChild("Number")
+            or progressBg:FindFirstChild("Label")
+        )
+        setText(progressLabel, "")
         self:_renderRewardList(nil)
         self:_bindDetailClaimButton(nil)
         return
     end
 
     setText(titleLabel, buildTaskTitle(taskData))
-    local subtitleLabel = self._taskDetailRoot:FindFirstChild("TaskSubtitle", true)
-        or self._taskDetailRoot:FindFirstChild("TaskDescription", true)
-        or self._taskDetailRoot:FindFirstChild("Description", true)
-    setText(subtitleLabel, buildTaskSubtitle(taskData))
     self:_renderProgress(self._taskDetailRoot, taskData, true)
     self:_renderRewardList(taskData)
     self:_bindDetailClaimButton(taskData)
@@ -1158,6 +1264,8 @@ end
 function TaskController:_bindUi(silent)
     self:_disconnectBindings(self._buttonBindings)
     self:_disconnectBindings(self._detailBindings)
+    self._detailClaimSignature = nil
+    self._detailClaimButton = nil
     self:_clearRows()
     self:_clearRewardRows()
 
@@ -1173,6 +1281,7 @@ function TaskController:_bindUi(silent)
     self._entryRoot = right and right:FindFirstChild("Daily")
     self._entryButton = resolveClickTarget(self._entryRoot, "TaskEntryClickTarget")
     self._entryRedPoint = self._entryRoot and self._entryRoot:FindFirstChild("RedPoint", true)
+    self:_renderEntryState()
 
     self._panel = self._mainGui:FindFirstChild("TaskBgNew")
     self._tabsRoot = self._panel and self._panel:FindFirstChild("Tabs")
@@ -1218,11 +1327,13 @@ function TaskController:_bindUi(silent)
     hideNamedGuiChildren(self._rewardList, "RewardTemplate")
 
     self:_bindButton(self._entryButton, function()
-        self:_setOpen(true, false)
+        if isTaskEntryVisible() then
+            self:_setOpen(true, false)
+        end
     end, {
         ScaleTarget = self._entryRoot,
         HoverScale = ENTRY_HOVER_SCALE,
-        PressScale = PRESS_SCALE,
+        PressScale = 0.92,
     })
 
     if self._closeButton then
@@ -1288,6 +1399,8 @@ function TaskController:Init(dependencies)
     self._selectedTaskIdByPeriod = {}
     self._isOpen = false
     self._pendingClaimsByTaskId = {}
+    self._detailClaimSignature = nil
+    self._detailClaimButton = nil
 
     disconnectAll(self._connections)
     self:_disconnectBindings(self._buttonBindings)

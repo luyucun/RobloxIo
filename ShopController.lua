@@ -87,6 +87,17 @@ ShopController._lastRewardKeepSourceOpen = false
 ShopController._lastRewardClaimId = nil
 ShopController._starterPackClaimed = false
 ShopController._featuredSkinOwned = false
+ShopController._featuredOffer = nil
+ShopController._featuredOfferConnections = {}
+ShopController._featuredOfferPulse = nil
+ShopController._featuredOfferMotionActive = false
+ShopController._featuredOfferMotionSerial = 0
+ShopController._featuredOfferBaseRotation = nil
+ShopController._featuredOfferLightTween = nil
+ShopController._featuredOfferPriceText = nil
+ShopController._featuredOfferPriceLoading = false
+ShopController._featuredOfferForSale = nil
+ShopController._featuredOfferLastClick = -math.huge
 ShopController._marketStallBindRetryQueued = false
 ShopController._marketStallGate = nil
 
@@ -118,6 +129,32 @@ local SECRET_GRADIENT_OFFSET_RANGE = 1
 local SECRET_GRADIENT_ONE_WAY_DURATION = 2.4
 local SECRET_GRADIENT_UPDATE_INTERVAL = 0.033
 local DIAMOND_SCROLL_CANVAS_POSITION = Vector2.new(0, 595)
+local ROBUX_GLYPH = utf8.char(0xE002)
+local OFFER_MOTION_STEPS = {
+    { Property = "Scale", Value = 1.06, Duration = 1.4 },
+    { Property = "Rotation", Value = -2, Duration = 0.14 },
+    { Property = "Rotation", Value = 1.4, Duration = 0.22 },
+    { Property = "Rotation", Value = 0, Duration = 0.16 },
+    { Property = "Scale", Value = 1, Duration = 1.3 },
+}
+local OFFER_REST_SECONDS = 1.1
+local OFFER_LIGHT_INFO = TweenInfo.new(8, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1)
+
+local function isGuiVisible(node)
+    if not (node and node.Parent) then
+        return false
+    end
+    local current = node
+    while current do
+        if current:IsA("GuiObject") and not current.Visible then
+            return false
+        elseif current:IsA("ScreenGui") then
+            return current.Enabled
+        end
+        current = current.Parent
+    end
+    return false
+end
 
 local DIAMOND_PRODUCT_PATHS = {
     "Diamond1.Content.Cash1",
@@ -564,6 +601,8 @@ function ShopController:_bindButton(button, onActivated, options)
 end
 
 function ShopController:_disconnectButtonBindings()
+    disconnectAll(self._featuredOfferConnections)
+    self:_stopFeaturedOfferMotion()
     for _, binding in ipairs(self._buttonBindings) do
         disconnectAll(binding.connections)
         for _, tween in pairs(binding.tweens) do
@@ -577,6 +616,205 @@ function ShopController:_disconnectButtonBindings()
         end
     end
     table.clear(self._buttonBindings)
+end
+
+function ShopController:_stopFeaturedOfferMotion()
+    -- Invalidate first: Cancel wakes any waiter on the current tween.
+    self._featuredOfferMotionSerial += 1
+    self._featuredOfferMotionActive = false
+    if self._featuredOfferPulse then
+        self._featuredOfferPulse:Cancel()
+        self._featuredOfferPulse = nil
+    end
+    if self._featuredOfferLightTween then
+        self._featuredOfferLightTween:Cancel()
+        self._featuredOfferLightTween = nil
+    end
+    local root = self._featuredOffer
+    if root and self._featuredOfferBaseRotation ~= nil then
+        root.Rotation = self._featuredOfferBaseRotation
+    end
+    self._featuredOfferBaseRotation = nil
+    local scale = root and root:FindFirstChild("PulseScale")
+    local light = root and root:FindFirstChild("Light")
+    if scale and scale:IsA("UIScale") then scale.Scale = 1 end
+    if light and light:IsA("ImageLabel") then light.Rotation = 0 end
+end
+
+function ShopController:_startFeaturedOfferMotion(root, scale)
+    if self._featuredOfferMotionActive then return end
+    self._featuredOfferMotionActive = true
+    self._featuredOfferMotionSerial += 1
+    local serial = self._featuredOfferMotionSerial
+    local baseRotation = root.Rotation
+    self._featuredOfferBaseRotation = baseRotation
+
+    local function isCurrent()
+        return self._featuredOfferMotionSerial == serial and self._featuredOffer == root
+            and scale.Parent == root and isGuiVisible(root) and not self:_isFeaturedSkinOwnedForDisplay()
+    end
+    local function stopIfCurrent()
+        if self._featuredOfferMotionSerial == serial then
+            self:_stopFeaturedOfferMotion()
+        end
+    end
+
+    task.spawn(function()
+        while isCurrent() do
+            for _, step in ipairs(OFFER_MOTION_STEPS) do
+                if not isCurrent() then stopIfCurrent(); return end
+                local isRotation = step.Property == "Rotation"
+                local target = isRotation and root or scale
+                local value = isRotation and (baseRotation + step.Value) or step.Value
+                local tween = TweenService:Create(target,
+                    TweenInfo.new(step.Duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+                    { [step.Property] = value })
+                self._featuredOfferPulse = tween
+                tween:Play()
+                local playbackState = tween.Completed:Wait()
+                if playbackState ~= Enum.PlaybackState.Completed or not isCurrent() then
+                    stopIfCurrent()
+                    return
+                end
+            end
+            self._featuredOfferPulse = nil
+            -- Keep MotionActive set while resting so state/UI refreshes don't restart it.
+            task.wait(OFFER_REST_SECONDS)
+        end
+        stopIfCurrent()
+    end)
+end
+
+function ShopController:_isPassPreviewEnabled()
+    return RunService:IsStudio() and self._localPlayer ~= nil
+        and self._localPlayer:GetAttribute(RemoteNames.StudioAttributes.PassUiPreview) == true
+end
+
+function ShopController:_isFeaturedSkinOwnedForDisplay()
+    return self._featuredSkinOwned and not self:_isPassPreviewEnabled()
+end
+
+function ShopController:_applyPassOwnershipUi()
+    local preview = self:_isPassPreviewEnabled()
+    if self._starterPackFrame and self._starterPackFrame:IsA("GuiObject") then
+        self._starterPackFrame.Visible = preview or not self._starterPackClaimed
+    end
+    if self._skinBuyButtonRoot and self._skinBuyButtonRoot:IsA("GuiObject") then
+        self._skinBuyButtonRoot.Visible = preview or not self._featuredSkinOwned
+    end
+    self:_applyFeaturedOfferVisibility()
+end
+
+function ShopController:_refreshSkinEffects()
+    local root = self._featuredOffer
+    if not self:_isFeaturedSkinOwnedForDisplay() and isGuiVisible(root) then
+        local scale = root:FindFirstChild("PulseScale")
+        local light = root:FindFirstChild("Light")
+        if scale and scale:IsA("UIScale") then
+            self:_startFeaturedOfferMotion(root, scale)
+        end
+        if light and light:IsA("ImageLabel") and not self._featuredOfferLightTween then
+            self._featuredOfferLightTween = TweenService:Create(light, OFFER_LIGHT_INFO, { Rotation = 360 })
+            self._featuredOfferLightTween:Play()
+        end
+    else
+        self:_stopFeaturedOfferMotion()
+    end
+    for _, state in pairs(self._skinSecretGradientState) do
+        if isGuiVisible(state.Root) then
+            self:_startSkinSecretGradientLoop()
+            return
+        end
+    end
+    self:_stopSkinSecretGradientLoop()
+end
+
+function ShopController:_applyFeaturedOfferVisibility()
+    local root = self._featuredOffer
+    if not (root and root.Parent) then return end
+    local visible = not self:_isFeaturedSkinOwnedForDisplay()
+    -- Keep the modal's saved value in sync if ownership arrives while it is hidden.
+    ModalUiController:SetRestoredVisible(root, visible)
+    root.Visible = visible and not ModalUiController:IsAnyOpen()
+    self:_refreshSkinEffects()
+end
+
+function ShopController:_applyFeaturedOfferPrice()
+    local root = self._featuredOffer
+    local label = root and root:FindFirstChild("Price")
+    local button = root and root:FindFirstChild("BuyButton")
+    setText(label, self._featuredOfferForSale == false and "Off Sale"
+        or (ROBUX_GLYPH .. " " .. (self._featuredOfferPriceText or "...")))
+    if button and button:IsA("GuiButton") then
+        button.Active = self._featuredOfferForSale ~= false
+    end
+end
+
+function ShopController:_loadFeaturedOfferPrice(skin)
+    self:_applyFeaturedOfferPrice()
+    if self._featuredOfferPriceLoading or self._featuredOfferPriceText
+        or self._featuredOfferForSale == false then return end
+    self._featuredOfferPriceLoading = true
+    task.spawn(function()
+        for attempt = 1, 3 do
+            local ok, info = pcall(function()
+                return MarketplaceService:GetProductInfoAsync(skin.GamePassId, Enum.InfoType.GamePass)
+            end)
+            if ok and type(info) == "table" then
+                local priceText = formatRobuxPrice(info.PriceInRobux)
+                if priceText or info.IsForSale == false then
+                    self._featuredOfferPriceText = priceText
+                    self._featuredOfferForSale = info.IsForSale ~= false
+                    break
+                end
+            end
+            if attempt < 3 then task.wait(attempt * 2) end
+        end
+        self._featuredOfferPriceLoading = false
+        if not self._featuredOfferPriceText and self._featuredOfferForSale ~= false then
+            warn("[ShopController] Phantom Reaper price unavailable; keeping loading placeholder.")
+        end
+        -- Resolve the current template again: a price request may outlive a GUI rebuild.
+        self:_applyFeaturedOfferPrice()
+    end)
+end
+
+function ShopController:_bindFeaturedOffer()
+    local root = self._featuredOffer
+    local skin = SkinConfig.GetSkin(ShopConfig.FeaturedSkinId)
+    local button = root and root:FindFirstChild("BuyButton")
+    if not (root and root:IsA("Frame") and button and button:IsA("GuiButton") and skin) then
+        warn("[ShopController] Missing Main.PhantomReaperOffer template or featured skin.")
+        return
+    end
+    setText(root:FindFirstChild("Name"), skin.Name)
+    setImage(root:FindFirstChild("Icon"), skin.IconImage)
+    self:_loadFeaturedOfferPrice(skin)
+    table.insert(self._featuredOfferConnections, button.Activated:Connect(function()
+        if self:_isPassPreviewEnabled() then return end
+        if self._featuredSkinOwned or self._featuredOfferForSale == false or not isGuiVisible(root)
+            or os.clock() - self._featuredOfferLastClick < 1 then return end
+        self._featuredOfferLastClick = os.clock()
+        local ok, err = pcall(function() self:_requestSkinPurchase("PhantomReaperOffer") end)
+        if not ok then warn("[ShopController] Featured skin prompt failed: " .. tostring(err)) end
+    end))
+    table.insert(self._featuredOfferConnections, root:GetPropertyChangedSignal("Visible"):Connect(function()
+        if self:_isFeaturedSkinOwnedForDisplay() and root.Visible then
+            ModalUiController:SetRestoredVisible(root, false)
+            root.Visible = false
+        end
+        self:_refreshSkinEffects()
+    end))
+    table.insert(self._featuredOfferConnections, self._mainGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+        self:_refreshSkinEffects()
+    end))
+    table.insert(self._featuredOfferConnections, self._panel:GetPropertyChangedSignal("Visible"):Connect(function()
+        self:_refreshSkinEffects()
+    end))
+    table.insert(self._featuredOfferConnections, root.AncestryChanged:Connect(function()
+        self:_refreshSkinEffects()
+    end))
+    self:_applyFeaturedOfferVisibility()
 end
 
 function ShopController:_disconnectMarketStallBindings()
@@ -623,10 +861,6 @@ function ShopController:_startSkinSecretGradientLoop()
     local elapsed = 0
     local elapsedSinceUpdate = SECRET_GRADIENT_UPDATE_INTERVAL
     self._skinSecretGradientConnection = RunService.RenderStepped:Connect(function(deltaTime)
-        if not (self._isOpen and self._panel and self._panel.Visible) then
-            return
-        end
-
         local step = tonumber(deltaTime) or 0
         elapsed += step
         elapsedSinceUpdate += step
@@ -638,7 +872,7 @@ function ShopController:_startSkinSecretGradientLoop()
         local shift = modulo01((elapsed / SECRET_GRADIENT_ONE_WAY_DURATION) * SECRET_GRADIENT_OFFSET_RANGE)
         for _, gradient in ipairs(self._skinSecretGradients) do
             local state = self._skinSecretGradientState[gradient]
-            if gradient and gradient.Parent and state then
+            if gradient and gradient.Parent and state and isGuiVisible(state.Root) then
                 if type(state.ColorKeypoints) == "table" and #state.ColorKeypoints > 0 then
                     local okColor, rotatedColor = pcall(function()
                         return buildRotatedColorSequence(state.ColorKeypoints, shift)
@@ -669,37 +903,36 @@ function ShopController:_bindSkinSecretGradients(skinFrame)
     table.clear(self._skinSecretGradients)
     table.clear(self._skinSecretGradientState)
 
-    local nameLabel = skinFrame and skinFrame:FindFirstChild("Name")
-    local secret2 = nameLabel and nameLabel:FindFirstChild("Secret2")
-    local uiStroke = nameLabel and nameLabel:FindFirstChild("UIStroke")
-    local secret1 = uiStroke and uiStroke:FindFirstChild("Secret1")
-    local gradients = { secret1, secret2 }
-
-    for _, gradient in ipairs(gradients) do
-        if gradient and gradient:IsA("UIGradient") then
-            table.insert(self._skinSecretGradients, gradient)
-            self._skinSecretGradientState[gradient] = {
-                Color = cloneColorSequence(gradient.Color),
-                Transparency = cloneNumberSequence(gradient.Transparency),
-                ColorKeypoints = gradient.Color.Keypoints,
-                TransparencyKeypoints = gradient.Transparency.Keypoints,
-                Offset = gradient.Offset,
-                Rotation = gradient.Rotation,
-            }
+    local function bindName(root)
+        local nameLabel = root and root:FindFirstChild("Name")
+        if not nameLabel then return end
+        for _, gradient in ipairs(nameLabel:GetDescendants()) do
+            if gradient:IsA("UIGradient") and (gradient.Name == "Secret1" or gradient.Name == "Secret2") then
+                table.insert(self._skinSecretGradients, gradient)
+                self._skinSecretGradientState[gradient] = {
+                    Root = root,
+                    Color = cloneColorSequence(gradient.Color),
+                    Transparency = cloneNumberSequence(gradient.Transparency),
+                    ColorKeypoints = gradient.Color.Keypoints,
+                    TransparencyKeypoints = gradient.Transparency.Keypoints,
+                    Offset = gradient.Offset,
+                    Rotation = gradient.Rotation,
+                }
+            end
         end
     end
-
-    if self._isOpen then
-        self:_startSkinSecretGradientLoop()
-    end
+    bindName(skinFrame)
+    bindName(self._featuredOffer)
+    self:_refreshSkinEffects()
 end
 
 function ShopController:_requestShopState(autoClaim, intent)
     if self._requestStateEvent then
+        local preview = self:_isPassPreviewEnabled()
         self._requestStateEvent:FireServer({
-            autoClaimStarterPack = autoClaim == true,
+            autoClaimStarterPack = autoClaim == true and not preview,
             source = "Shop",
-            intent = intent,
+            intent = not preview and intent or nil,
         })
     end
 end
@@ -832,12 +1065,13 @@ function ShopController:_setOpen(isOpen, immediate)
     ModalUiController:PlayPanelClose("Shop", self._panel, {
         Immediate = immediate == true,
         OnClosed = function()
-            self:_stopSkinSecretGradientLoop()
+            self:_refreshSkinEffects()
         end,
     })
 end
 
 function ShopController:_recordPurchaseContext(payload)
+    if self:_isPassPreviewEnabled() then return end
     if self._requestPurchaseContextEvent and type(payload) == "table" then
         self._requestPurchaseContextEvent:FireServer(payload)
     end
@@ -900,6 +1134,7 @@ function ShopController:_promptDiamondProduct(product)
 end
 
 function ShopController:_promptGamePass(gamePassId, context)
+    if self:_isPassPreviewEnabled() then return end
     local resolvedGamePassId = math.floor(tonumber(gamePassId) or 0)
     if resolvedGamePassId <= 0 or not (self._localPlayer and self._localPlayer.Parent) then
         return
@@ -916,6 +1151,7 @@ function ShopController:_promptGamePass(gamePassId, context)
 end
 
 function ShopController:_requestStarterPack()
+    if self:_isPassPreviewEnabled() then return end
     if self._starterPackClaimed then
         if self._requestStarterPackClaimEvent then
             self._requestStarterPackClaimEvent:FireServer()
@@ -943,7 +1179,9 @@ function ShopController:_requestStarterPack()
     })
 end
 
-function ShopController:_requestSkinPurchase()
+function ShopController:_requestSkinPurchase(source)
+    if self:_isPassPreviewEnabled() then return end
+    if self._featuredSkinOwned then return end
     local skin = SkinConfig.GetSkin(ShopConfig.FeaturedSkinId)
     if not skin then
         return
@@ -951,7 +1189,7 @@ function ShopController:_requestSkinPurchase()
 
     self:_recordPurchaseContext({
         intent = "BuyClicked",
-        source = "Shop",
+        source = source or "Shop",
         purchaseType = "Skin",
         productGroup = "GamePassSkin",
         itemSku = tostring(skin.GamePassId),
@@ -963,7 +1201,7 @@ function ShopController:_requestSkinPurchase()
     end
     self:_promptGamePass(skin.GamePassId, {
         intent = "PurchasePromptRequested",
-        source = "Shop",
+        source = source or "Shop",
         purchaseType = "Skin",
         productGroup = "GamePassSkin",
         itemSku = tostring(skin.GamePassId),
@@ -1086,13 +1324,10 @@ function ShopController:_applyState(payload)
         return
     end
     self._starterPackClaimed = payload.starterPackClaimed == true
-    self._featuredSkinOwned = payload.featuredSkinOwned == true
-    if self._starterPackFrame and self._starterPackFrame:IsA("GuiObject") then
-        self._starterPackFrame.Visible = not self._starterPackClaimed
-    end
-    if self._skinBuyButtonRoot and self._skinBuyButtonRoot:IsA("GuiObject") then
-        self._skinBuyButtonRoot.Visible = not self._featuredSkinOwned
-    end
+    -- Permanent ownership is monotonic within this session; an older shop reply
+    -- must not resurrect the offer after a SkinStateSync has confirmed delivery.
+    self._featuredSkinOwned = self._featuredSkinOwned or payload.featuredSkinOwned == true
+    self:_applyPassOwnershipUi()
 end
 
 function ShopController:_clearPopupItems()
@@ -1450,6 +1685,7 @@ function ShopController:_bindUi(silent)
     local left = self._mainGui:FindFirstChild("Left")
     self._leftEntry = left and left:FindFirstChild("Shop")
     self._panel = self._mainGui:FindFirstChild("Shop")
+    self._featuredOffer = self._mainGui:FindFirstChild("PhantomReaperOffer")
     self._claimPopup = self._mainGui:FindFirstChild("ClaimSuccessful")
 
     local shopInfo = self._panel and self._panel:FindFirstChild("Shopinfo")
@@ -1560,6 +1796,8 @@ function ShopController:_bindUi(silent)
         self:_requestSkinPurchase()
     end)
 
+    self:_bindFeaturedOffer()
+    self:_applyPassOwnershipUi()
     self:_requestShopState(false)
     return true
 end
@@ -1625,6 +1863,17 @@ function ShopController:_connectRemotes()
             self:_applyState(payload)
         end))
     end
+    local skinStateSync = systemEventsFolder:WaitForChild(RemoteNames.System.SkinStateSync, 10)
+    if skinStateSync then
+        table.insert(self._connections, skinStateSync.OnClientEvent:Connect(function(payload)
+            for _, skin in ipairs(type(payload) == "table" and payload.skins or {}) do
+                if tonumber(skin.id) == ShopConfig.FeaturedSkinId and skin.owned == true then
+                    self:_applyState({ starterPackClaimed = self._starterPackClaimed, featuredSkinOwned = true })
+                    break
+                end
+            end
+        end))
+    end
     if self._rewardFeedbackEvent then
         table.insert(self._connections, self._rewardFeedbackEvent.OnClientEvent:Connect(function(payload)
             self:_playRewardFeedback(payload)
@@ -1668,6 +1917,11 @@ function ShopController:Init(dependencies)
     self:_clearPopupItems()
     self:_restoreRewardPopupZIndex()
 
+    if RunService:IsStudio() and self._localPlayer then
+        table.insert(self._connections, self._localPlayer:GetAttributeChangedSignal(RemoteNames.StudioAttributes.PassUiPreview):Connect(function()
+            self:_applyPassOwnershipUi()
+        end))
+    end
     self:_connectRemotes()
     if not self:_bindUi(true) then
         self:_queueBindRetry()

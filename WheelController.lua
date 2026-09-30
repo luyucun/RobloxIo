@@ -53,6 +53,7 @@ WheelController._wheelClaim = nil
 WheelController._wheelClaimTemplate = nil
 WheelController._wheelClaimGiftSourceRoot = nil
 WheelController._wheelClaimGeneratedItem = nil
+WheelController._wheelClaimResultNotice = nil
 WheelController._infoText = nil
 WheelController._freeCountdownText = nil
 WheelController._remainingText = nil
@@ -165,17 +166,22 @@ local function formatTime(seconds)
     return string.format("%02d:%02d", minutes, remainingSeconds)
 end
 
+local function formatAmount(amount)
+    local digits = tostring(math.max(0, math.floor(tonumber(amount) or 0)))
+    return (digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", ""))
+end
+
 local function applyRewardAmountText(item, reward)
     if not (item and type(reward) == "table") then
         return
     end
 
-    local amount = tonumber(reward.amount or reward.Amount)
+    local amount = tonumber(reward.awardedAmount or reward.amount or reward.Amount)
     if not amount then
         return
     end
 
-    local amountText = "+" .. tostring(math.floor(amount))
+    local amountText = "+" .. formatAmount(amount)
     for _, descendant in ipairs(item:GetDescendants()) do
         if descendant.Name == "Num" and (descendant:IsA("TextLabel") or descendant:IsA("TextButton")) then
             descendant.Text = amountText
@@ -488,6 +494,9 @@ function WheelController:_hideWheelClaim()
     if self._wheelClaim and self._wheelClaim.Parent then
         self._wheelClaim.Visible = false
     end
+    if self._wheelClaimResultNotice then
+        self._wheelClaimResultNotice.Visible = false
+    end
     ModalUiController:Release(WHEEL_CLAIM_MODAL_OWNER)
 end
 
@@ -502,7 +511,7 @@ function WheelController:_resolveRewardGiftName(reward)
         return nil
     end
 
-    local giftName = tostring(reward.giftName or reward.GiftName or "")
+    local giftName = tostring(reward.awardedGiftName or reward.giftName or reward.GiftName or "")
     if giftName ~= "" then
         return giftName
     end
@@ -568,6 +577,15 @@ function WheelController:_showWheelClaim(reward)
 
     self._wheelClaim.ZIndex = math.max(50, tonumber(self._wheelClaim.ZIndex) or 0)
     item.ZIndex = math.max(item.ZIndex, self._wheelClaim.ZIndex + 1)
+    local resultNotice = self._wheelClaimResultNotice
+    if resultNotice and resultNotice:IsA("TextLabel") then
+        local duplicate = reward.duplicateCompensation == true and reward.awardedRewardType == "Diamonds"
+        resultNotice.Visible = duplicate
+        resultNotice.ZIndex = self._wheelClaim.ZIndex + 2
+        if duplicate then
+            setText(resultNotice, "Butter already owned" .. string.char(10) .. "Converted to " .. formatAmount(reward.awardedAmount) .. " Diamonds")
+        end
+    end
 
     local uiScale = ensureUiScale(self._wheelClaim)
     ModalUiController:Acquire(WHEEL_CLAIM_MODAL_OWNER, self._wheelClaim)
@@ -977,7 +995,20 @@ function WheelController:_bindUi(silent)
     self._wheelColorBg = panel:FindFirstChild("WheelColorBg")
     self._wheelClaim = mainGui:FindFirstChild("WheelClaim")
     self._wheelClaimTemplate = self._wheelClaim and self._wheelClaim:FindFirstChild("GiftTemplate")
+    self._wheelClaimResultNotice = self._wheelClaim and self._wheelClaim:FindFirstChild("ResultNotice")
     self._wheelClaimGiftSourceRoot = self:_findWheelClaimGiftSourceRoot()
+    local duplicateNotice = panel:FindFirstChild("DuplicateNotice")
+    if duplicateNotice and duplicateNotice:IsA("TextLabel") then
+        duplicateNotice.Visible = false
+        for _, reward in ipairs(WheelConfig.Rewards) do
+            local duplicateDiamonds = math.floor(tonumber(reward.DuplicateDiamonds) or 0)
+            if duplicateDiamonds > 0 then
+                setText(duplicateNotice, "Butter duplicate: +" .. formatAmount(duplicateDiamonds) .. " Diamonds")
+                duplicateNotice.Visible = true
+                break
+            end
+        end
+    end
     self._infoText = findDescendant(wheelEntry, "Text")
     local freeCountdownRoot = panel:FindFirstChild("FreeCountDownTime")
     local remainingRoot = panel:FindFirstChild("RemainingTime")

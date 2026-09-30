@@ -89,6 +89,8 @@ local rowNameByKey = {
     HealthRegen = "HealthRegenCap",
     ExpGain = "EXPGainCap",
     BladeRecovery = "BladeRecoveryCap",
+    FlashCooldown = "FlashCooldownCap",
+    FlashDistance = "FlashDistanceCap",
 }
 
 local function disconnectAll(connections)

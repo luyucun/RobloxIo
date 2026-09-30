@@ -74,7 +74,6 @@ local AudioSettingsController = requireLocalModule("AudioSettingsController")
 local WeaponFxController = requireLocalModule("WeaponFxController")
 local ClientEventController = requireLocalModule("ClientEventController")
 local GlobalLeaderboardController = requireLocalModule("GlobalLeaderboardController")
-local LocalLeaderboardController = requireLocalModule("LocalLeaderboardController")
 local FriendsRankingController = requireLocalModule("FriendsRankingController")
 local MonsterAnimationController = requireLocalModule("MonsterAnimationController")
 local LocalMonsterController = requireLocalModule("LocalMonsterController")
@@ -187,11 +186,6 @@ initController("NewWeaponUnlockController", NewWeaponUnlockController, {
 })
 
 initController("GlobalLeaderboardController", GlobalLeaderboardController, {
-    LocalPlayer = localPlayer,
-    RootScript = script,
-})
-
-initController("LocalLeaderboardController", LocalLeaderboardController, {
     LocalPlayer = localPlayer,
     RootScript = script,
 })

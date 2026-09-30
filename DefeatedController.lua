@@ -360,8 +360,9 @@ function DefeatedController:_updateKillerInfo(payload)
         self._freeRespawnLevelDefaultText = freeRespawnLevel.Text
     end
     if freeRespawnLevel then
-        setText(freeRespawnLevel, string.format("Revive at Lv.%d", freeRespawnReviveLevel))
+        setText(freeRespawnLevel, string.format("Lobby at Lv.%d", freeRespawnReviveLevel))
     end
+    setText(findNested(self._defeatedRoot, "FreeRespawn/Name"), "Free to Lobby")
     if dailyFreeLabel and dailyFreeLabel:IsA("GuiObject") then
         dailyFreeLabel.Visible = false
     end
@@ -581,6 +582,15 @@ function DefeatedController:Init(dependencies)
 
     table.insert(self._connections, deathFeedbackEvent.OnClientEvent:Connect(function(payload)
         self:_onDeathFeedback(payload)
+    end))
+
+    local transitionEvent = systemEventsFolder:WaitForChild(RemoteNames.System.ArenaTransitionFeedback)
+    table.insert(self._connections, transitionEvent.OnClientEvent:Connect(function(payload)
+        if type(payload) == "table" and payload.status == "Blocked" and payload.spawnMode == "LobbyReviveFailed" then
+            -- 服务端仍保留同一次死亡记录，允许再次点击，不再次扣减等级。
+            self:_setOpen(true)
+            self:_setCountdownVisible(false)
+        end
     end))
 
     table.insert(self._connections, playerStateSyncEvent.OnClientEvent:Connect(function(payload)

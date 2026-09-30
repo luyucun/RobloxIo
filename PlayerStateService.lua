@@ -57,6 +57,33 @@ local FRIEND_EXPERIENCE_BONUS_PER_FRIEND = 0.2
 local OFFLINE_PROGRESS_RESPAWN_MODE = "OfflineProgress"
 local DEFEATED_HALF_LEVEL_RESPAWN_MODE = "DefeatedHalfLevel"
 
+-- Historical V6.7 allocation bounds, used only to migrate the retired 31-40 range.
+local RETIRED_BLADE_RECOVERY_FIRST_LEVEL = 31
+local RETIRED_BLADE_RECOVERY_LAST_LEVEL = 40
+
+local function readLegacyBladeRecoveryCap(value)
+    local cap = tonumber(value)
+    if not cap or cap % 1 ~= 0 or cap < RETIRED_BLADE_RECOVERY_FIRST_LEVEL or cap > RETIRED_BLADE_RECOVERY_LAST_LEVEL then
+        return 0
+    end
+    return cap
+end
+
+local function preserveLegacyBladeRecoveryCap(state, caps, savedLegacyCap)
+    local rawCap = type(caps) == "table" and caps.BladeRecovery or nil
+    state.LegacyBladeRecoveryCap = math.max(
+        readLegacyBladeRecoveryCap(state.LegacyBladeRecoveryCap),
+        readLegacyBladeRecoveryCap(rawCap),
+        readLegacyBladeRecoveryCap(savedLegacyCap)
+    )
+end
+
+local function countRetiredBladeRecoveryPoints(levels)
+    local oldLevel = readLegacyBladeRecoveryCap(type(levels) == "table" and levels.BladeRecovery or nil)
+    local retainedLevel = math.max(RETIRED_BLADE_RECOVERY_FIRST_LEVEL - 1, AttributeConfig.GetMaxCap("BladeRecovery"))
+    return math.max(0, oldLevel - retainedLevel)
+end
+
 PlayerStateService._statesByActorId = {}
 PlayerStateService._playerStateSyncEvent = nil
 PlayerStateService._requestStateSyncEvent = nil
@@ -1196,6 +1223,7 @@ function PlayerStateService:_createDefaultState(actor)
         MasteryPoints = 0,
         AttributeLevels = AttributeConfig.BuildDefaultLevels(),
         AttributeCaps = AttributeConfig.BuildDefaultCaps(),
+        LegacyBladeRecoveryCap = 0,
         FinalStats = AttributeConfig.CalculateFinalStats(nil, nil),
         SessionStartedAt = os.time(),
         LastOnlineClock = os.clock(),
@@ -1211,10 +1239,12 @@ function PlayerStateService:_normalizeAttributeState(state)
         return nil
     end
 
+    preserveLegacyBladeRecoveryCap(state, state.AttributeCaps)
     state.AttributeCaps = AttributeConfig.NormalizeCaps(state.AttributeCaps)
     local disabledProgressionPoints = AttributeConfig.CountDisabledProgressionPoints(state.AttributeLevels, state.AttributeCaps)
+    local retiredBladeRecoveryPoints = countRetiredBladeRecoveryPoints(state.AttributeLevels)
     state.AttributeLevels = AttributeConfig.NormalizeLevels(state.AttributeLevels, state.AttributeCaps)
-    state.SkillPoints = math.max(0, math.floor(tonumber(state.SkillPoints) or 0)) + disabledProgressionPoints
+    state.SkillPoints = math.max(0, math.floor(tonumber(state.SkillPoints) or 0)) + disabledProgressionPoints + retiredBladeRecoveryPoints
     state.UsedSkillPoints = AttributeConfig.CountUsedPoints(state.AttributeLevels)
     state.MasteryPoints = math.max(0, math.floor(tonumber(state.MasteryPoints) or 0))
     state.FinalStats = AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
@@ -1229,6 +1259,7 @@ function PlayerStateService:_resetAttributeProgress(state)
     state.SkillPoints = 0
     state.UsedSkillPoints = 0
     state.AttributeLevels = AttributeConfig.BuildDefaultLevels()
+    preserveLegacyBladeRecoveryCap(state, state.AttributeCaps)
     state.AttributeCaps = AttributeConfig.NormalizeCaps(state.AttributeCaps)
     state.MasteryPoints = math.max(0, math.floor(tonumber(state.MasteryPoints) or 0))
     state.FinalStats = AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
@@ -1283,11 +1314,15 @@ function PlayerStateService:_applyAttributeSnapshot(state, snapshot)
         return self:_resetAttributeProgress(state)
     end
 
-    state.AttributeCaps = AttributeConfig.NormalizeCaps(snapshot.attributeCaps or snapshot.AttributeCaps or state.AttributeCaps)
+    local snapshotCaps = snapshot.attributeCaps or snapshot.AttributeCaps or state.AttributeCaps
+    preserveLegacyBladeRecoveryCap(state, state.AttributeCaps)
+    preserveLegacyBladeRecoveryCap(state, snapshotCaps)
+    state.AttributeCaps = AttributeConfig.NormalizeCaps(snapshotCaps)
     local snapshotLevels = snapshot.attributeLevels or snapshot.AttributeLevels
     local disabledProgressionPoints = AttributeConfig.CountDisabledProgressionPoints(snapshotLevels, state.AttributeCaps)
+    local retiredBladeRecoveryPoints = countRetiredBladeRecoveryPoints(snapshotLevels)
     state.AttributeLevels = AttributeConfig.NormalizeLevels(snapshotLevels, state.AttributeCaps)
-    state.SkillPoints = math.max(0, math.floor(tonumber(snapshot.skillPoints or snapshot.SkillPoints) or 0)) + disabledProgressionPoints
+    state.SkillPoints = math.max(0, math.floor(tonumber(snapshot.skillPoints or snapshot.SkillPoints) or 0)) + disabledProgressionPoints + retiredBladeRecoveryPoints
     state.MasteryPoints = math.max(0, math.floor(tonumber(snapshot.masteryPoints or snapshot.MasteryPoints or state.MasteryPoints) or 0))
     state.UsedSkillPoints = AttributeConfig.CountUsedPoints(state.AttributeLevels)
     state.FinalStats = AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
@@ -1528,6 +1563,16 @@ end
 function PlayerStateService:GetWeaponDamageMultiplier(actor)
     local finalStats = self:GetAttributeFinalStats(actor)
     return math.max(0, tonumber(finalStats and finalStats.WeaponDamageMultiplier) or 1)
+end
+
+function PlayerStateService:GetFlashCooldownSeconds(actor)
+    local finalStats = self:GetAttributeFinalStats(actor)
+    return math.max(0, tonumber(finalStats and finalStats.FlashCooldownSeconds) or GameConfig.FLASH.CooldownSeconds)
+end
+
+function PlayerStateService:GetFlashDistanceStuds(actor)
+    local finalStats = self:GetAttributeFinalStats(actor)
+    return math.max(0, tonumber(finalStats and finalStats.FlashDistanceStuds) or GameConfig.FLASH.DistanceStuds)
 end
 
 function PlayerStateService:GetFinalWeaponDamage(actor, baseDamage)
@@ -3464,7 +3509,9 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.Chests = normalizeChests(savedProgress.chests or savedProgress.Chests)
         state.OwnedTitles = normalizeOwnedTitles(savedProgress.ownedTitles or savedProgress.OwnedTitles)
         state.EquippedTitleId = normalizeEquippedTitleId(savedProgress.equippedTitleId or savedProgress.EquippedTitleId, state.OwnedTitles)
-        state.AttributeCaps = AttributeConfig.NormalizeCaps(savedProgress.attributeCaps or savedProgress.AttributeCaps or state.AttributeCaps)
+        local savedAttributeCaps = savedProgress.attributeCaps or savedProgress.AttributeCaps or state.AttributeCaps
+        preserveLegacyBladeRecoveryCap(state, savedAttributeCaps, savedProgress.legacyBladeRecoveryCap or savedProgress.LegacyBladeRecoveryCap)
+        state.AttributeCaps = AttributeConfig.NormalizeCaps(savedAttributeCaps)
         state.TotalDeaths = normalizeNonNegativeInteger(savedProgress.totalDeaths or savedProgress.TotalDeaths)
         state.TotalDiamondsEarned = normalizeNonNegativeInteger(savedProgress.totalDiamondsEarned or savedProgress.TotalDiamondsEarned)
         state.TotalOnlineSeconds = normalizeNonNegativeInteger(savedProgress.totalOnlineSeconds or savedProgress.TotalOnlineSeconds)
@@ -3522,21 +3569,30 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
     return state
 end
 
-function PlayerStateService:ApplyRebirth(actor, shouldClearScore)
+function PlayerStateService:ApplyRebirth(actor, spendRequiredScore)
     local state = self:_getOrCreateState(actor)
-    state.Rebirth = math.max(0, math.floor(tonumber(state.Rebirth) or 0)) + 1
-    if shouldClearScore == true then
-        state.RebirthScore = 0
-    else
-        state.RebirthScore = math.max(0, math.floor(tonumber(state.RebirthScore) or 0))
+    local previousRebirth = math.max(0, math.floor(tonumber(state.Rebirth) or 0))
+    local currentScore = math.max(0, math.floor(tonumber(state.RebirthScore) or 0))
+    local requiredScore = spendRequiredScore == true and GameConfig.GetRequiredRebirthScore(previousRebirth) or 0
+    if currentScore < requiredScore then
+        return nil, "Requirement not met"
     end
-    self:_syncLeaderstats(actor, state)
-    self:PushState(actor)
-    if self._leaderboardService then
-        self._leaderboardService:MarkDirty()
-    end
-    if self._rebirthService then
-        self._rebirthService:MarkDirty(actor)
+
+    -- Commit both authoritative values before any notification can yield or fail.
+    state.RebirthScore = currentScore - requiredScore
+    state.Rebirth = previousRebirth + 1
+    local syncSuccess, syncError = pcall(function()
+        if self._rebirthService then
+            self._rebirthService:MarkDirty(actor)
+        end
+        self:_syncLeaderstats(actor, state)
+        self:PushState(actor)
+        if self._leaderboardService then
+            self._leaderboardService:MarkDirty()
+        end
+    end)
+    if not syncSuccess then
+        warn("[PlayerStateService] Rebirth 已结算，但状态通知失败: " .. tostring(syncError))
     end
     return state
 end

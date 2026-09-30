@@ -328,12 +328,14 @@ ActivityRsvpPromptResult（C -> S）
 
 四、ArenaTransitionFeedback（S -> C）
 发送方：`ArenaService:_fireTransitionFeedback`
-用途：进入战斗区、返回出生点、进入失败等反馈。
+用途：进入战斗区、返回出生点、进入失败等反馈。V6.5 JoinGameController 用现有 Portal 门牌显示准备/失败；AutoBattleController 收到 ReturnHome 终止上轮 Auto。
 字段：
 - status
 - spawnMode
 - timestamp
 当前 status 示例：
+- Entering（spawnMode=Portal）
+- PortalReady（spawnMode=Portal，离开触发范围恢复门牌）
 - EnterBattle
 - ReturnHome
 - Blocked
@@ -344,6 +346,7 @@ ActivityRsvpPromptResult（C -> S）
 - Debounced
 - CharacterNotReady
 - SpawnNotFound
+- LobbyReviveFailed（回大厅复活失败，DefeatedController 重开原选择面板供重试）
 
 五、DeathFeedback（S -> C）
 发送方：`HealthService:_fireDeathFeedback`
@@ -375,9 +378,7 @@ ActivityRsvpPromptResult（C -> S）
 - timestamp
 
 七、PortalJoinPrompt（S -> C）
-发送方：`ArenaService:_firePortalJoinPrompt`
-触发：玩家角色与 `workspace.Map2.Portals.Portal` 模型任意 BasePart 碰撞，且玩家尚未在战斗区。
-用途：通知该玩家客户端显示或关闭 `StarterGui/Main/JoinGame` 入场确认弹框。显示时客户端隐藏 `PlayerGui.Main` 下除 `JoinGame` 外的同级 UI，并开启 `Lighting.Blur`；关闭时恢复。
+V6.5 保留兼容注册，不再发送 Show，不再驱动确认弹框。旧 JoinGame 模板保留隐藏，收到旧事件也不显示。
 字段：
 - eventType
 - timestamp
@@ -387,10 +388,12 @@ ActivityRsvpPromptResult（C -> S）
 
 八、RequestJoinBattle（C -> S）
 接收方：`ArenaService:_onRequestJoinBattle`
-触发：玩家点击 `JoinGame.Join` 或 `JoinGame.Wait`。
-用途：`Join` 请求服务端把玩家传送进 `workspace.Battle`；`Cancel` 取消本次 Portal 待确认状态。服务端只接受已经触发过 PortalJoinPrompt 且入场确认资格仍在有效期内的 Join 请求。 `Join` 只有在服务端实际进入战场成功后才会关闭弹窗。
+触发：Auto 走到 Portal 时的兼容 Join 请求；手动入场由服务端触碰/范围检测直接处理。
+用途：只接受当前处于 Portal 范围且未被大厅返回门禁阻止的玩家，统一检查存活、读档、角色及防抖。无旧 8 秒离门资格；已入场请求幂等忽略，未知 action 拒绝；Cancel 兼容取消并要求离开 Portal 后再进入。
 字段：
 - action：`Join` 或 `Cancel`
+
+V6.5 RequestDefeatedAction：字段不变。FreeRespawn、Lobby、Close 均半等级回大厅；RevivePurchase、Revenge 目的地与收据规则不变。
 
 九、ExperienceFeedback（S -> C）
 发送方：`ExperienceOrbService:_fireExperienceFeedback`
@@ -553,21 +556,12 @@ weapons 子字段：
 
 十七、LeaderboardSync（S -> C）
 发送方：`LeaderboardService:_broadcast`
-用途：同步单服和全局排行榜。
+用途：同步场景全局排行榜及本人的全局排名；V6.9 移除旧自定义单服榜 server 字段。
 字段：
-- server
-- global
+- global：playtime/kills/rebirth 各含 rows，ready 表示全局数据是否就绪。
+- self：playtime/kills/rebirth，各含 rank/rankText/value。
 - timestamp
-server 行字段：
-- userId
-- name
-- level
-- killCount
-- totalPlayerKills
-global 字段：
-- playtime
-- kills
-
+说明：Roblox 默认 Tab 本服列表使用 leaderstats，不依赖此事件；无新增事件。
 十八、ArenaProgressSync（S -> C）
 发送方：`ArenaProgressService:_broadcast`
 用途：同步当前服务器内正在战场且存活的真实玩家等级进度表现。
@@ -635,6 +629,23 @@ players 行字段：
 - 字段：`sessionId`、`tokens`、`timestamp`。
 
 =====================================================
+V6.14 冲刺属性（无新增 Remote）：
+- RequestAttributeUpgrade / RequestAttributeCapUpgrade 的 attributeKey 新增 FlashCooldown / FlashDistance，服务端仍通过配置校验、点数和上限判断。Robux 购买仍通过 RequestAttributeCapUpgrade 发送 {intent="RobuxPurchaseIntent", attributeKey, productId}，没有单独的新 Remote。
+- PlayerStateSync.attributeState.attributeLevels / attributeCaps 及顶层同名映射新增两项；finalStats / attributeFinalStats 新增 FlashCooldownSeconds:number 和 FlashDistanceStuds:number，均由服务端计算。
+- FlashFeedback.Started 的 cooldownSeconds / requestedDistanceStuds 为本次使用时的最终属性值；targetPosition/durationSeconds/请求完成协议保持。RequestFlash 仍无参数，不接受客户端上报冷却、距离或终点。
+
 列表结束
 =====================================================
+
+V6.6 客户端表现补充：无新增或变更事件。LocalMonsterKilled / KillBatchResult / ExperienceFeedback 沿用现有字段与权威边界；本地命中和击杀爆点不产生额外 Remote，经验球收集只播放已结算奖励的视觉音效。
+
+
+V6.7 客户端表现：无协议变化。CombatFeedback.WeaponHitPlayer 的本地攻击者音效改用 SoundService.SFX_Hit_Sword_Medium_01；WeaponHitWeapon 保持不变。小怪血条依据既有本地 CurrentHealth/MaxHealth，不新增服务端请求或血量上传。
+
+V6.7.1 血条仅调整本地模板/绑定，未改变事件或字段。
+V6.7.2 混音调整不改变任何事件或字段。
+
+V6.8：RequestRebirth/RebirthFeedback 沿用现有协议，免费成功反馈保留后的 rebirthScore 与更新后的 nextRebirthScore；保存期间拒绝重复请求。legacyBladeRecoveryCap 只在服务端存档，不进入任何 Remote。
+WheelSpinResult.reward 保留 slot/id/rewardType/giftName/targetRotation 指向原抽中格，新增可选 duplicateCompensation:boolean、awardedRewardType:string、awardedAmount:number、awardedGiftName:string、duplicateDiamonds:number；重复皮肤时分别为 true/Diamonds/5000/Gift5/5000，实际数额来自数值表。客户端按 awarded* 展示实际奖品，绝不据此向服务端请求发奖。首次发皮肤仍沿用原字段，已交付奖励 pending=false。无新增 Remote 名称。
+V6.11 Studio GM 展示状态（非 RemoteEvent）：既有 GMCommandService 服务端聊天 /passui [on|off] 校验 RunService:IsStudio 后仅设置调用玩家的 boolean Attribute StudioPassUiPreview；缺省 false，退出测试失效，不落持久化。名称登记于 RemoteNames.StudioAttributes.PassUiPreview。ShopController/SkinController 监听本玩家此属性，并再次检查 Studio；仅重算 UI 显示，不改 ShopStateSync/SkinStateSync 字段，不创建同名 Remote。
 ]]

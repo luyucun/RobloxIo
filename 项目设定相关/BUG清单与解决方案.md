@@ -4,6 +4,8 @@
 > 状态取值：待修复 / 修复中 / 已修复待验证 / 已验证 / 不修（需注明理由）。
 > 修复每个条目前按 README 标准实现流程先更新需求/架构文档；修复后在此登记状态与开发记录链接。
 
+> V6.13（2026-09-29）：按用户要求暂藏任务/宝箱入口，原代码/库存/任务进度保留。P1-03、P1-04、P1-05、P1-12 等相关问题状态不因入口隐藏而视为修复；新武器空白领取与失败恢复已通过 20 项隔离检查，真实输入/网络/Blur 待 Play 验证。
+
 ## P0（严重：可利用漏洞 / 付费完整性）
 
 | # | 标题 | 位置 | 问题与方案 | 状态 |
@@ -31,12 +33,12 @@
 |---|---|---|---|---|
 | P1-06 | 护盾跨死亡存续且叠加续期 | `HealthService.lua:658-661、864-866` | 死亡不清 `_shieldExpiresAtByUserId`，每轮入场 +10s 叠加，可维持 ~80-90% 无敌。方案：死亡清零；GrantShield 设总时长上限 | 待修复 |
 | P1-07 | "最后 1 把武器反转方向"规格未实现 | `WeaponService.lua:1544-1546`（规格：武器系统策划文档.lua:70） | 直接 return false 无表现无反馈，全文件无 OrbitDirection 翻转。方案：补规格确认后实现翻转+同步+受击反馈 | 待修复 |
-| P1-08 | Flash 射线方向与位移方向不一致可穿墙 | `FlashService.lua:161-168` | 夹取后按原方向位移 safeDistance 可能越墙。方案：167 行改按射线方向 Unit 重建落点（一行） | 待修复 |
+| P1-08 | Flash 射线方向与位移方向不一致可穿墙 | `FlashService.lua:_getReachableTarget` | V6.14：射线和遇墙退让统一沿 Battle 边界裁剪后的方向。普通墙及斜向边界墙隔离回归通过；真实角色/墙体场景待 Play 验证。P1-14 请求限流问题仍独立保留。 | 已修复；待实机验证 |
 | P1-09 | 击杀者同帧死亡时 Boss 经验整笔蒸发 | `ExperienceOrbService.lua:136-141` | 非授权路径静默 return。方案：顺延最近存活伤害贡献者或公共经验球 | 待修复 |
 | P1-10 | WeaponTierConfig T35-T39 名称错位一档 | `WeaponTierConfig.lua:60 vs 105-110` | 手写表与生成表错位，Magma Hammer 从未生效；band 三字段是死数据。方案：重跑导表同步修正 | 待修复 |
-| P1-11 | 回大厅复活 yield 期间退出，存档掉 Lv1 | `RespawnService.lua:349-357` | 先清 defeatRecord 再 LoadCharacter（yield 点）。方案：对齐 _tryGrantFreeRespawn 的 preserveDefeatRecord 做法 | 待修复 |
+| P1-11 | 回大厅复活 yield 期间退出，存档掉 Lv1 | RespawnService:_revivePlayerToLobby | V6.5 先 RestoreCombatProgress 到应保留的半等级大厅状态，再 LoadCharacter；保留原死亡快照到大厅传送成功，失败可重试且不重复减半 | 已修复待实机验证（20 项隔离回归含重建前进度和失败重试；实际退出重连待 Playtest） |
 | P1-12 | 宝箱每周倒计时星期换算差一天 | `ChestController.lua:77、135-136` | Lua wday 1=周日，7=周六；实际指向周六 22:00 且与服务端任务周一口径不一致。方案：改服务端下发 resetAt | 待修复 |
-| P1-13 | 任务详情进度条填充永不更新 | `TaskController.lua:905-907、1051` | includeDescription 恒 true，fill 分支死代码。方案：删除条件或为详情页启用 | 待修复 |
+| P1-13 | 任务详情固定背景曾被误列为进度条缺陷 | `TaskController:_renderProgress / _renderDetail` | V5.8 规格明确原 ProgressBg.Progress 保持默认大小；V6.12 保留该背景，额外增加独立 ProgressTrack.Fill 显示比例 | 原项按规格澄清关闭；新细条已通过隔离验证 |
 
 ### 服务端性能与 DoS
 
@@ -54,7 +56,7 @@
 
 | # | 标题 | 位置 | 问题与方案 | 状态 |
 |---|---|---|---|---|
-| P1-21 | 伤害数字池挂 CurrentCamera，重生后池污染失效 | `LocalMonsterController.lua:1848`；同根因 `WeaponFxController.lua:411-415` | 1 秒重生节奏下旧相机销毁污染对象池，几次死亡后伤害数字永久消失。方案：挂 Workspace 常驻节点 + Destroy 校验 | 待修复 |
+| P1-21 | 伤害数字池挂 CurrentCamera，重生后池污染失效 | LocalMonsterController:_showDamageNumber；同根因 WeaponFxController | V6.6 小怪伤害锚点/爆点改挂客户端 Workspace；离场清池并清待显示桶。WeaponFxController 同类风险尚未处理 | 部分修复：小怪侧隔离回归通过，实际重生待验证；武器侧待修复 |
 | P1-22 | _rebuildLocalWeapons continue 留数组空洞+旧实例孤儿 | `WeaponFxController.lua:762-764` | 洞后武器冻结不环绕不参与命中。方案：紧凑数组填充或 fallback 武器 | 待修复 |
 | P1-23 | 模态 UI 跨 ownerId 复用面板跳过 Release，UI 永久锁死 | `ModalUiController.lua:1017-1041` | 关闭动画期间另一 owner 重开同面板。方案：PlayPanelOpen 前先 Release 旧 owner | 待修复 |
 | P1-24 | 每帧每武器无条件 GetDescendants | `WeaponFxController.lua:867`、`LocalMonsterController.lua:565` | ~1.2 万次/秒浪费。方案：可见性状态缓存 + parts 列表缓存 | 待修复 |
@@ -109,3 +111,27 @@
 - TaskService 的"先占标记 + pcall + 失败回滚"是全项目领取实现标杆。
 - MarketplaceService.ProcessReceipt 全项目仅注册一处，无覆盖冲突。
 - 客户端四个大控制器上行仅意图，未发现本地计价直改权威的路径。
+
+## V6.6 小怪反馈补充
+
+- 已修复待实机验证：普通怪秒杀/伤害合并期间死亡会清掉 DamageBucket，最后一击不显示。现在回收前立即冲刷一次，延迟回调不会重复显示；奖励链路不变。
+
+## V6.8 养成与转盘问题修复
+
+- 已修复，35 项隔离回归通过、Studio 源码读回与截图已确认：刀刃恢复 30 级后无收益仍可升 40 → 表格最大值改 30，旧多余技能点幂等退回，历史购买上限归档。
+- 已修复：免费养成重生清空超额分数 → 权威层只扣当次门槛，余分保留，保存中的同玩家请求不重复结算；付费仍不扣分。
+- 已修复：转盘已拥有 Butter 仍显示皮肤且无补偿 → 自动 5,000 钻石，服务端实发与客户端金额/图标/转换说明一致，不改变概率。
+- 待实机确认：手机文字尺寸、完整抽奖动画，以及正式玩家保存回登；没有启动 Playtest 或发布。
+
+## 2026-09-29 异常移速专项排查
+
+- **已确认缺口，待修复**：`PlayerStateService.lua:2369` 只设置权威期望 WalkSpeed，未配套服务端持续位移校验；默认客户端角色物理控制下，异常客户端可能突破正常移动速度。应结合水平位移窗口、网络容差、合法传送/复活/Flash/击退授权做记录和位置纠正，不能只反复重设 WalkSpeed。
+- **本次现场原因待验证**：没有异常玩家运行数据，不能将以上缺口直接认定为作弊。当前基础移速 18–20，Hacker 事件翻倍并在结束时刷新；Flash 30 studs / 0.3 秒、冷却 5 秒；足球 Boss 存在短暂高速击退。未发现养成/事件反复叠加当前 WalkSpeed 的代码。
+- **待核对的历史数据**：`PlayerStateService.lua:722` / `RebirthService.lua:439` 仍保留存档 MoveSpeedBonus，当前三个药水配置均为 0，若旧档保留加成可能个别玩家不同速，尚未读取任何异常玩家存档证实。
+
+## V6.12 任务 UI 表现修复
+
+- 已修复并隔离验证：tintGuiTree 的 `enabled and nil or DISABLED_TINT` 总取灰色，正常 Claim 字体无法恢复；现按明确条件恢复模板原色。
+- 已修复并隔离验证：任务选择递归抓首个 UIStroke，可能改到文字描边；现只更新直属行级描边，不变字体。
+- 已修复并隔离验证：页签选中 UIScale=1.04 与 hover 的基准 1 互相覆盖；选中改色，缩放仅由交互控制。
+- 已修复并隔离验证：切换选择/状态同步重建整批任务行与奖励节点；现复用实例和必要绑定。窄屏周任务长描述通过条目最小高度和换行空间修正。

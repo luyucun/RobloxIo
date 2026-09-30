@@ -30,8 +30,14 @@ local function requireSharedModule(moduleName)
 end
 
 local ChestConfig = requireSharedModule("ChestConfig")
+local GameConfig = requireSharedModule("GameConfig")
 local RemoteNames = requireSharedModule("RemoteNames")
 local ShopConfig = requireSharedModule("ShopConfig")
+
+local function isChestEntryVisible()
+    local entryVisibility = GameConfig.UI_ENTRY_VISIBILITY
+    return type(entryVisibility) ~= "table" or entryVisibility.Chests ~= false
+end
 
 local ChestController = {}
 
@@ -860,9 +866,12 @@ function ChestController:_updateDropRow(row, reward, totalWeight)
 end
 
 function ChestController:_updateUi()
+    local entryVisible = isChestEntryVisible()
     local count = self:_getChestCount(ChestController.DefaultChestId)
+    setGuiVisible(self._leftEntry, entryVisible)
+    setButtonInteractivity(self._leftEntry, entryVisible)
     setText(self._leftInfoText, tostring(count))
-    setGuiVisible(self._leftInfo, count > 0)
+    setGuiVisible(self._leftInfo, entryVisible and count > 0)
     setText(self._countText, "You have: " .. tostring(count))
 
     self:_setBindingEnabled(self._openOneBinding, count > 0)
@@ -903,6 +912,11 @@ function ChestController:_bindUi(silent)
     local leftEntry = left and left:FindFirstChild("Box")
     local leftInfo = leftEntry and leftEntry:FindFirstChild("Info")
     local leftInfoText = leftInfo and leftInfo:FindFirstChild("Text", true)
+    setGuiVisible(leftEntry, isChestEntryVisible())
+    setButtonInteractivity(leftEntry, isChestEntryVisible())
+    if not isChestEntryVisible() then
+        setGuiVisible(leftInfo, false)
+    end
     local panel = mainGui:FindFirstChild("ChestRewards")
     local countText = panel and panel:FindFirstChild("CountText", true)
     local countdownText = panel and panel:FindFirstChild("CountdownTime", true)
@@ -929,7 +943,9 @@ function ChestController:_bindUi(silent)
 
     local leftButton = leftEntry:IsA("GuiButton") and leftEntry or leftEntry:FindFirstChildWhichIsA("GuiButton", true)
     self:_bindButton(leftButton, function()
-        self:Open()
+        if isChestEntryVisible() then
+            self:Open()
+        end
     end, {
         ScaleTarget = leftEntry:IsA("GuiObject") and leftEntry or leftButton,
     })

@@ -400,7 +400,7 @@ function AudioSettingsController:PlaySfxByPath(folderName, soundPath, restart)
     return self:PlaySfx(sound, restart)
 end
 
-function AudioSettingsController:PlaySfxOneShotByPath(folderName, soundPath)
+function AudioSettingsController:PlaySfxOneShotByPath(folderName, soundPath, presentationOptions)
     if self._sfxEnabled ~= true then
         return false
     end
@@ -415,12 +415,24 @@ function AudioSettingsController:PlaySfxOneShotByPath(folderName, soundPath)
         return false
     end
 
+    return self:PlaySfxOneShot(sound, presentationOptions)
+end
+
+function AudioSettingsController:PlaySfxOneShot(sound, presentationOptions)
+    if self._sfxEnabled ~= true or not (sound and sound:IsA("Sound")) then
+        return false
+    end
+
     local runtimeFolder = getRuntimeSfxFolder(true)
     if not runtimeFolder then
         return false
     end
 
     local clone = sound:Clone()
+    if type(presentationOptions) == "table" then
+        clone.Volume = sound.Volume * math.clamp(tonumber(presentationOptions.volumeScale) or 1, 0, 1)
+        clone.PlaybackSpeed = math.clamp(tonumber(presentationOptions.playbackSpeed) or sound.PlaybackSpeed, 0.5, 2)
+    end
     clone.Name = string.format("%s_OneShot_%d", sound.Name, math.floor(os.clock() * 1000))
     clone.Parent = runtimeFolder
 
@@ -457,7 +469,7 @@ function AudioSettingsController:PlaySfxOneShotByPath(folderName, soundPath)
         table.insert(cleanupConnections, stoppedConnection)
     end
 
-    task.delay(math.max(1, (tonumber(clone.TimeLength) or 0) + 1), cleanup)
+    task.delay(math.max(1, (tonumber(clone.TimeLength) or 0) / math.max(0.5, clone.PlaybackSpeed) + 1), cleanup)
 
     pcall(function()
         clone:Play()

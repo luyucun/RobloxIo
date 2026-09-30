@@ -48,13 +48,19 @@ local function getPlanarDistance(positionA, positionB)
     return delta.Magnitude
 end
 
-function FlashService:_getConfig()
+function FlashService:_getConfig(player)
     local config = GameConfig.FLASH or {}
+    local cooldownSeconds = math.max(0, tonumber(config.CooldownSeconds) or 0)
+    local distanceStuds = math.max(0, tonumber(config.DistanceStuds) or 0)
+    if player and self._playerStateService then
+        cooldownSeconds = self._playerStateService:GetFlashCooldownSeconds(player)
+        distanceStuds = self._playerStateService:GetFlashDistanceStuds(player)
+    end
     return {
         Enabled = config.Enabled == true,
-        DistanceStuds = math.max(0, tonumber(config.DistanceStuds) or 0),
+        DistanceStuds = distanceStuds,
         DurationSeconds = math.max(0.01, tonumber(config.DurationSeconds) or 0.2),
-        CooldownSeconds = math.max(0, tonumber(config.CooldownSeconds) or 0),
+        CooldownSeconds = cooldownSeconds,
         AnimationId = tostring(config.AnimationId or ""),
         MinimumMoveDirectionMagnitude = math.max(0, tonumber(config.MinimumMoveDirectionMagnitude) or 0.05),
         MinimumTravelDistance = math.max(0, tonumber(config.MinimumTravelDistance) or 1),
@@ -158,13 +164,14 @@ function FlashService:_getReachableTarget(startPosition, direction, character, c
         return targetPosition, 0
     end
 
-    local hit = self:_getBlockingRaycast(startPosition, getPlanarVector(targetPosition - startPosition), character)
+    local clampedDirection = getPlanarVector(targetPosition - startPosition).Unit
+    local hit = self:_getBlockingRaycast(startPosition, clampedDirection * targetDistance, character)
     if hit then
         local safeDistance = math.max(0, hit.Distance - config.CollisionPaddingStuds)
         if safeDistance <= MINIMUM_STEP_DISTANCE then
             return startPosition, 0
         end
-        targetPosition = startPosition + (direction * safeDistance)
+        targetPosition = startPosition + (clampedDirection * safeDistance)
         targetPosition = self._arenaService:ClampPositionInsideBattle(targetPosition, config.CollisionPaddingStuds)
         targetDistance = targetPosition and getPlanarDistance(startPosition, targetPosition) or 0
     end
@@ -247,6 +254,9 @@ function FlashService:_handleRequest(player)
         self:_fireFeedback(player, "Rejected", { reason = "NotInBattle" })
         return
     end
+
+    -- Snapshot this use: later upgrades affect the next Flash, not an active cooldown.
+    config = self:_getConfig(player)
 
     local direction = getPlanarVector(humanoid.MoveDirection)
     if direction.Magnitude < config.MinimumMoveDirectionMagnitude then

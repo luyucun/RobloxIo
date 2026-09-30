@@ -39,7 +39,6 @@ local ArenaService = {}
 
 local PORTAL_RANGE_CHECK_INTERVAL = 0.1
 local PORTAL_RANGE_PADDING = 3
-local PORTAL_JOIN_GRACE_SECONDS = 8
 local BATTLE_ENTRY_VERTICAL_PADDING = 12
 local BATTLE_ENTRY_VERIFY_DELAY_SECONDS = 0.25
 local DEFAULT_CHARACTER_COLLISION_GROUP = "IOCharacters"
@@ -54,13 +53,11 @@ ArenaService._botService = nil
 ArenaService._rebirthService = nil
 ArenaService._healthService = nil
 ArenaService._arenaTransitionFeedbackEvent = nil
-ArenaService._portalJoinPromptEvent = nil
 ArenaService._requestJoinBattleEvent = nil
 ArenaService._enterDebounceByActorId = {}
-ArenaService._portalPromptDebounceByActorId = {}
-ArenaService._pendingPortalPromptByUserId = {}
-ArenaService._portalPromptVisibleByUserId = {}
-ArenaService._portalPromptSuppressedUntilExitByUserId = {}
+ArenaService._portalEntryAttemptClockByUserId = {}
+ArenaService._pendingPortalEntryByUserId = {}
+ArenaService._portalEntrySuppressedUntilExitByUserId = {}
 ArenaService._hasEnteredArenaThisSessionByUserId = {}
 ArenaService._firstArenaEnterPendingByUserId = {}
 ArenaService._spawnLocation = nil
@@ -257,13 +254,11 @@ function ArenaService:Init(dependencies)
     self._healthService = dependencies.HealthService
     self._gameAnalyticsService = dependencies.GameAnalyticsService
     self._arenaTransitionFeedbackEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("ArenaTransitionFeedback") or nil
-    self._portalJoinPromptEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("PortalJoinPrompt") or nil
     self._requestJoinBattleEvent = dependencies and dependencies.RemoteEventService and dependencies.RemoteEventService:GetEvent("RequestJoinBattle") or nil
     self._enterDebounceByActorId = {}
-    self._portalPromptDebounceByActorId = {}
-    self._pendingPortalPromptByUserId = {}
-    self._portalPromptVisibleByUserId = {}
-    self._portalPromptSuppressedUntilExitByUserId = {}
+    self._portalEntryAttemptClockByUserId = {}
+    self._pendingPortalEntryByUserId = {}
+    self._portalEntrySuppressedUntilExitByUserId = {}
     self._hasEnteredArenaThisSessionByUserId = {}
     self._firstArenaEnterPendingByUserId = {}
     self._safeReentryLockedByUserId = {}
@@ -284,7 +279,7 @@ function ArenaService:Init(dependencies)
         warn("[ArenaService] 找不到 SpawnLocation，玩家默认出生点逻辑将不可用。")
     end
     if not self._portalModel then
-        warn("[ArenaService] 找不到 workspace.Map2.Portals.Portal，玩家入场弹窗逻辑将不可用。")
+        warn("[ArenaService] 找不到 workspace.Map2.Portals.Portal，玩家直接入场逻辑将不可用。")
     end
     if not self._battlePart then
         warn("[ArenaService] 找不到 workspace.Battle，战斗区随机出生逻辑将不可用。")
@@ -313,7 +308,8 @@ function ArenaService:Init(dependencies)
     end
 
     self._playerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
-        self:_clearPortalPromptState(player)
+        self:_cancelPortalEntry(player)
+        self._portalEntrySuppressedUntilExitByUserId[player.UserId] = nil
         self:_clearArenaSessionState(player)
     end)
 
@@ -484,7 +480,7 @@ end
 
 function ArenaService:_connectPortalRangeMonitor()
     self:_disconnectPortalRangeMonitor()
-    if not (self._portalModel and self._portalJoinPromptEvent) then
+    if not (self._portalModel and self._playerStateService) then
         return
     end
 
@@ -611,63 +607,24 @@ function ArenaService:_setActorSafeBarrierLocked(actor, locked)
     end
 end
 
-function ArenaService:_clearPortalPromptState(actor)
+function ArenaService:_cancelPortalEntry(actor)
     if not (actor and ActorUtils.IsPlayer(actor)) then
         return
     end
-
-    self._pendingPortalPromptByUserId[actor.UserId] = nil
-    self._portalPromptVisibleByUserId[actor.UserId] = nil
-    self._portalPromptSuppressedUntilExitByUserId[actor.UserId] = nil
+    local userId = actor.UserId
+    local wasPending = self._pendingPortalEntryByUserId[userId]
+    self._pendingPortalEntryByUserId[userId] = nil
+    self._portalEntryAttemptClockByUserId[userId] = nil
+    if wasPending then
+        self:_fireTransitionFeedback(actor, "PortalReady", "Portal")
+    end
 end
 
-function ArenaService:_clearPortalVisibleState(actor)
-    if not (actor and ActorUtils.IsPlayer(actor)) then
-        return
-    end
-
-    self._portalPromptVisibleByUserId[actor.UserId] = nil
-end
-
-function ArenaService:_setPortalJoinPending(actor)
-    if not (actor and ActorUtils.IsPlayer(actor)) then
-        return
-    end
-
-    self._pendingPortalPromptByUserId[actor.UserId] = {
-        shownAt = os.clock(),
-    }
-end
-
-function ArenaService:_hasValidPortalJoinPending(actor)
-    if not (actor and ActorUtils.IsPlayer(actor)) then
-        return false
-    end
-
-    if self._portalPromptVisibleByUserId[actor.UserId] then
-        return true
-    end
-
-    local pending = self._pendingPortalPromptByUserId[actor.UserId]
-    if type(pending) ~= "table" then
-        return false
-    end
-
-    local shownAt = tonumber(pending.shownAt) or 0
-    return os.clock() - shownAt <= PORTAL_JOIN_GRACE_SECONDS
-end
-
-function ArenaService:_clearExpiredPortalJoinPending(actor)
-    if not (actor and ActorUtils.IsPlayer(actor)) then
-        return
-    end
-
-    if self._portalPromptVisibleByUserId[actor.UserId] then
-        return
-    end
-
-    if self._pendingPortalPromptByUserId[actor.UserId] and not self:_hasValidPortalJoinPending(actor) then
-        self._pendingPortalPromptByUserId[actor.UserId] = nil
+function ArenaService:PrepareForLobbyReturn(actor)
+    if ActorUtils.IsPlayer(actor) then
+        self:_cancelPortalEntry(actor)
+        -- 回大厅后必须先处于门外，再由新一次主动进入触发。
+        self._portalEntrySuppressedUntilExitByUserId[actor.UserId] = true
     end
 end
 
@@ -995,172 +952,94 @@ function ArenaService:_scheduleArenaEntryVerification(actor, options)
     end)
 end
 
-function ArenaService:_firePortalJoinPrompt(actor, eventType)
-    if not (actor and self._portalJoinPromptEvent and ActorUtils.IsPlayer(actor) and actor.Parent) then
-        return
+function ArenaService:_tryEnterFromPortal(player)
+    if not (ActorUtils.IsPlayer(player) and player.Parent) then
+        return false
+    end
+    local state = self._playerStateService:GetState(player)
+    if not state or state.IsInArena == true then
+        return false
+    end
+    if not self:_isActorInsidePortalBounds(player) then
+        self:_cancelPortalEntry(player)
+        return false
+    end
+    local userId = player.UserId
+    if self._portalEntrySuppressedUntilExitByUserId[userId] then
+        return false
+    end
+    local now = os.clock()
+    local lastAttempt = self._portalEntryAttemptClockByUserId[userId]
+    if lastAttempt and now - lastAttempt < GameConfig.ARENA.EnterDebounceSeconds then
+        return false
+    end
+    self._portalEntryAttemptClockByUserId[userId] = now
+    if state.Alive ~= true then
+        self:_fireTransitionFeedback(player, "Blocked", "Defeated")
+        return false
     end
 
-    local normalizedEventType = tostring(eventType or "Show")
-    if normalizedEventType == "Show" then
-        self:_setPortalJoinPending(actor)
-        self._portalPromptVisibleByUserId[actor.UserId] = true
-    elseif normalizedEventType == "Hide" then
-        self:_clearPortalVisibleState(actor)
+    if not self._pendingPortalEntryByUserId[userId] then
+        self._pendingPortalEntryByUserId[userId] = true
+        self:_fireTransitionFeedback(player, "Entering", "Portal")
+        if self._gameAnalyticsService and self._gameAnalyticsService.MarkOnce then
+            if self._gameAnalyticsService:MarkOnce(player, "Onboarding.PortalReached") then
+                self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 4, "PortalReached", { source = "portal" })
+            end
+            if self._gameAnalyticsService:MarkOnce(player, "Onboarding.DirectEntryRequested") then
+                self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 5, "DirectEntryRequested", { source = "portal" })
+            end
+        end
     end
-
-    self._portalJoinPromptEvent:FireClient(actor, {
-        eventType = normalizedEventType,
-        timestamp = os.clock(),
-    })
-
-    if normalizedEventType == "Show"
-        and self._gameAnalyticsService
-        and self._gameAnalyticsService.MarkOnce
-        and self._gameAnalyticsService:MarkOnce(actor, "Onboarding.PortalPromptShown")
-    then
-        self._gameAnalyticsService:TrackFunnel(actor, "Onboarding", 4, "PortalPromptShown", {
-            source = "portal",
-        })
+    -- 所有 Portal 入口共享上方防抖；实际入场仍保留存活、读档和落点校验。
+    local entered = self:TryEnterArena(player, { IgnoreDebounce = true })
+    if entered then
+        self._pendingPortalEntryByUserId[userId] = nil
     end
-end
-
-function ArenaService:_showPortalJoinPrompt(actor)
-    if not (actor and ActorUtils.IsPlayer(actor)) then
-        return
-    end
-    if self._portalPromptSuppressedUntilExitByUserId[actor.UserId] then
-        return
-    end
-    if self._portalPromptVisibleByUserId[actor.UserId] then
-        return
-    end
-
-    self:_firePortalJoinPrompt(actor, "Show")
-end
-
-function ArenaService:_hidePortalJoinPrompt(actor)
-    if not (actor and ActorUtils.IsPlayer(actor)) then
-        return
-    end
-    local hasPromptState = self._pendingPortalPromptByUserId[actor.UserId]
-        or self._portalPromptVisibleByUserId[actor.UserId]
-        or self._portalPromptSuppressedUntilExitByUserId[actor.UserId]
-    if not hasPromptState then
-        return
-    end
-
-    if not (self._pendingPortalPromptByUserId[actor.UserId] or self._portalPromptVisibleByUserId[actor.UserId]) then
-        self:_clearPortalPromptState(actor)
-        return
-    end
-
-    self:_firePortalJoinPrompt(actor, "Hide")
+    return entered
 end
 
 function ArenaService:_onPortalRangeHeartbeat(deltaTime)
-    self._portalRangeMonitorAccumulator = self._portalRangeMonitorAccumulator + (deltaTime or 0)
+    self._portalRangeMonitorAccumulator += deltaTime or 0
     if self._portalRangeMonitorAccumulator < PORTAL_RANGE_CHECK_INTERVAL then
         return
     end
     self._portalRangeMonitorAccumulator = 0
-
     for _, player in ipairs(Players:GetPlayers()) do
-        local hasPromptState = self._pendingPortalPromptByUserId[player.UserId]
-            or self._portalPromptVisibleByUserId[player.UserId]
-            or self._portalPromptSuppressedUntilExitByUserId[player.UserId]
-        if hasPromptState then
-            local state = self._playerStateService and self._playerStateService:GetState(player) or nil
-            local isInsidePortal = self:_isActorInsidePortalBounds(player)
-            if state and state.IsInArena then
-                self:_clearPortalPromptState(player)
-            elseif not isInsidePortal and self._portalPromptVisibleByUserId[player.UserId] then
-                self:_hidePortalJoinPrompt(player)
-            elseif not isInsidePortal and self._portalPromptSuppressedUntilExitByUserId[player.UserId] then
-                self:_clearPortalPromptState(player)
-            else
-                self:_clearExpiredPortalJoinPending(player)
-            end
+        local isInsidePortal = self:_isActorInsidePortalBounds(player)
+        if not isInsidePortal then
+            self:_cancelPortalEntry(player)
+            self._portalEntrySuppressedUntilExitByUserId[player.UserId] = nil
+        else
+            self:_tryEnterFromPortal(player)
         end
     end
 end
 
 function ArenaService:_onPortalTouched(hitPart)
     local character = hitPart and hitPart:FindFirstAncestorOfClass("Model")
-    if not character then
-        return
-    end
-
-    local actor = self:_resolveActorFromCharacter(character)
+    local actor = character and self:_resolveActorFromCharacter(character)
     if not actor then
         return
     end
-
     if ActorUtils.IsBot(actor) then
-        self:TryEnterArena(actor)
+        local state = self._playerStateService:GetState(actor)
+        if state and not state.IsInArena then
+            self:TryEnterArena(actor)
+        end
         return
     end
-
-    local state = self._playerStateService:GetState(actor)
-    if state and state.IsInArena then
-        return
-    end
-
-    local actorId = ActorUtils.GetActorId(actor)
-    local now = os.clock()
-    local lastClock = self._portalPromptDebounceByActorId[actorId]
-    if lastClock and now - lastClock < GameConfig.ARENA.EnterDebounceSeconds then
-        return
-    end
-    self._portalPromptDebounceByActorId[actorId] = now
-    self:_showPortalJoinPrompt(actor)
+    self:_tryEnterFromPortal(actor)
 end
 
 function ArenaService:_onRequestJoinBattle(player, action)
     if not (player and player.Parent) then
         return
     end
-
     if action == "Cancel" then
-        self:_clearPortalPromptState(player)
-        self._portalPromptSuppressedUntilExitByUserId[player.UserId] = true
-        if self._portalJoinPromptEvent then
-            self._portalJoinPromptEvent:FireClient(player, {
-                eventType = "Hide",
-                timestamp = os.clock(),
-            })
-        end
-        return
-    end
-
-    if self._gameAnalyticsService
-        and self._gameAnalyticsService.MarkOnce
-        and self._gameAnalyticsService:MarkOnce(player, "Onboarding.JoinBattleRequested")
-    then
-        self._gameAnalyticsService:TrackFunnel(player, "Onboarding", 5, "JoinBattleRequested", {
-            source = "portal",
-        })
-    end
-
-    if not self:_hasValidPortalJoinPending(player) then
-        if self._portalPromptSuppressedUntilExitByUserId[player.UserId] or not self:_isActorInsidePortalBounds(player) then
-            self:_hidePortalJoinPrompt(player)
-            self:_fireTransitionFeedback(player, "Blocked", "OutsidePortal")
-            return
-        end
-
-        self:_setPortalJoinPending(player)
-    end
-
-    if not self:_hasValidPortalJoinPending(player) then
-        self:_hidePortalJoinPrompt(player)
-        self:_fireTransitionFeedback(player, "Blocked", "OutsidePortal")
-        return
-    end
-
-    local entered = self:TryEnterArena(player, { IgnoreDebounce = true })
-    if entered then
-        self:_hidePortalJoinPrompt(player)
-        self:_clearPortalPromptState(player)
+        self:PrepareForLobbyReturn(player)
+    elseif action == "Join" then
+        self:_tryEnterFromPortal(player)
     end
 end
 
@@ -1188,7 +1067,10 @@ function ArenaService:TeleportActorToSpawnLocation(actor)
         self._spawnLocation.Position.Z
     )
     local lookAtPosition = ActorUtils.IsPlayer(actor) and self:_getPortalLookAtPosition() or nil
-    self:_teleportActorToPosition(actor, spawnPosition, lookAtPosition)
+    self:PrepareForLobbyReturn(actor)
+    if not self:_teleportActorToPosition(actor, spawnPosition, lookAtPosition) then
+        return false
+    end
     self:_resetSafeReentryLock(actor)
     self:_fireTransitionFeedback(actor, "ReturnHome", "SpawnLocation")
     return true

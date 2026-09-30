@@ -54,6 +54,7 @@ WheelConfig.Rewards = {
         GiftName = 'Gift3',
         TargetRotation = 30,
         SkinId = 10009,
+        DuplicateDiamonds = 5000,
         Pending = true,
     },
     {

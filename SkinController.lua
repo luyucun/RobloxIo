@@ -37,10 +37,16 @@ local function requireSharedModule(moduleName)
     ))
 end
 
+local GameConfig = requireSharedModule("GameConfig")
 local RemoteNames = requireSharedModule("RemoteNames")
 local SkinConfig = requireSharedModule("SkinConfig")
 local TrailConfig = requireSharedModule("TrailConfig")
 local TitleConfig = requireSharedModule("TitleConfig")
+
+local function isChestEntryVisible()
+    local entryVisibility = GameConfig.UI_ENTRY_VISIBILITY
+    return type(entryVisibility) ~= "table" or entryVisibility.Chests ~= false
+end
 
 local SkinController = {}
 
@@ -906,7 +912,13 @@ function SkinController:_openSevenDayFromShowSkin()
     end
 end
 
+function SkinController:_isPassPreviewEnabled()
+    return RunService:IsStudio() and self._localPlayer ~= nil
+        and self._localPlayer:GetAttribute(RemoteNames.StudioAttributes.PassUiPreview) == true
+end
+
 function SkinController:_promptShowSkinGamePass(templateName)
+    if self:_isPassPreviewEnabled() then return end
     local gamePassId = SHOW_SKIN_GAME_PASS_ID
     local skin = nil
     if SkinConfig.GetSkinByTemplateName then
@@ -1488,7 +1500,8 @@ function SkinController:_populateItem(frame, skin)
     local itemTemplate = frame:FindFirstChild("ItemTemplate", true)
     setImage(itemTemplate and itemTemplate:FindFirstChild("ItemIcon", true), skin.iconImage)
 
-    local owned = skin.owned == true
+    local preview = skin.purchaseChannel == SkinConfig.PurchaseChannel.GamePass and self:_isPassPreviewEnabled()
+    local owned = skin.owned == true and not preview
     local equipped = skin.equipped == true
     self:_setButtonVisible(frame, "DiamondButton", not owned and skin.purchaseChannel == SkinConfig.PurchaseChannel.Diamonds)
     self:_setButtonVisible(frame, "RobuxBuyButton", not owned and skin.purchaseChannel == SkinConfig.PurchaseChannel.GamePass)
@@ -1520,6 +1533,7 @@ function SkinController:_populateItem(frame, skin)
         setText(priceLabel, skin.robuxPrice)
         setMarketplaceGamePassPrice(priceLabel, skin.gamePassId)
         self:_bindItemButton(robuxButton, function()
+            if self:_isPassPreviewEnabled() then return end
             if self._requestPurchaseEvent then
                 self._requestPurchaseEvent:FireServer(skin.id, {
                     source = "Skin",
@@ -1580,7 +1594,7 @@ function SkinController:_populateTrailItem(frame, trail)
     setText(frame:FindFirstChild("Add", true), formatTrailExperienceBonus(trail.experienceBonus))
     self:_setButtonVisible(frame, "DiamondBuy", not owned and not isBoxOnly)
     self:_setButtonVisible(frame, "RobuxButton", not owned and not isBoxOnly)
-    self:_setButtonVisible(frame, "BoxOpen", not owned and isBoxOnly)
+    self:_setButtonVisible(frame, "BoxOpen", not owned and isBoxOnly and isChestEntryVisible())
     self:_setButtonVisible(frame, "Equip", owned and not equipped)
     self:_setButtonVisible(frame, "Unequiped", owned and equipped)
 
@@ -1624,7 +1638,7 @@ function SkinController:_populateTrailItem(frame, trail)
     end
 
     local boxOpenButton, boxOpenScaleTarget = findButton(frame, "BoxOpen")
-    if boxOpenButton then
+    if boxOpenButton and isChestEntryVisible() then
         self:_bindItemButton(boxOpenButton, function()
             self:_setPanelOpen(false, true)
             if self._chestController and self._chestController.Open then
@@ -2204,6 +2218,11 @@ function SkinController:Init(dependencies)
     self:_disconnectSkinRegion()
     self:_clearItems()
 
+    if RunService:IsStudio() and self._localPlayer then
+        table.insert(self._connections, self._localPlayer:GetAttributeChangedSignal(RemoteNames.StudioAttributes.PassUiPreview):Connect(function()
+            self:_renderListIfVisible()
+        end))
+    end
     self:_connectRemotes()
     if not self:_bindUi(true) then
         self:_queueBindRetry()

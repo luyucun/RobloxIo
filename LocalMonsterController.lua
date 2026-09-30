@@ -11,6 +11,7 @@ local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local SoundService = game:GetService("SoundService")
+local StarterGui = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local StatsService = game:GetService("Stats")
@@ -81,6 +82,19 @@ LocalMonsterController._damageNumberPoolCreated = 0
 LocalMonsterController._activeDamageNumberCount = 0
 LocalMonsterController._damageNumberWindowClock = 0
 LocalMonsterController._damageNumberWindowCount = 0
+
+-- Presentation budgets only; no combat or reward values depend on these.
+LocalMonsterController._impactPool = {}
+LocalMonsterController._activeImpacts = {}
+LocalMonsterController._impactCreated = 0
+LocalMonsterController._impactWindowClock = 0
+LocalMonsterController._impactWindowCount = 0
+LocalMonsterController._healthBarTemplateWarningShown = false
+local IMPACT_POOL_SIZE = 12
+local IMPACT_HIT_SLOTS = 8
+local IMPACTS_PER_SECOND = 24
+local HIT_IMPACTS_PER_SECOND = 16
+local IMPACT_LIFETIME = 0.3
 
 local LOOP_FADE_SECONDS = 0.12
 local ATTACK_FADE_SECONDS = 0.04
@@ -949,6 +963,7 @@ end
 
 function LocalMonsterController:_dematerializeMonster(monsterState)
     self:_addPerfStat("DematerializeRequests")
+    self:_clearMonsterHealthBar(monsterState)
     if not (monsterState and monsterState.Instance) then
         return
     end
@@ -968,6 +983,7 @@ function LocalMonsterController:_poolMonsterInstance(monsterState)
         return false
     end
 
+    self:_clearMonsterHealthBar(monsterState)
     local poolSize = getLocalMonsterModelPoolSize()
     if poolSize <= 0 or (self._monsterModelPoolCount or 0) >= poolSize then
         return false
@@ -1177,6 +1193,7 @@ function LocalMonsterController:_destroyMonster(monsterState, options)
     if not monsterState then
         return
     end
+    self:_clearMonsterHealthBar(monsterState)
     options = type(options) == "table" and options or {}
     monsterState.Alive = false
     monsterState.DamageBucket = nil
@@ -1238,6 +1255,7 @@ function LocalMonsterController:_clearMonsters(options)
     self._materializedMonsterCount = 0
     self:_clearMonsterModelPool()
     self:_clearDamageNumberVisuals()
+    self:_clearMonsterImpacts()
 end
 
 function LocalMonsterController:_resetLocalMonsterPopulation()
@@ -1408,6 +1426,9 @@ function LocalMonsterController:_reportMonsterKilled(monsterState)
         SendCount = 0,
     }
 
+    -- Flush before model recycling invalidates the merge bucket, including one-hit kills.
+    self:_flushDamageNumber(monsterState, true)
+    self:_playMonsterImpact(monsterState, true)
     self:_destroyMonster(monsterState, {
         allowPool = true,
     })
@@ -1714,6 +1735,163 @@ function LocalMonsterController:_stepHitFlash(monsterState)
     flash.OutlineTransparency = 1 - (0.9 * alpha)
 end
 
+function LocalMonsterController:_playMonsterFeedbackSound()
+    local sound = SoundService:FindFirstChild("SFX_Hit_Sword_Medium_01")
+    if self._audioSettings and self._audioSettings.PlaySfxOneShot then
+        self._audioSettings:PlaySfxOneShot(sound, { volumeScale = 0.8 })
+    end
+end
+
+function LocalMonsterController:_clearMonsterHealthBar(monsterState)
+    if monsterState and monsterState.HealthBar then
+        monsterState.HealthBar:Destroy()
+        monsterState.HealthBar = nil
+    end
+end
+
+function LocalMonsterController:_updateMonsterHealthBar(monsterState)
+    local health = tonumber(monsterState and monsterState.CurrentHealth) or 0
+    local maxHealth = tonumber(monsterState and monsterState.MaxHealth) or 0
+    local instance = monsterState and monsterState.Instance
+    if not (monsterState and monsterState.Alive and monsterState.ActivityState == "CombatActive"
+        and instance and instance.Parent and health > 0 and health < maxHealth) then
+        self:_clearMonsterHealthBar(monsterState)
+        return
+    end
+
+    local billboard = monsterState.HealthBar
+    if not (billboard and billboard.Parent) then
+        local template = StarterGui:FindFirstChild("LocalMonsterHealthBar")
+        local track = template and template:FindFirstChild("Track")
+        local fill = track and track:FindFirstChild("Fill")
+        if not (template and template:IsA("BillboardGui") and fill and fill:IsA("Frame")) then
+            if not self._healthBarTemplateWarningShown then
+                self._healthBarTemplateWarningShown = true
+                warn("[LocalMonsterController] Missing StarterGui.LocalMonsterHealthBar template")
+            end
+            return
+        end
+
+        local adornee = instance:IsA("BasePart") and instance
+            or (instance:IsA("Model") and (instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart", true)))
+        if not adornee then
+            return
+        end
+        local topY = adornee.Position.Y + adornee.Size.Y * 0.5
+        if instance:IsA("Model") then
+            local bounds, size = instance:GetBoundingBox()
+            topY = bounds.Position.Y + size.Y * 0.5
+        end
+        billboard = template:Clone()
+        billboard.Adornee = adornee
+        billboard.StudsOffsetWorldSpace = Vector3.new(0, topY - adornee.Position.Y + 0.65, 0)
+        billboard.Parent = adornee
+        monsterState.HealthBar = billboard
+    end
+
+    local ratio = math.clamp(health / maxHealth, 0, 1)
+    billboard.Track.Fill.Size = UDim2.fromScale(ratio, 1)
+    billboard.Enabled = true
+end
+
+function LocalMonsterController:_createMonsterImpact()
+    local part = Instance.new("Part")
+    part.Name = "LocalMonsterImpact_Client"
+    part.Shape = Enum.PartType.Ball
+    part.Material = Enum.Material.Neon
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.CastShadow = false
+    local sparks = Instance.new("ParticleEmitter")
+    sparks.Name = "Sparks"
+    sparks.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+    sparks.Rate = 0
+    sparks.LightEmission = 0.85
+    sparks.Lifetime = NumberRange.new(0.12, 0.24)
+    sparks.Speed = NumberRange.new(8, 14)
+    sparks.Drag = 9
+    sparks.SpreadAngle = Vector2.new(180, 180)
+    sparks.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.35),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    sparks.Transparency = NumberSequence.new(0, 1)
+    sparks.Parent = part
+    return { Part = part, Sparks = sparks }
+end
+
+function LocalMonsterController:_playMonsterImpact(monsterState, lethal)
+    local position = monsterState and (monsterState.DisplayPosition or monsterState.Position)
+    if typeof(position) ~= "Vector3" then
+        return
+    end
+    local now = os.clock()
+    if now - self._impactWindowClock >= 1 then
+        self._impactWindowClock = now
+        self._impactWindowCount = 0
+    end
+    local rateLimit = lethal and IMPACTS_PER_SECOND or HIT_IMPACTS_PER_SECOND
+    local slotLimit = lethal and IMPACT_POOL_SIZE or IMPACT_HIT_SLOTS
+    if self._impactWindowCount >= rateLimit or #self._activeImpacts >= slotLimit then
+        return
+    end
+    local visual = table.remove(self._impactPool)
+    if not visual and self._impactCreated < IMPACT_POOL_SIZE then
+        visual = self:_createMonsterImpact()
+        self._impactCreated += 1
+    end
+    if not visual then
+        return
+    end
+    self._impactWindowCount += 1
+    visual.StartClock = now
+    visual.Lethal = lethal
+    visual.Size = lethal and 2.8 or 1.1
+    visual.Part.Size = Vector3.one * 0.25
+    visual.Part.Color = lethal and Color3.fromRGB(255, 218, 105) or Color3.fromRGB(255, 248, 223)
+    visual.Part.Transparency = lethal and 0.3 or 0.5
+    visual.Part.CFrame = CFrame.new(position)
+    visual.Part.Parent = Workspace
+    visual.Sparks:Clear()
+    visual.Sparks.Color = ColorSequence.new(visual.Part.Color)
+    visual.Sparks:Emit(lethal and 9 or 4)
+    table.insert(self._activeImpacts, visual)
+end
+
+function LocalMonsterController:_stepMonsterImpacts()
+    local now = os.clock()
+    for index = #self._activeImpacts, 1, -1 do
+        local visual = self._activeImpacts[index]
+        local alpha = math.clamp((now - visual.StartClock) / IMPACT_LIFETIME, 0, 1)
+        if alpha >= 1 then
+            visual.Sparks:Clear()
+            visual.Part.Parent = nil
+            table.remove(self._activeImpacts, index)
+            table.insert(self._impactPool, visual)
+        else
+            local burstAlpha = math.min(1, alpha * 2)
+            visual.Part.Size = Vector3.one * (0.25 + visual.Size * (1 - (1 - burstAlpha)^2))
+            visual.Part.Transparency = math.min(1, (visual.Lethal and 0.3 or 0.5) + burstAlpha)
+        end
+    end
+end
+
+function LocalMonsterController:_clearMonsterImpacts()
+    for _, visual in ipairs(self._activeImpacts) do
+        visual.Part:Destroy()
+    end
+    for _, visual in ipairs(self._impactPool) do
+        visual.Part:Destroy()
+    end
+    table.clear(self._activeImpacts)
+    table.clear(self._impactPool)
+    self._impactCreated = 0
+    self._impactWindowClock = 0
+    self._impactWindowCount = 0
+end
+
 function LocalMonsterController:_resolveDamageNumberCFrame(monsterState, snapshotPosition, snapshotHeight)
     local position = snapshotPosition
     if typeof(position) ~= "Vector3" then
@@ -1833,7 +2011,7 @@ function LocalMonsterController:_clearDamageNumberVisuals()
     self._damageNumberWindowCount = 0
 end
 
-function LocalMonsterController:_showDamageNumber(monsterState, amount, snapshotPosition, snapshotHeight)
+function LocalMonsterController:_showDamageNumber(monsterState, amount, snapshotPosition, snapshotHeight, lethal)
     local visual = self:_acquireDamageNumberVisual()
     if not visual then
         return
@@ -1844,25 +2022,30 @@ function LocalMonsterController:_showDamageNumber(monsterState, amount, snapshot
     local label = visual.Label
     local stroke = visual.Stroke
     local textColor, strokeColor = getDamageColors(amount)
+    if lethal then
+        textColor, strokeColor = Color3.fromRGB(255, 229, 120), Color3.fromRGB(104, 49, 13)
+    end
     anchor.CFrame = self:_resolveDamageNumberCFrame(monsterState, snapshotPosition, snapshotHeight)
-    anchor.Parent = Workspace.CurrentCamera or Workspace
+    -- Camera replacement must not destroy pooled damage anchors during respawn.
+    anchor.Parent = Workspace
 
     label.Position = UDim2.fromScale(0.5 + ((math.random() - 0.5) * 0.16), 0.62)
-    label.Size = UDim2.fromOffset(110, 34)
+    label.Size = UDim2.fromOffset(lethal and 126 or 100, lethal and 40 or 30)
     label.Text = formatDamage(amount)
     label.TextColor3 = textColor
     label.TextTransparency = 0
     stroke.Color = strokeColor
     stroke.Transparency = 0
 
-    TweenService:Create(label, TweenInfo.new(0.62, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+    TweenService:Create(label, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = UDim2.fromOffset(lethal and 158 or 130, lethal and 49 or 39),
+    }):Play()
+    TweenService:Create(label, TweenInfo.new(0.62, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
         Position = UDim2.fromScale(label.Position.X.Scale, 0.08),
-        Size = UDim2.fromOffset(138, 42),
-        TextTransparency = 1,
     }):Play()
-    TweenService:Create(stroke, TweenInfo.new(0.62, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Transparency = 1,
-    }):Play()
+    local fadeInfo = TweenInfo.new(0.38, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, 0.22)
+    TweenService:Create(label, fadeInfo, { TextTransparency = 1 }):Play()
+    TweenService:Create(stroke, fadeInfo, { Transparency = 1 }):Play()
 
     task.delay(0.72, function()
         if self._activeDamageNumberVisuals and self._activeDamageNumberVisuals[visual] then
@@ -1890,10 +2073,7 @@ function LocalMonsterController:_queueDamageNumber(monsterState, amount)
                 return
             end
 
-            monsterState.DamageBucket = nil
-            if bucket.Amount > 0 then
-                self:_showDamageNumber(monsterState, bucket.Amount, bucket.Position, bucket.Height)
-            end
+            self:_flushDamageNumber(monsterState, false)
         end)
     end
 
@@ -1902,8 +2082,24 @@ function LocalMonsterController:_queueDamageNumber(monsterState, amount)
     bucket.Height = bucket.Height or getMonsterHeight(monsterState.Instance)
 end
 
+function LocalMonsterController:_flushDamageNumber(monsterState, lethal)
+    local bucket = monsterState.DamageBucket
+    monsterState.DamageBucket = nil
+    if bucket and bucket.Amount > 0 then
+        self:_showDamageNumber(monsterState, bucket.Amount, bucket.Position, bucket.Height, lethal)
+    end
+end
+
 function LocalMonsterController:_playHitFeedback(monsterState, damage)
+    if damage <= 0 then
+        return
+    end
     self:_queueDamageNumber(monsterState, damage)
+    self:_updateMonsterHealthBar(monsterState)
+    self:_playMonsterFeedbackSound()
+    if monsterState.CurrentHealth > 0 then
+        self:_playMonsterImpact(monsterState, false)
+    end
 end
 
 function LocalMonsterController:_refreshLocalWeaponHitSnapshots()
@@ -2129,6 +2325,7 @@ function LocalMonsterController:_setMonsterActivityState(monsterState, activityS
         if activityState == "CombatActive" and not (monsterState.Instance and monsterState.Instance.Parent) then
             monsterState.ActivityState = "Dormant"
         end
+        self:_updateMonsterHealthBar(monsterState)
         return
     end
 
@@ -2146,6 +2343,7 @@ function LocalMonsterController:_setMonsterActivityState(monsterState, activityS
         monsterState.KnockbackEndClock = 0
         monsterState.HitStunEndClock = 0
     end
+    self:_updateMonsterHealthBar(monsterState)
 end
 
 function LocalMonsterController:_isMonsterCombatActive(monsterState)
@@ -2251,7 +2449,10 @@ function LocalMonsterController:_buildCombatActiveSpatialGrid()
 end
 
 function LocalMonsterController:_sleepAllLocalMonsters()
+    self:_clearMonsterImpacts()
+    self:_clearDamageNumberVisuals()
     for _, monsterState in pairs(self._monstersById) do
+        monsterState.DamageBucket = nil
         self:_setMonsterActivityState(monsterState, "Dormant")
     end
 end
@@ -2785,6 +2986,7 @@ function LocalMonsterController:_logPerfStats(now)
 end
 
 function LocalMonsterController:_updateVisuals(deltaTime)
+    self:_stepMonsterImpacts()
     local startedAt = isPerformanceDebugEnabled() and os.clock() or nil
     if not (self._latestPlayerState and self._latestPlayerState.isInArena and self._latestPlayerState.alive) then
         if startedAt then
@@ -3113,6 +3315,7 @@ function LocalMonsterController:Init(dependencies)
     self._materializedMonsterCount = 0
     self:_clearMonsterModelPool()
     self:_clearDamageNumberVisuals()
+    self:_clearMonsterImpacts()
     self:_resetPerfStats()
     self._nextPerfLogClock = os.clock() + getPerformanceLogInterval()
     self:_createMonsterFolder()

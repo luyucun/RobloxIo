@@ -147,35 +147,6 @@ function LeaderboardService:GetNameForUserId(userId)
     return self:_getNameForUserId(userId)
 end
 
-function LeaderboardService:_buildServerRows()
-    local rows = {}
-
-    for _, state in ipairs(self._playerStateService:GetAllPlayerStates()) do
-        table.insert(rows, {
-            userId = state.UserId,
-            name = self:_getNameForUserId(state.UserId),
-            level = state.Level,
-            killCount = state.KillCount,
-            totalPlayerKills = state.TotalPlayerKills,
-            rebirth = state.Rebirth,
-            playtimeSeconds = self:_getPlaytimeValue(state),
-        })
-    end
-
-    table.sort(rows, function(left, right)
-        if left.level == right.level then
-            return left.totalPlayerKills > right.totalPlayerKills
-        end
-        return left.level > right.level
-    end)
-
-    while #rows > GameConfig.LEADERBOARD.MaxRows do
-        table.remove(rows)
-    end
-
-    return rows
-end
-
 function LeaderboardService:_getPlaytimeValue(state)
     if not state then
         return 0
@@ -567,7 +538,6 @@ end
 function LeaderboardService:_buildPayloadForPlayer(player)
     local state = self._playerStateService:GetState(player)
     return {
-        server = self:_buildServerRows(),
         global = {
             playtime = {
                 rows = self._globalRows.playtime,
