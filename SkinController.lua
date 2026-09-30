@@ -130,7 +130,7 @@ local SHOW_SKIN_ACTION_OPEN_SEVEN_DAY = "OpenSevenDay"
 local SHOW_SKIN_INTERACTIONS = {
     { Name = "Skin001", Action = SHOW_SKIN_ACTION_OPEN_SKIN },
     { Name = "Skin002", Action = SHOW_SKIN_ACTION_PROMPT_GAME_PASS },
-    { Name = "Skin003", Action = SHOW_SKIN_ACTION_OPEN_WHEEL },
+    { Name = "Skin009", Action = SHOW_SKIN_ACTION_OPEN_WHEEL },
     { Name = "Skin006", Action = SHOW_SKIN_ACTION_OPEN_SEVEN_DAY },
     { Name = "Skin007", Action = SHOW_SKIN_ACTION_OPEN_SEVEN_DAY },
 }
