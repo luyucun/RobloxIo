@@ -1,6 +1,7 @@
--- V6.12 task UI regression checks against the deployed formal template.
--- Studio Edit only; detached GUI, fresh controller clone, fake player and fake claim event.
--- Never calls Init, connects live remotes, starts Playtest, or changes player data.
+-- V6.12 / V6.16 task UI regression checks against the deployed formal template.
+-- Studio Edit only; cloned GUI kept in a temporary ServerStorage folder, fresh controller clone,
+-- fake player and fake claim event. Never calls Init, connects live remotes, starts Playtest,
+-- or changes player data.
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local results = {}
@@ -38,6 +39,23 @@ end
 
 local function firstButton(root)
     return root:IsA("GuiButton") and root or root:FindFirstChildWhichIsA("GuiButton", true)
+end
+
+local function nested(root, path)
+    local current = root
+    for segment in string.gmatch(path, "[^/]+") do
+        current = current and current:FindFirstChild(segment)
+    end
+    assert(current, "Missing formal UI node: " .. path)
+    return current
+end
+
+local function waitUntil(predicate, timeoutSeconds)
+    local deadline = os.clock() + timeoutSeconds
+    while not predicate() and os.clock() < deadline do
+        task.wait()
+    end
+    return predicate()
 end
 
 local function snapshotColors(root)
@@ -136,6 +154,8 @@ local success, failure = pcall(function()
     temporaryModules = Instance.new("Folder")
     temporaryModules.Name = "TaskUiVerification_" .. HttpService:GenerateGUID(false)
     temporaryModules.Parent = game:GetService("ServerStorage")
+    -- Keep the cloned GUI inside the DataModel so real tweens advance during the V6.16 motion checks.
+    detached.Parent = temporaryModules
     local isolatedModule = sourceModule:Clone()
     isolatedModule.Parent = temporaryModules
     controller = require(isolatedModule)
@@ -342,6 +362,166 @@ local success, failure = pcall(function()
             assert(#controller._rowBindings == 3 and #controller._detailBindings == 1)
         end)
     end
+
+    -- V6.16 status presentation (panel still closed, so values apply without motion).
+    local claimedRowColor = Color3.fromRGB(96, 128, 168)
+    local mutedTextColor = Color3.fromRGB(214, 224, 238)
+    check("V6.16 template nodes are installed", function()
+        assert(panelTemplate:GetAttribute("TaskUiStyleVersion") == 5, "TaskUiStyleVersion is not 5")
+        for _, path in ipairs({
+            "Tabs/DailyTab/Badge/Count",
+            "Tabs/WeeklyTab/Badge/Count",
+            "CountdownPill/Label",
+            "Content/TaskDetail/ClaimGlow",
+            "Content/TaskDetail/ClaimButton/Shine",
+            "Content/TaskDetail/ProgressTrack/Percent",
+            "Content/TaskDetail/ProgressTrack/Fill/Shine",
+            "Content/TaskDetail/Complete/PopScale",
+            "Content/TaskDetail/PopScale",
+        }) do
+            nested(panel, path)
+        end
+        local template = controller._template
+        nested(template, "ProgressTrack/Fill")
+        nested(template, "ProgressText/PopScale")
+        nested(template, "ClaimFlash")
+        assert(status:GetAttribute("TaskStatusChip") == true)
+        local rewardTemplates = 0
+        for _, reward in ipairs(controller._rewardList:GetChildren()) do
+            if reward.Name == "RewardTemplate" then
+                rewardTemplates += 1
+                nested(reward, "Glow")
+            end
+        end
+        assert(rewardTemplates > 0)
+    end)
+
+    check("Rows show progress, ready and claimed states", function()
+        applyState(daily, weekly)
+        local inProgress, ready, claimed = row(101), row(102), row(103)
+        assert(nested(inProgress, "ProgressText").Text == "6/15")
+        assert(math.abs(nested(inProgress, "ProgressTrack/Fill").Size.X.Scale - 0.4) < 0.0001)
+        assert(nested(ready, "ProgressText").Text == "Ready!")
+        assert(math.abs(nested(ready, "ProgressTrack/Fill").Size.X.Scale - 1) < 0.0001)
+        assert(nested(claimed, "ProgressText").Text == "Done")
+        assert(closeColor(claimed.BackgroundColor3, claimedRowColor), "Claimed row is not dimmed")
+        assert(not closeColor(inProgress.BackgroundColor3, claimedRowColor))
+        assert(closeColor(nested(claimed, "TaskTitle").TextColor3, mutedTextColor))
+        assert(not closeColor(nested(inProgress, "TaskTitle").TextColor3, mutedTextColor))
+        assert(nested(ready, "RedPoint").Visible and not nested(inProgress, "RedPoint").Visible)
+    end)
+
+    check("Tab badges count only claimable tasks", function()
+        local dailyBadge = nested(controller._dailyTabRoot, "Badge")
+        local weeklyBadge = nested(controller._weeklyTabRoot, "Badge")
+        assert(dailyBadge.Visible and nested(dailyBadge, "Count").Text == "1")
+        assert(not weeklyBadge.Visible)
+    end)
+
+    check("Status chip color follows the selected task state", function()
+        controller:_selectTask(102)
+        assert(status.Visible and closeColor(status.BackgroundColor3, Color3.fromRGB(255, 160, 0)))
+        controller:_selectTask(101)
+        assert(closeColor(status.BackgroundColor3, Color3.fromRGB(0, 120, 215)))
+        assert(required(required(detail, "ProgressTrack"), "Percent").Text == "40%")
+        controller:_selectTask(103)
+        assert(closeColor(status.BackgroundColor3, Color3.fromRGB(46, 190, 70)))
+        assert(closeColor(status.TextColor3, Color3.new(1, 1, 1)))
+    end)
+
+    -- V6.16 motion with the panel open.
+    local claimGlow = required(detail, "ClaimGlow")
+    local claimShine = required(claimRoot, "Shine")
+    local function rowScales()
+        local scales = {}
+        for _, entry in pairs(controller._rowEntriesByTaskId) do
+            table.insert(scales, entry.row:FindFirstChildOfClass("UIScale"))
+        end
+        return scales
+    end
+
+    check("Opening pops rows in and settles them at full size", function()
+        controller:_selectTask(101)
+        controller:_setOpen(true, false)
+        task.wait()
+        local shrunk = false
+        for _, scale in ipairs(rowScales()) do
+            if scale and scale.Scale < 0.999 then
+                shrunk = true
+            end
+        end
+        assert(shrunk, "Rows did not start the entrance motion")
+        assert(waitUntil(function()
+            for _, scale in ipairs(rowScales()) do
+                if not scale or math.abs(scale.Scale - 1) > 0.001 then
+                    return false
+                end
+            end
+            return next(controller._motionTweens) == nil
+        end, 2), "Row entrance did not settle")
+        assert(math.abs(nested(row(101), "ProgressTrack/Fill").Size.X.Scale - 0.4) < 0.0001)
+    end)
+
+    check("Ready selection starts claim glow, shine and reward glow; other tasks stop them", function()
+        controller:_selectTask(102)
+        local rewardGlow = nested(controller._generatedRewardRows[1], "Glow")
+        assert(claimGlow.Visible and claimShine.Visible and rewardGlow.Visible)
+        assert(controller._ambientTweens.claimGlow and controller._ambientTweens["row:102"])
+        controller:_selectTask(101)
+        assert(not claimGlow.Visible and not claimShine.Visible and not rewardGlow.Visible)
+        assert(controller._ambientTweens["row:102"], "Ready row pulse stopped when another task was selected")
+        assert(controller._ambientTweens.claimGlow == nil)
+    end)
+
+    check("Detail bar fills from empty for a newly selected task", function()
+        controller:_selectTask(102)
+        controller:_selectTask(101)
+        assert(math.abs(fill:GetAttribute("TaskTargetRatio") - 0.4) < 0.0001)
+        task.wait()
+        assert(fill.Size.X.Scale < 0.39, "Detail bar did not restart from empty")
+        assert(waitUntil(function()
+            return math.abs(fill.Size.X.Scale - 0.4) < 0.0001
+        end, 1.5), "Detail bar did not reach the task ratio")
+    end)
+
+    check("Claim celebration waits for a visible panel, then pops the stamp and flashes the row", function()
+        controller:_selectTask(102)
+        local claimedDaily = { daily[1], taskData(102, "daily", "PlayerKills", 5, 5, "claimed"), daily[3] }
+        panel.Visible = false -- The shared reward popup hides the task panel first.
+        applyState(claimedDaily, weekly)
+        task.wait(0.35)
+        assert(controller._queuedCelebrations[102] == "claimed", "Celebration was dropped or played while hidden")
+        local complete = required(detail, "Complete")
+        local stampScale = complete:FindFirstChild("PopScale")
+        assert(math.abs(stampScale.Scale - 1) < 0.001)
+        assert(complete.Visible and not claimRoot.Visible and not claimGlow.Visible)
+        panel.Visible = true
+        assert(waitUntil(function()
+            return next(controller._queuedCelebrations) == nil
+        end, 1), "Queued celebration did not flush after the panel reappeared")
+        assert(stampScale.Scale > 1.01, "Claimed stamp did not pop")
+        local flash = nested(row(102), "ClaimFlash")
+        assert(flash.BackgroundTransparency < 0.99, "Claimed row did not flash")
+        assert(waitUntil(function()
+            return math.abs(stampScale.Scale - 1) < 0.001 and flash.BackgroundTransparency > 0.99
+        end, 1.5), "Claim celebration did not settle")
+        assert(not nested(controller._dailyTabRoot, "Badge").Visible)
+    end)
+
+    check("Closing stops every loop and restores effect nodes", function()
+        applyState(daily, weekly)
+        controller:_selectTask(102)
+        assert(claimGlow.Visible)
+        controller:_setOpen(false, true)
+        assert(controller._ambientSignature == "" and next(controller._ambientTweens) == nil)
+        assert(#controller._ambientRestores == 0 and next(controller._motionTweens) == nil)
+        assert(next(controller._queuedCelebrations) == nil)
+        assert(not claimGlow.Visible and not claimShine.Visible)
+        assert(not nested(controller._generatedRewardRows[1], "Glow").Visible)
+        for _, scale in ipairs(rowScales()) do
+            assert(scale and math.abs(scale.Scale - 1) < 0.001)
+        end
+    end)
 end)
 
 if not success then
@@ -354,10 +534,18 @@ end
 
 local cleanupSuccess, cleanupFailure = pcall(function()
     if controller then
+        controller._isOpen = false
         controller._clockToken += 1
         controller._bindRetryQueued = false
         controller._panelAnimationSerial += 1
         controller:_cancelPanelTweens()
+        controller:_stopAmbientEffects()
+        controller:_cancelMotionTweens()
+        table.clear(controller._queuedCelebrations)
+        for _, connection in ipairs(controller._panelConnections) do
+            connection:Disconnect()
+        end
+        table.clear(controller._panelConnections)
         controller:_disconnectBindings(controller._buttonBindings)
         controller:_disconnectBindings(controller._detailBindings)
         controller:_clearRows()
@@ -378,5 +566,8 @@ return HttpService:JSONEncode({
     verified = verified,
     results = results,
     fakeClaimRequests = requestCount,
-    excluded = { "Detached UI does not validate viewport layout, rendered text bounds, or CanvasPosition." },
+    excluded = {
+        "Unrendered cloned UI does not validate viewport layout, rendered text bounds, or CanvasPosition.",
+        "Motion checks sample Studio Edit tweens; perceived smoothness and mobile frame rate need Playtest.",
+    },
 })

@@ -4,6 +4,7 @@ File: TaskController.lua
 Type: ModuleScript
 Studio path: StarterPlayer/StarterPlayerScripts/Controllers/TaskController
 Purpose: V5.8 daily and weekly task UI for Main.TaskBgNew.
+V6.16: optional status chip, row progress, tab badges and open/ready/claim motion.
 ]]
 
 local Players = game:GetService("Players")
@@ -79,6 +80,14 @@ TaskController._panelTweens = {}
 TaskController._panelAnimationSerial = 0
 TaskController._clockToken = 0
 TaskController._pendingClaimsByTaskId = {}
+TaskController._panelConnections = {}
+TaskController._motionTweens = {}
+TaskController._ambientTweens = {}
+TaskController._ambientRestores = {}
+TaskController._ambientSignature = ""
+TaskController._ambientSerial = 0
+TaskController._detailRenderedTaskId = nil
+TaskController._queuedCelebrations = {}
 
 local GENERATED_ROW_ATTRIBUTE = "GeneratedTaskRow"
 local GENERATED_REWARD_ATTRIBUTE = "GeneratedTaskReward"
@@ -110,6 +119,47 @@ local IDLE_ROW_STROKE_COLOR = Color3.fromRGB(85, 255, 255)
 local READY_TEXT_COLOR = Color3.fromRGB(255, 221, 37)
 local CLAIMED_TEXT_COLOR = Color3.fromRGB(0, 255, 0)
 local PROGRESS_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
+local CLAIMED_ROW_BACKGROUND_COLOR = Color3.fromRGB(96, 128, 168)
+local MUTED_ROW_TEXT_COLOR = Color3.fromRGB(214, 224, 238)
+local CHIP_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
+local TASK_STATUS_PROGRESS = "progress"
+local TASK_STATUS_READY = "ready"
+local TASK_STATUS_CLAIMED = "claimed"
+local STATUS_STYLES = {
+    [TASK_STATUS_PROGRESS] = {
+        Chip = Color3.fromRGB(0, 120, 215),
+        Fill = Color3.fromRGB(80, 235, 255),
+        RowText = Color3.fromRGB(255, 255, 255),
+    },
+    [TASK_STATUS_READY] = {
+        Chip = Color3.fromRGB(255, 160, 0),
+        Fill = Color3.fromRGB(255, 214, 40),
+        RowText = Color3.fromRGB(255, 221, 37),
+    },
+    [TASK_STATUS_CLAIMED] = {
+        Chip = Color3.fromRGB(46, 190, 70),
+        Fill = Color3.fromRGB(90, 225, 100),
+        RowText = Color3.fromRGB(140, 255, 150),
+    },
+}
+-- V6.16 motion. Every effect is visual only and stops when the panel closes.
+local FILL_TWEEN_INFO = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local ROW_ENTRANCE_FROM_SCALE = 0.8
+local ROW_ENTRANCE_DURATION = 0.22
+local ROW_ENTRANCE_STAGGER_SECONDS = 0.035
+local ROW_ENTRANCE_MAX_STAGGER_ROWS = 8
+local DETAIL_POP_FROM_SCALE = 0.96
+local DETAIL_POP_TWEEN_INFO = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local POP_TWEEN_INFO = TweenInfo.new(0.34, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local FLASH_TWEEN_INFO = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local CHIP_PULSE_TWEEN_INFO = TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+local GLOW_PULSE_TWEEN_INFO = TweenInfo.new(0.85, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+local GLOW_SPIN_TWEEN_INFO = TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1)
+local SHINE_SWEEP_SECONDS = 0.6
+local SHINE_GAP_SECONDS = 1.5
+local CHIP_PULSE_SCALE = 1.12
+local CLAIM_STAMP_FROM_SCALE = 1.8
+local CELEBRATION_SETTLE_SECONDS = 0.2
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -423,21 +473,68 @@ local function buildProgressText(task)
     return formatInteger(progress) .. "/" .. formatInteger(target)
 end
 
+local function getTaskStatus(taskData)
+    if taskData and taskData.isClaimed == true then
+        return TASK_STATUS_CLAIMED
+    elseif taskData and taskData.isClaimable == true then
+        return TASK_STATUS_READY
+    end
+    return TASK_STATUS_PROGRESS
+end
+
+local function getProgressRatio(taskData)
+    if not taskData then
+        return 0
+    end
+    return math.clamp((tonumber(taskData.progress) or 0) / math.max(1, tonumber(taskData.target) or 1), 0, 1)
+end
+
+-- Rows show finished tasks as full even if a stale sync still carries old progress.
+local function getRowProgressRatio(taskData, status)
+    if status ~= TASK_STATUS_PROGRESS then
+        return 1
+    end
+    return getProgressRatio(taskData)
+end
+
+local function setMutedTextColor(label, muted)
+    if not (label and (label:IsA("TextLabel") or label:IsA("TextButton"))) then
+        return
+    end
+    if label:GetAttribute("TaskBaseTextColor3") == nil then
+        label:SetAttribute("TaskBaseTextColor3", label.TextColor3)
+    end
+    label.TextColor3 = muted == true and MUTED_ROW_TEXT_COLOR or label:GetAttribute("TaskBaseTextColor3")
+end
+
 local function applyTaskStatus(label, taskData)
     if not (label and (label:IsA("TextLabel") or label:IsA("TextButton"))) then
         return
     end
+    -- V6.16 templates mark StatusText as a colored chip; older templates keep colored text.
+    local isChip = label:GetAttribute("TaskStatusChip") == true
+    if isChip then
+        label.Visible = taskData ~= nil
+    end
     if not taskData then
         label.Text = ""
-    elseif taskData.isClaimed == true then
+        return
+    end
+
+    local status = getTaskStatus(taskData)
+    if status == TASK_STATUS_CLAIMED then
         label.Text = "Claimed"
         label.TextColor3 = CLAIMED_TEXT_COLOR
-    elseif taskData.isClaimable == true then
+    elseif status == TASK_STATUS_READY then
         label.Text = "Ready"
         label.TextColor3 = READY_TEXT_COLOR
     else
         label.Text = "In progress"
         label.TextColor3 = PROGRESS_TEXT_COLOR
+    end
+    if isChip then
+        label.TextColor3 = CHIP_TEXT_COLOR
+        label.BackgroundColor3 = STATUS_STYLES[status].Chip
     end
 end
 
@@ -769,6 +866,329 @@ function TaskController:_playPanelClose(immediate)
     end)
 end
 
+-- One motion tween per target instance; a newer motion on the same target replaces the older one.
+function TaskController:_playMotion(target, tweenInfo, goal)
+    local current = self._motionTweens[target]
+    if current then
+        current:Cancel()
+    end
+    local tween = TweenService:Create(target, tweenInfo, goal)
+    self._motionTweens[target] = tween
+    tween.Completed:Connect(function()
+        if self._motionTweens[target] == tween then
+            self._motionTweens[target] = nil
+        end
+    end)
+    tween:Play()
+    return tween
+end
+
+-- Cancelled motion snaps to its final state so closing mid-animation never leaves shrunken rows or partial bars.
+function TaskController:_cancelMotionTweens()
+    for target, tween in pairs(self._motionTweens) do
+        tween:Cancel()
+        if target.Parent then
+            if target:IsA("UIScale") then
+                target.Scale = 1
+            elseif target:GetAttribute("TaskTargetRatio") ~= nil then
+                local ratio = tonumber(target:GetAttribute("TaskTargetRatio")) or 0
+                target.Size = UDim2.new(ratio, 0, target.Size.Y.Scale, target.Size.Y.Offset)
+                target.Visible = ratio > 0
+            elseif target:IsA("GuiObject") and target.Name == "ClaimFlash" then
+                target.BackgroundTransparency = 1
+            end
+        end
+    end
+    table.clear(self._motionTweens)
+end
+
+function TaskController:_setFillRatio(fill, ratio, animate, fromZero, delayTime)
+    if not (fill and fill:IsA("GuiObject")) then
+        return
+    end
+
+    local safeRatio = math.clamp(tonumber(ratio) or 0, 0, 1)
+    local size = fill.Size
+    local target = UDim2.new(safeRatio, 0, size.Y.Scale, size.Y.Offset)
+    fill:SetAttribute("TaskTargetRatio", safeRatio)
+    local current = self._motionTweens[fill]
+    if current then
+        current:Cancel()
+        self._motionTweens[fill] = nil
+    end
+
+    local delaySeconds = math.max(0, tonumber(delayTime) or 0)
+    if animate ~= true or not self._isOpen then
+        fill.Size = target
+        fill.Visible = safeRatio > 0
+        return
+    end
+    if fromZero == true then
+        fill.Size = UDim2.new(0, 0, size.Y.Scale, size.Y.Offset)
+    end
+    if delaySeconds <= 0 and math.abs(fill.Size.X.Scale - safeRatio) < 0.0005 then
+        fill.Size = target
+        fill.Visible = safeRatio > 0
+        return
+    end
+
+    fill.Visible = true
+    local tweenInfo = FILL_TWEEN_INFO
+    if delaySeconds > 0 then
+        tweenInfo = TweenInfo.new(FILL_TWEEN_INFO.Time, FILL_TWEEN_INFO.EasingStyle, FILL_TWEEN_INFO.EasingDirection, 0, false, delaySeconds)
+    end
+    local tween = self:_playMotion(fill, tweenInfo, { Size = target })
+    tween.Completed:Connect(function(playbackState)
+        if playbackState == Enum.PlaybackState.Completed and fill.Parent then
+            fill.Visible = safeRatio > 0
+        end
+    end)
+end
+
+function TaskController:_popNode(node, fromScale)
+    local popScale = node and node:FindFirstChild("PopScale")
+    if not (self._isOpen and popScale and popScale:IsA("UIScale")) then
+        return
+    end
+    popScale.Scale = fromScale
+    self:_playMotion(popScale, POP_TWEEN_INFO, { Scale = 1 })
+end
+
+function TaskController:_flashRow(row)
+    local flash = row and row:FindFirstChild("ClaimFlash")
+    if not (self._isOpen and flash and flash:IsA("GuiObject")) then
+        return
+    end
+    flash.BackgroundTransparency = 0.3
+    self:_playMotion(flash, FLASH_TWEEN_INFO, { BackgroundTransparency = 1 })
+end
+
+function TaskController:_playDetailPop()
+    local popScale = self._taskDetailRoot and self._taskDetailRoot:FindFirstChild("PopScale")
+    if not (self._isOpen and popScale and popScale:IsA("UIScale")) then
+        return
+    end
+    popScale.Scale = DETAIL_POP_FROM_SCALE
+    self:_playMotion(popScale, DETAIL_POP_TWEEN_INFO, { Scale = 1 })
+end
+
+-- Rows pop in top to bottom and their progress bars fill after them.
+function TaskController:_playRowEntrance()
+    if not (self._isOpen and self._scrollingFrame) then
+        return
+    end
+
+    local rows = {}
+    for _, entry in pairs(self._rowEntriesByTaskId) do
+        if entry.row.Parent == self._scrollingFrame then
+            table.insert(rows, entry.row)
+        end
+    end
+    table.sort(rows, function(left, right)
+        return left.LayoutOrder < right.LayoutOrder
+    end)
+
+    for index, row in ipairs(rows) do
+        local delayTime = math.min(index - 1, ROW_ENTRANCE_MAX_STAGGER_ROWS) * ROW_ENTRANCE_STAGGER_SECONDS
+        local uiScale = ensureUiScale(row)
+        if uiScale then
+            uiScale.Scale = ROW_ENTRANCE_FROM_SCALE
+            self:_playMotion(uiScale, TweenInfo.new(
+                ROW_ENTRANCE_DURATION,
+                Enum.EasingStyle.Back,
+                Enum.EasingDirection.Out,
+                0,
+                false,
+                delayTime
+            ), { Scale = 1 })
+        end
+        local fill = findNested(row, "ProgressTrack/Fill")
+        if fill then
+            self:_setFillRatio(fill, fill:GetAttribute("TaskTargetRatio"), true, true, delayTime + 0.1)
+        end
+    end
+end
+
+function TaskController:_playAmbientTween(key, target, tweenInfo, goal)
+    local current = self._ambientTweens[key]
+    if current then
+        current:Cancel()
+    end
+    local tween = TweenService:Create(target, tweenInfo, goal)
+    self._ambientTweens[key] = tween
+    tween:Play()
+    return tween
+end
+
+function TaskController:_stopAmbientEffects()
+    self._ambientSerial += 1
+    self._ambientSignature = ""
+    for _, tween in pairs(self._ambientTweens) do
+        tween:Cancel()
+    end
+    table.clear(self._ambientTweens)
+    for _, restore in ipairs(self._ambientRestores) do
+        restore()
+    end
+    table.clear(self._ambientRestores)
+end
+
+function TaskController:_startShineLoop(key, shine, fromPosition, toPosition)
+    local serial = self._ambientSerial
+    shine.Position = fromPosition
+    shine.Visible = true
+    table.insert(self._ambientRestores, function()
+        if shine.Parent then
+            shine.Visible = false
+            shine.Position = fromPosition
+        end
+    end)
+    task.spawn(function()
+        while self._ambientSerial == serial and shine.Parent do
+            shine.Position = fromPosition
+            self:_playAmbientTween(key, shine, TweenInfo.new(
+                SHINE_SWEEP_SECONDS,
+                Enum.EasingStyle.Quad,
+                Enum.EasingDirection.InOut
+            ), { Position = toPosition })
+            task.wait(SHINE_SWEEP_SECONDS + SHINE_GAP_SECONDS)
+        end
+    end)
+end
+
+-- Looping "ready" emphasis. Restarted only when the set of ready targets changes, so frequent
+-- progress syncs do not reset the pulse.
+function TaskController:_refreshAmbientEffects(tasks, selectedTask)
+    if not (self._isOpen and self._panel and self._taskDetailRoot) then
+        if self._ambientSignature ~= "" or #self._ambientRestores > 0 then
+            self:_stopAmbientEffects()
+        end
+        return
+    end
+
+    local selectedReady = selectedTask ~= nil
+        and getTaskStatus(selectedTask) == TASK_STATUS_READY
+        and (tonumber(self._pendingClaimsByTaskId[selectedTask.taskId]) or 0) <= os.clock()
+    local signatureParts = {
+        selectedReady and ("detail:" .. tostring(selectedTask.taskId) .. ":" .. tostring(self._rewardRenderSignature)) or "detail:none",
+    }
+    for _, taskData in ipairs(tasks) do
+        if getTaskStatus(taskData) == TASK_STATUS_READY then
+            table.insert(signatureParts, "row:" .. tostring(taskData.taskId))
+        end
+    end
+    local signature = table.concat(signatureParts, "|")
+    if signature == self._ambientSignature then
+        return
+    end
+    self:_stopAmbientEffects()
+    self._ambientSignature = signature
+
+    for _, taskData in ipairs(tasks) do
+        local entry = getTaskStatus(taskData) == TASK_STATUS_READY and self._rowEntriesByTaskId[taskData.taskId] or nil
+        local popScale = entry and findNested(entry.row, "ProgressText/PopScale")
+        if popScale and popScale:IsA("UIScale") then
+            popScale.Scale = 1
+            self:_playAmbientTween("row:" .. tostring(taskData.taskId), popScale, CHIP_PULSE_TWEEN_INFO, {
+                Scale = CHIP_PULSE_SCALE,
+            })
+            table.insert(self._ambientRestores, function()
+                if popScale.Parent then
+                    popScale.Scale = 1
+                end
+            end)
+        end
+    end
+    if not selectedReady then
+        return
+    end
+
+    local detail = self._taskDetailRoot
+    local glow = detail:FindFirstChild("ClaimGlow")
+    if glow and glow:IsA("GuiObject") then
+        local baseSize = glow.Size
+        local baseTransparency = glow.BackgroundTransparency
+        glow.Visible = true
+        self:_playAmbientTween("claimGlow", glow, GLOW_PULSE_TWEEN_INFO, {
+            Size = UDim2.new(baseSize.X.Scale * 1.08, baseSize.X.Offset, baseSize.Y.Scale * 1.3, baseSize.Y.Offset),
+            BackgroundTransparency = math.min(1, baseTransparency + 0.35),
+        })
+        table.insert(self._ambientRestores, function()
+            if glow.Parent then
+                glow.Visible = false
+                glow.Size = baseSize
+                glow.BackgroundTransparency = baseTransparency
+            end
+        end)
+    end
+
+    local claimShine = findNested(detail, "ClaimButton/Shine")
+    if claimShine and claimShine:IsA("GuiObject") then
+        self:_startShineLoop("claimShine", claimShine, UDim2.fromScale(-0.3, 0.5), UDim2.fromScale(1.3, 0.5))
+    end
+    local fillShine = findNested(detail, "ProgressTrack/Fill/Shine")
+    if fillShine and fillShine:IsA("GuiObject") then
+        self:_startShineLoop("fillShine", fillShine, UDim2.fromScale(-0.2, 0.5), UDim2.fromScale(1.2, 0.5))
+    end
+
+    for index, rewardRow in ipairs(self._generatedRewardRows) do
+        local rewardGlow = rewardRow:FindFirstChild("Glow")
+        if rewardGlow and rewardGlow:IsA("GuiObject") then
+            rewardGlow.Rotation = 0
+            rewardGlow.Visible = true
+            self:_playAmbientTween("rewardGlow:" .. tostring(index), rewardGlow, GLOW_SPIN_TWEEN_INFO, {
+                Rotation = 360,
+            })
+            table.insert(self._ambientRestores, function()
+                if rewardGlow.Parent then
+                    rewardGlow.Visible = false
+                    rewardGlow.Rotation = 0
+                end
+            end)
+        end
+    end
+end
+
+-- Claim/ready feedback waits until the panel is actually visible: the reward popup hides it first.
+function TaskController:_flushCelebrations()
+    if not self._isOpen then
+        table.clear(self._queuedCelebrations)
+        return
+    end
+    if not (self._panel and self._panel.Visible) or next(self._queuedCelebrations) == nil then
+        return
+    end
+
+    local queued = self._queuedCelebrations
+    self._queuedCelebrations = {}
+    local selectedTaskId = self._selectedTaskIdByPeriod[self:_getSelectedPeriodKey()]
+    for taskId, status in pairs(queued) do
+        local entry = self._rowEntriesByTaskId[taskId]
+        if entry and entry.row.Parent then
+            self:_flashRow(entry.row)
+            -- Ready rows already pulse this label; a pop would cancel that loop.
+            if status == TASK_STATUS_CLAIMED then
+                self:_popNode(entry.row:FindFirstChild("ProgressText"), 1.6)
+            end
+        end
+        if taskId == selectedTaskId and self._taskDetailRoot then
+            self:_popNode(self._taskDetailRoot:FindFirstChild("StatusText"), 1.4)
+            if status == TASK_STATUS_CLAIMED then
+                self:_popNode(self._taskDetailRoot:FindFirstChild("Complete"), CLAIM_STAMP_FROM_SCALE)
+            end
+        end
+    end
+end
+
+function TaskController:_scheduleCelebrationFlush()
+    if next(self._queuedCelebrations) == nil then
+        return
+    end
+    task.delay(CELEBRATION_SETTLE_SECONDS, function()
+        self:_flushCelebrations()
+    end)
+end
+
 function TaskController:_newDefaultState()
     return {
         tasks = {
@@ -872,10 +1292,38 @@ function TaskController:_applyTabs()
 
     applyTab(self._dailyTabRoot, dailySelected)
     applyTab(self._weeklyTabRoot, weeklySelected)
+    self:_renderTabBadge(self._dailyTabRoot, self:_countClaimableTasks("daily"))
+    self:_renderTabBadge(self._weeklyTabRoot, self:_countClaimableTasks("weekly"))
     setText(findNested(self._panel, "TitleBg/Title"), dailySelected and "Daily Tasks" or "Weekly Tasks")
 end
 
+function TaskController:_countClaimableTasks(periodKey)
+    local state = self:_getState()
+    local count = 0
+    for _, taskData in ipairs(state.tasks and state.tasks[periodKey] or {}) do
+        if taskData.isClaimable == true and taskData.isClaimed ~= true then
+            count += 1
+        end
+    end
+    return count
+end
+
+function TaskController:_renderTabBadge(tabRoot, count)
+    local badge = tabRoot and tabRoot:FindFirstChild("Badge")
+    if not (badge and badge:IsA("GuiObject")) then
+        return
+    end
+    local previousCount = tonumber(badge:GetAttribute("TaskBadgeCount")) or 0
+    badge:SetAttribute("TaskBadgeCount", count)
+    badge.Visible = count > 0
+    setText(badge:FindFirstChild("Count"), count > 9 and "9+" or tostring(count))
+    if count > previousCount then
+        self:_popNode(badge, 1.5)
+    end
+end
+
 function TaskController:_clearRows()
+    self:_cancelMotionTweens()
     self:_disconnectBindings(self._rowBindings)
     for _, row in ipairs(self._generatedRows) do
         if row and row.Parent then
@@ -1043,16 +1491,45 @@ function TaskController:_bindDetailClaimButton(taskData)
     end
 end
 
-function TaskController:_applyRowSelectedState(row, selected)
+function TaskController:_applyRowSelectedState(row, selected, status)
     setVisible(row and row:FindFirstChild("SelectedBg"), selected == true)
     setVisible(row and row:FindFirstChild("IdleBg"), selected ~= true)
     if row and row:IsA("GuiObject") then
-        row.BackgroundColor3 = selected == true and SELECTED_ROW_BACKGROUND_COLOR or IDLE_ROW_BACKGROUND_COLOR
+        if status == TASK_STATUS_CLAIMED then
+            row.BackgroundColor3 = CLAIMED_ROW_BACKGROUND_COLOR
+        else
+            row.BackgroundColor3 = selected == true and SELECTED_ROW_BACKGROUND_COLOR or IDLE_ROW_BACKGROUND_COLOR
+        end
     end
     local stroke = row and (row:FindFirstChild("SelectionStroke") or row:FindFirstChildOfClass("UIStroke"))
     if stroke and stroke:IsA("UIStroke") then
         stroke.Enabled = true
         stroke.Color = selected == true and SELECTED_ROW_STROKE_COLOR or IDLE_ROW_STROKE_COLOR
+    end
+    local muted = status == TASK_STATUS_CLAIMED
+    setMutedTextColor(row and row:FindFirstChild("TaskTitle"), muted)
+    setMutedTextColor(row and row:FindFirstChild("TaskSubtitle"), muted)
+end
+
+-- Optional V6.16 row nodes: ProgressTrack/Fill mini bar and ProgressText status.
+function TaskController:_renderRowProgress(row, taskData, status, isNewRow)
+    local style = STATUS_STYLES[status]
+    local fill = findNested(row, "ProgressTrack/Fill")
+    if fill and fill:IsA("GuiObject") then
+        fill.BackgroundColor3 = style.Fill
+        self:_setFillRatio(fill, getRowProgressRatio(taskData, status), true, isNewRow == true)
+    end
+
+    local progressLabel = row:FindFirstChild("ProgressText")
+    if progressLabel and progressLabel:IsA("TextLabel") then
+        if status == TASK_STATUS_READY then
+            progressLabel.Text = "Ready!"
+        elseif status == TASK_STATUS_CLAIMED then
+            progressLabel.Text = "Done"
+        else
+            progressLabel.Text = buildProgressText(taskData)
+        end
+        progressLabel.TextColor3 = style.RowText
     end
 end
 
@@ -1089,6 +1566,7 @@ function TaskController:_renderRows(tasks, selectedTask)
     local selectedTaskId = selectedTask and selectedTask.taskId or 0
     for index, taskData in ipairs(tasks) do
         local entry = self._rowEntriesByTaskId[taskData.taskId]
+        local isNewRow = entry == nil
         if not entry then
             local row = self._template:Clone()
             row.Name = "Task_" .. tostring(taskData.taskId)
@@ -1115,7 +1593,9 @@ function TaskController:_renderRows(tasks, selectedTask)
         setText(row:FindFirstChild("TaskTitle", true), buildTaskTitle(taskData))
         setText(row:FindFirstChild("TaskSubtitle", true), buildTaskSubtitle(taskData))
         setVisible(row:FindFirstChild("RedPoint", true), taskData.isClaimable == true and taskData.isClaimed ~= true)
-        self:_applyRowSelectedState(row, taskData.taskId == selectedTaskId)
+        local status = getTaskStatus(taskData)
+        self:_applyRowSelectedState(row, taskData.taskId == selectedTaskId, status)
+        self:_renderRowProgress(row, taskData, status, isNewRow)
     end
 end
 
@@ -1131,11 +1611,22 @@ function TaskController:_renderDetail(taskData)
     applyTaskStatus(self._taskDetailRoot:FindFirstChild("StatusText", true), taskData)
     setText(subtitleLabel, taskData and buildTaskSubtitle(taskData) or "")
 
+    local renderedTaskId = taskData and taskData.taskId or nil
+    local changedTask = self._detailRenderedTaskId ~= renderedTaskId
+    self._detailRenderedTaskId = renderedTaskId
     local progressFill = findNested(self._taskDetailRoot, "ProgressTrack/Fill")
     if progressFill and progressFill:IsA("GuiObject") then
-        local ratio = taskData and math.clamp((tonumber(taskData.progress) or 0) / math.max(1, tonumber(taskData.target) or 1), 0, 1) or 0
-        progressFill.Size = UDim2.new(ratio, 0, progressFill.Size.Y.Scale, progressFill.Size.Y.Offset)
-        progressFill.Visible = ratio > 0
+        local status = getTaskStatus(taskData)
+        local ratio = taskData and getRowProgressRatio(taskData, status) or 0
+        if taskData then
+            progressFill.BackgroundColor3 = STATUS_STYLES[status].Fill
+        end
+        -- A newly selected task fills from empty; progress on the same task grows from its current width.
+        self:_setFillRatio(progressFill, ratio, taskData ~= nil, changedTask)
+        setText(findNested(self._taskDetailRoot, "ProgressTrack/Percent"), taskData and (tostring(math.floor(ratio * 100)) .. "%") or "")
+    end
+    if changedTask and taskData then
+        self:_playDetailPop()
     end
 
     local progressBg = self._taskDetailRoot:FindFirstChild("ProgressBg", true)
@@ -1164,6 +1655,7 @@ function TaskController:_renderContent()
     local selectedTask = self:_resolveSelectedTask(tasks)
     self:_renderRows(tasks, selectedTask)
     self:_renderDetail(selectedTask)
+    self:_refreshAmbientEffects(tasks, selectedTask)
 end
 
 function TaskController:_renderAll()
@@ -1176,6 +1668,13 @@ end
 function TaskController:_applyStatePayload(payload)
     local source = type(payload) == "table" and payload or {}
     local tasks = type(source.tasks) == "table" and source.tasks or {}
+    local previousStatusByTaskId = {}
+    local previousState = self._state
+    for _, periodKey in ipairs({ "daily", "weekly" }) do
+        for _, taskData in ipairs(previousState and previousState.tasks and previousState.tasks[periodKey] or {}) do
+            previousStatusByTaskId[taskData.taskId] = getTaskStatus(taskData)
+        end
+    end
     self._state = {
         tasks = {
             daily = cloneTasks(tasks.daily or tasks.Daily),
@@ -1190,7 +1689,20 @@ function TaskController:_applyStatePayload(payload)
         hasClaimableReward = source.hasClaimableReward == true or source.HasClaimableReward == true,
     }
     self._pendingClaimsByTaskId = {}
+    -- Only forward transitions celebrate; the first sync and cycle resets stay quiet.
+    if self._isOpen then
+        for _, periodKey in ipairs({ "daily", "weekly" }) do
+            for _, taskData in ipairs(self._state.tasks[periodKey]) do
+                local previousStatus = previousStatusByTaskId[taskData.taskId]
+                local status = getTaskStatus(taskData)
+                if previousStatus and previousStatus ~= status and status ~= TASK_STATUS_PROGRESS then
+                    self._queuedCelebrations[taskData.taskId] = status
+                end
+            end
+        end
+    end
     self:_renderAll()
+    self:_scheduleCelebrationFlush()
 end
 
 function TaskController:_requestState()
@@ -1204,12 +1716,19 @@ function TaskController:_setOpen(isOpen, immediate)
         return
     end
 
+    local wasOpen = self._isOpen
     self._isOpen = isOpen == true
     if self._isOpen then
         self:_requestState()
         self:_renderAll()
         self:_playPanelOpen(immediate)
+        if not wasOpen and immediate ~= true then
+            self:_playRowEntrance()
+        end
     else
+        table.clear(self._queuedCelebrations)
+        self:_stopAmbientEffects()
+        self:_cancelMotionTweens()
         self:_playPanelClose(immediate)
     end
 end
@@ -1224,8 +1743,12 @@ end
 
 function TaskController:_selectPeriod(period)
     local normalized = tostring(period or "")
+    local previousPeriod = self._selectedPeriod
     self._selectedPeriod = normalized == "weekly" and "weekly" or "daily"
     self:_renderAll()
+    if previousPeriod ~= self._selectedPeriod then
+        self:_playRowEntrance()
+    end
 end
 
 function TaskController:_selectTask(taskId)
@@ -1264,8 +1787,11 @@ end
 function TaskController:_bindUi(silent)
     self:_disconnectBindings(self._buttonBindings)
     self:_disconnectBindings(self._detailBindings)
+    disconnectAll(self._panelConnections)
+    self:_stopAmbientEffects()
     self._detailClaimSignature = nil
     self._detailClaimButton = nil
+    self._detailRenderedTaskId = nil
     self:_clearRows()
     self:_clearRewardRows()
 
@@ -1325,6 +1851,12 @@ function TaskController:_bindUi(silent)
     ensureUiScale(self._panel)
     self._template.Visible = false
     hideNamedGuiChildren(self._rewardList, "RewardTemplate")
+    local panel = self._panel
+    table.insert(self._panelConnections, panel:GetPropertyChangedSignal("Visible"):Connect(function()
+        if panel.Visible and next(self._queuedCelebrations) ~= nil then
+            self:_scheduleCelebrationFlush()
+        end
+    end))
 
     self:_bindButton(self._entryButton, function()
         if isTaskEntryVisible() then
@@ -1401,8 +1933,11 @@ function TaskController:Init(dependencies)
     self._pendingClaimsByTaskId = {}
     self._detailClaimSignature = nil
     self._detailClaimButton = nil
+    self._queuedCelebrations = {}
 
     disconnectAll(self._connections)
+    disconnectAll(self._panelConnections)
+    self:_stopAmbientEffects()
     self:_disconnectBindings(self._buttonBindings)
     self:_disconnectBindings(self._rowBindings)
     self:_disconnectBindings(self._detailBindings)

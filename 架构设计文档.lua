@@ -361,4 +361,11 @@ V6.14 冲刺属性：
 3. PlayerStateSync.attributeState.finalStats / attributeFinalStats 新增上述两个服务端数值；attributeLevels/attributeCaps 支持两项新键。沿用现有加点及上限购买 Remote；FlashFeedback.cooldownSeconds/requestedDistanceStuds 使用服务端本次计算结果，字段形状不变。RemoteNames/RemoteEventService 同步协议注释，无新增事件。
 4. FlashService 请求通过玩家状态检查后读取最终属性，起冲时固定冷却/距离。边界裁剪后的射线方向与安全落点一致，避免增加距离后沿旧方向退让绕过边界墙；客户端沿用批准落点和下发冷却遮罩。
 5. StarterGui.Main.AttributeUpgrade.Window.Content.StatsGrid 新增两张原样式卡片；AttributeUpgradeOut.Window.StatsList 新增两行上限卡片。保留原窗口尺寸、位置、配色与按钮样式，内部网格调整为四行两列，避免遮挡点数栏和底部文字。tools/EnsureFlashAttributes.luau 在 Edit 模式幂等创建并校验，模板 FlashAttributeVersion=2。
+
+V6.16 任务界面样式与动效：
+1. 仅客户端表现 + 正式模板。TaskController 继续只绑定 StarterGui.Main.TaskBgNew 现成节点，新增节点全部可选绑定：Tabs.*Tab.Badge.Count、CountdownPill、Template.ProgressTrack.Fill / ProgressText(PopScale) / ClaimFlash、TaskDetail.StatusText(Attribute TaskStatusChip=true)、ProgressTrack.Percent / Fill.Shine、ClaimGlow、ClaimButton.Shine、RewardTemplate.Glow、Complete.PopScale、TaskDetail.PopScale；缺失时退回 V6.12 表现。模板迁移工具 tools/EnsureTaskUiStyle.luau 升至 TaskUiStyleVersion=5，仅改属性与新增上述节点，不删除原节点。
+2. 状态派生统一为 progress / ready / claimed（isClaimed 优先，其次 isClaimable），只读 TaskStateSync 既有字段；页签角标数量 = 该周期 isClaimable 且未 isClaimed 的任务数。进度比例仍用服务端 progress/target，完成态显示满格；时间类文本仍按分钟。
+3. 动效分两类：一次性 motion（条目弹入、进度填充、详情回弹、角标/印章弹出、行闪白）按目标实例单 Tween 管理，关闭或重绑时取消并直接落到终态；循环 ambient（可领取 Claim 光晕/扫光、进度条扫光、奖励光芒旋转、Ready! 脉冲）以就绪目标集合为签名，签名不变的状态同步不重启，面板关闭、Claiming 等待或选中非可领取任务即停止并复位。仅面板打开时播放，关闭状态下同步直接写入终值。
+4. 领取反馈：_applyStatePayload 对比前后状态，仅在面板打开时对 progress/ready -> ready/claimed 的前进变化排队；延迟 0.2 秒且面板可见才播放。ShopRewardFeedback 触发的 ClaimSuccessful 经 ModalUiController 临时隐藏任务面板时继续排队，面板 Visible 恢复后播放；关闭面板清空队列。服务端 TaskService 先 PushState 再发 ShopRewardFeedback 的顺序不变。
+5. 不变项：非模态 HUD 窗口行为、未完成 Claim 文本与无效点击、Claiming 1.2 秒等待、RequestTaskClaim 仅携带 taskId、服务端幂等领取与发奖、任务配置/奖励/刷新周期、Remote 协议与存档；不新增 Remote。
 ]]
