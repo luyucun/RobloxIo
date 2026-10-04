@@ -3,6 +3,7 @@
 日期：2026-10-04
 状态：V6.26完成Figma白图与静态模板；V6.27已正式接线——服务端权威解锁/装备/自动开关/存档、
 WeaponService逐槽外观解析、LevelWeaponSkinService/Controller与4个新Remote；入口暂用Studio GM /levelskin。
+V6.27.1正式HUD入口为Main.Left.Armory（点击打开窗口），GM入口保留，旧静态LevelWeaponSkinsButton隐藏不接线。
 依据：WeaponTierConfig、WeaponService、PlayerStateService、RebirthService、现有Skin界面。
 
 一、玩家体验

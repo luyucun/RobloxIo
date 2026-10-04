@@ -649,6 +649,18 @@ function PotionController:_findLuckEntry(mainGui)
         return nil
     end
 
+    -- V6.27.1: the luck entry moved to Main.BottomLeft.Luck; prefer the visible new home
+    -- and only fall back to the legacy Left placement for older GUI copies.
+    local bottomLeft = mainGui:FindFirstChild("BottomLeft")
+    if bottomLeft then
+        for _, name in ipairs({"Luck", "Lucky"}) do
+            local luckEntry = bottomLeft:FindFirstChild(name)
+            if luckEntry and luckEntry:IsA("GuiObject") then
+                return luckEntry
+            end
+        end
+    end
+
     local left = mainGui:FindFirstChild("Left")
     local luckEntry = left and (left:FindFirstChild("Luck") or left:FindFirstChild("Lucky"))
     if luckEntry and luckEntry:IsA("GuiObject") then

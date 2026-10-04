@@ -506,14 +506,68 @@ test("Request events fire equip intent only for unlocked tiers; close stays loca
     c:_setOpen(false)
     eq(c._isWindowOpen,false)
 end)
+test("Armory entry binds, opens the window and requests state (V6.27.1)",function()
+    local window=cloneWindow()
+    local c=controllerFixture(window)
+    local armory=game.StarterGui.Main.Left:FindFirstChild("Armory")
+    assert(armory,"Main.Left.Armory missing")
+    local armoryClone=armory:Clone()
+    armoryClone.Parent=guiFolder
+    table.clear(modalCalls)
+    eq(c:_bindArmory(armoryClone),true)
+    eq(armoryClone.TextButton.Active,true)
+    c:_onArmoryActivated()
+    local opened=false
+    for _,call in ipairs(modalCalls) do
+        if call.op=="open" and call.owner=="LevelWeaponSkins" and call.panel==window then opened=true end
+    end
+    assert(opened,"Armory click did not open the window")
+    local requested=false
+    for _,call in ipairs(modalCalls) do
+        if call.op=="requestState" then requested=true end
+    end
+    assert(requested,"Armory click did not request state")
+    eq(c:_bindArmory(armoryClone),true,"rebinding same node stays idempotent")
+end)
+test("Late-arriving window honors a pending open request",function()
+    table.clear(modalCalls)
+    local c=cloneService(Controller)
+    c._localPlayer={GetAttribute=function() return nil end}
+    c._catalog={}
+    c._requestStateEvent={FireServer=function() table.insert(modalCalls,{op="requestState"}) end}
+    c._requestEquipEvent={FireServer=function() end}
+    c:_onArmoryActivated()
+    eq(c._isWindowOpen,true)
+    local openedEarly=false
+    for _,call in ipairs(modalCalls) do
+        if call.op=="open" then openedEarly=true end
+    end
+    eq(openedEarly,false,"no window yet, nothing to open")
+    table.clear(modalCalls)
+    local window=cloneWindow()
+    c:_bindWindow(window)
+    local openedLate=false
+    for _,call in ipairs(modalCalls) do
+        if call.op=="open" and call.owner=="LevelWeaponSkins" and call.panel==window then openedLate=true end
+    end
+    assert(openedLate,"pending open not replayed on late window bind")
+end)
+test("PotionController luck entry prefers Main.BottomLeft.Luck (V6.27.1)",function()
+    local Potion=loadModule(controllers.PotionController)
+    local pc=cloneService(Potion)
+    local entry=pc:_findLuckEntry(game.StarterGui.Main)
+    assert(entry,"luck entry not found")
+    eq(entry.Parent.Name,"BottomLeft")
+    eq(entry.Name,"Luck")
+    assert(game.StarterGui.Main.Left:FindFirstChild("Luck"),"legacy hidden node expected for fallback check")
+end)
 ModalUi.PlayPanelOpen,ModalUi.PlayPanelClose=savedOpen,savedClose
 for _,node in ipairs(guiFolder:GetChildren()) do node:Destroy() end
 guiFolder:Destroy()
-
--- 25) Old GUI untouched
 test("Formal HUD entry stays hidden and old skin window untouched",function()
     eq(game.StarterGui.Main.Left.LevelWeaponSkinsButton.Visible,false)
     eq(game.StarterGui.Main.LevelWeaponSkins.Visible,false)
+    eq(game.StarterGui.Main.Left.Armory.Visible,true,"Armory HUD entry must stay visible")
     assert(game.StarterGui.Main:FindFirstChild("Skin"),"old Skin window missing")
     assert(game.StarterGui.Main.Skin:FindFirstChild("Tabs"),"old Skin tabs missing")
 end)

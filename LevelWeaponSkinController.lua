@@ -5,7 +5,8 @@
 Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/LevelWeaponSkinController
 说明: V6.27 独立等级武器外观窗口（Main.LevelWeaponSkins）。
 绑定静态模板、按服务端 LevelWeaponSkinStateSync 渲染三态卡片；仅发送装备/复原/自动开关意图。
-入口暂时为 Studio GM /levelskin 玩家属性（StudioLevelSkinUiPreview），HUD 按钮保持隐藏。
+正式HUD入口：Main.Left.Armory（V6.27.1）；Studio GM /levelskin 玩家属性入口保留。
+旧静态入口 Main.Left.LevelWeaponSkinsButton 保持隐藏（V6.26 模板节点，未接线）。
 ]]
 
 local Players = game:GetService("Players")
@@ -49,6 +50,8 @@ local LevelWeaponSkinController = {}
 
 LevelWeaponSkinController._localPlayer = nil
 LevelWeaponSkinController._window = nil
+LevelWeaponSkinController._armoryButton = nil
+LevelWeaponSkinController._armoryButtonConnection = nil
 LevelWeaponSkinController._content = nil
 LevelWeaponSkinController._scroll = nil
 LevelWeaponSkinController._template = nil
@@ -137,6 +140,30 @@ function LevelWeaponSkinController:_setOpen(isOpen)
     else
         ModalUiController:PlayPanelClose(WINDOW_OWNER_ID, nil, { Immediate = true })
     end
+end
+
+function LevelWeaponSkinController:_onArmoryActivated()
+    self:_setOpen(true)
+end
+
+function LevelWeaponSkinController:_bindArmory(armory)
+    local button = armory and (armory:IsA("GuiButton") and armory or armory:FindFirstChildWhichIsA("GuiButton", true)) or nil
+    if not button then
+        return false
+    end
+    if self._armoryButton == button then
+        return true
+    end
+    if self._armoryButtonConnection then
+        self._armoryButtonConnection:Disconnect()
+        self._armoryButtonConnection = nil
+    end
+    self._armoryButton = button
+    setGuiButtonInteractable(button, true)
+    self._armoryButtonConnection = button.Activated:Connect(function()
+        self:_onArmoryActivated()
+    end)
+    return true
 end
 
 function LevelWeaponSkinController:_captureTemplateStyle(template)
@@ -376,6 +403,12 @@ function LevelWeaponSkinController:_bindWindow(window)
 
     window.Visible = false
     self:_render()
+    -- An open request (Armory click / GM attribute) may have arrived before the window
+    -- existed; honor it now that the window is bound.
+    if self._isWindowOpen then
+        self:_render()
+        ModalUiController:PlayPanelOpen(WINDOW_OWNER_ID, window)
+    end
 end
 
 function LevelWeaponSkinController:_observeGui()
@@ -394,10 +427,15 @@ function LevelWeaponSkinController:_observeGui()
             if window and window ~= self._window then
                 self:_bindWindow(window)
             end
+            local left = main and main:FindFirstChild("Left") or nil
+            local armory = left and left:FindFirstChild("Armory") or nil
+            if armory then
+                self:_bindArmory(armory)
+            end
         end
         tryBind()
         table.insert(self._connections, playerGui.DescendantAdded:Connect(function(node)
-            if node.Name == "LevelWeaponSkins" and node:IsA("GuiObject") then
+            if node.Name == "LevelWeaponSkins" or node.Name == "Armory" then
                 task.defer(tryBind)
             end
         end))

@@ -492,4 +492,12 @@ autoUpgrade严格boolean；拒绝路径Feedback(Failed,reason)+回推权威状�
 （RemoteNames.StudioAttributes.LevelSkinUiPreview），控制器监听本玩家该属性开/关窗口；
 Main.Left.LevelWeaponSkinsButton常驻HUD入口保持隐藏，后续开放再走正式按钮绑定。
 远程契约详见RemoteEvent当前列表.lua三-补6；数值表无变化。
+V6.27.1 Armory正式入口与Luck迁移绑定 / 2026-10-04
+用户GUI调整+代码接线：新增Main.Left.Armory（复用Left.Skin入口样式）为等级武器外观正式HUD入口，
+LevelWeaponSkinController绑定其TextButton Activated打开窗口；Armory/窗口任一晚到均自动重绑，
+窗口未绑定时的打开请求记为待开、_bindWindow后自动补开（GM属性入口同样受益）。
+GM /levelskin保留；旧静态Main.Left.LevelWeaponSkinsButton继续隐藏不接线。
+Luck经验倍率入口由用户迁移至Main.BottomLeft.Luck（旧Main.Left.Luck隐藏保留），
+PotionController._findLuckEntry优先BottomLeft.Luck/Lucky、回退Left旧位置；
+倍率来源仍是服务端totalExperienceMultiplier，无Remote/数值/存档变化。
 ]]
