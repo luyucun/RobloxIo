@@ -470,6 +470,15 @@ test("State payload renders 6/40 unlocked, T6 selected, auto off",function()
     eq(t7:GetAttribute("PreviewState"),"Locked");eq(t6:GetAttribute("PreviewState"),"Selected")
     eq(window.Content:GetAttribute("PreviewHighestLevel"),55)
     eq(window.Content:GetAttribute("PreviewSelectedTierIndex"),6)
+    -- Catalog drift self-heal: stale static text/icon is refreshed from config on render.
+    local t6card=window.Content.ScrollingFrame.LevelWeapon_T6
+    t6card:FindFirstChild("Name").Text="StaleName"
+    t6card.UnlockLevelText.Text="Unlock at Lv. 999"
+    t6card.ItemTemplate.ItemIcon.Image="rbxassetid://1"
+    c:_applyState({selectedTierIndex=6,autoUpgrade=false,highestLevelReached=55,maxUnlockedTierIndex=6})
+    eq(t6card:FindFirstChild("Name").Text,WeaponTierConfig.GetDisplayNameForTier(WeaponTierConfig.Order[6]))
+    eq(t6card.UnlockLevelText.Text,"Unlock at Lv. 51")
+    eq(t6card.ItemTemplate.ItemIcon.Image,WeaponTierConfig.GetIconImageForTier(WeaponTierConfig.Order[6]))
 end)
 test("GM attribute opens the window through ModalUi and requests state",function()
     local window=cloneWindow()

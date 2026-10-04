@@ -268,8 +268,17 @@ function LevelWeaponSkinController:_renderCard(card, entry, highestLevel, select
     local owned = entry.unlockLevel <= highestLevel
     local selected = selectedTierIndex == entry.tierIndex
     card:SetAttribute("PreviewState", selected and "Selected" or (owned and "Owned" or "Locked"))
+    local nameLabel = card:FindFirstChild("Name")
+    if nameLabel then
+        nameLabel.Text = entry.name
+    end
+    local unlockLabel = card:FindFirstChild("UnlockLevelText")
+    if unlockLabel then
+        unlockLabel.Text = "Unlock at Lv. " .. tostring(entry.unlockLevel)
+    end
     local icon = card:FindFirstChild("ItemTemplate") and card.ItemTemplate:FindFirstChild("ItemIcon") or nil
     if icon then
+        icon.Image = entry.icon
         icon.ImageColor3 = owned and (self._styleRefs and self._styleRefs.iconColor or icon.ImageColor3) or LOCKED_ICON_COLOR
     end
     local equipButton = card:FindFirstChild("EquipButton")
