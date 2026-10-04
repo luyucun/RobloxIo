@@ -116,6 +116,10 @@ end
 function CameraController:_faceCameraToPortal()
     local player = self._localPlayer
     local camera = Workspace.CurrentCamera
+    -- A cinematic owns a Scriptable camera; respawn framing must not overwrite it.
+    if camera and camera.CameraType == Enum.CameraType.Scriptable then
+        return false
+    end
     local rootPart = getCharacterRoot(player)
     local portalPosition = resolvePortalPosition()
     if not (camera and rootPart and portalPosition) then

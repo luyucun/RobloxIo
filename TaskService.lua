@@ -346,6 +346,23 @@ function TaskService:RecordWheelSpin(player, amount)
     return self:RecordProgress(player, TaskConfig.TaskType.WheelSpinsUsed, amount, { source = "wheel" })
 end
 
+-- Called only after CombatService has confirmed a real enemy weapon break.
+function TaskService:RecordEnemyWeaponBroken(player, targetActor)
+    if not (ActorUtils.IsPlayer(player) and player.Parent) or targetActor == player then
+        return false
+    end
+    if not (ActorUtils.IsPlayer(targetActor) or ActorUtils.IsBot(targetActor)) then
+        return false
+    end
+    local sourceState = self._playerStateService and self._playerStateService:GetState(player)
+    local targetState = self._playerStateService and self._playerStateService:GetState(targetActor)
+    if not (sourceState and sourceState.Alive == true and sourceState.IsInArena == true
+        and targetState and targetState.Alive == true and targetState.IsInArena == true) then
+        return false
+    end
+    return self:RecordProgress(player, TaskConfig.TaskType.EnemyWeaponsBroken, 1, { source = "weapon_clash" })
+end
+
 function TaskService:RecordDiamondsEarned(player, amount, context)
     local safeContext = type(context) == "table" and context or {}
     safeContext.source = safeContext.source or "diamonds"

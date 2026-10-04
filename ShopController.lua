@@ -16,6 +16,7 @@ local Workspace = game:GetService("Workspace")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
 local TouchRegionGate = require(script.Parent:WaitForChild("TouchRegionGate"))
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -81,6 +82,11 @@ ShopController._rewardPopupSerial = 0
 ShopController._rewardPopupInputConnection = nil
 ShopController._rewardPopupCanClose = false
 ShopController._rewardPopupOriginalZIndexes = nil
+ShopController._rewardPopupOriginalPosition = nil
+ShopController._rewardPopupTweens = {}
+ShopController._pendingRewardPayloads = {}
+ShopController._activeRewardPayload = nil
+ShopController._rewardPresentationStarted = false
 ShopController._chestRewardFeedbackSerial = 0
 ShopController._lastRewardSource = nil
 ShopController._lastRewardKeepSourceOpen = false
@@ -1346,6 +1352,72 @@ function ShopController:_disconnectPopupInput()
     self._rewardPopupInputConnection = nil
 end
 
+function ShopController:_cancelRewardPopupTweens()
+    for _, tween in ipairs(self._rewardPopupTweens) do
+        tween:Cancel()
+    end
+    table.clear(self._rewardPopupTweens)
+end
+
+function ShopController:_suspendRewardPresentation()
+    self._rewardPopupSerial += 1
+    self._chestRewardFeedbackSerial += 1
+    self._rewardPopupCanClose = false
+    self._rewardPresentationStarted = false
+    self:_disconnectPopupInput()
+    self:_cancelRewardPopupTweens()
+    if self._claimPopup and self._claimPopup.Parent then
+        self._claimPopup.Visible = false
+        if self._rewardPopupOriginalPosition then
+            self._claimPopup.Position = self._rewardPopupOriginalPosition
+        end
+    end
+    self:_clearPopupItems()
+    self:_restoreRewardPopupZIndex()
+    ModalUiController:Release("ClaimSuccessful")
+    -- Keep the active payload/claimId. Suspension never dismisses or claims a reward.
+end
+
+function ShopController:_showNextRewardPopup()
+    if CinematicUiGate:IsBlocked() or self._rewardPresentationStarted then
+        return
+    end
+    if not self._activeRewardPayload then
+        self._activeRewardPayload = table.remove(self._pendingRewardPayloads, 1)
+    end
+    if not self._activeRewardPayload then
+        return
+    end
+    if not (self._claimPopup and self._claimPopup.Parent and self._claimPopupTemplate and self._claimPopupTemplate.Parent) then
+        -- Use the existing single retry worker instead of overlapping yielding UI binds.
+        self:_queueBindRetry()
+        return
+    end
+    self._rewardPresentationStarted = true
+    self:_playRewardFeedback(self._activeRewardPayload)
+end
+
+function ShopController:HasPendingRewardPresentation()
+    return self._activeRewardPayload ~= nil or #self._pendingRewardPayloads > 0
+end
+
+function ShopController:_enqueueRewardFeedback(payload)
+    if type(payload) ~= "table" then
+        return
+    end
+    if type(payload.state) == "table" then
+        self:_applyState(payload.state)
+    end
+    local presentation = {}
+    for key, value in pairs(payload) do
+        if key ~= "state" then
+            presentation[key] = value
+        end
+    end
+    table.insert(self._pendingRewardPayloads, presentation)
+    self:_showNextRewardPopup()
+end
+
 function ShopController:_raiseRewardPopupZIndex()
     if not (self._claimPopup and self._claimPopup:IsA("GuiObject")) then
         return
@@ -1468,19 +1540,29 @@ function ShopController:_closeRewardPopup()
     if not (self._claimPopup and self._claimPopup:IsA("GuiObject")) then
         return
     end
-    if not self._rewardPopupCanClose then
+    if CinematicUiGate:IsBlocked() or not self._rewardPopupCanClose or not isGuiVisible(self._claimPopup) then
         return
     end
 
     self:_disconnectPopupInput()
     self._rewardPopupCanClose = false
     self._rewardPopupSerial += 1
+    self:_cancelRewardPopupTweens()
     self._claimPopup.Visible = false
+    if self._rewardPopupOriginalPosition then
+        self._claimPopup.Position = self._rewardPopupOriginalPosition
+    end
     self:_clearPopupItems()
     self:_restoreRewardPopupZIndex()
     ModalUiController:Release("ClaimSuccessful")
     self:_claimPendingChestReward()
-    self:_returnToRewardSource()
+    self._activeRewardPayload = nil
+    self._rewardPresentationStarted = false
+    if #self._pendingRewardPayloads > 0 then
+        self:_showNextRewardPopup()
+    else
+        self:_returnToRewardSource()
+    end
 end
 
 function ShopController:_preparePopupItem(reward, order)
@@ -1517,16 +1599,20 @@ function ShopController:_preparePopupItem(reward, order)
 end
 
 function ShopController:_playRewardPopup(payload)
-    if type(payload) == "table" and payload.state then
-        self:_applyState(payload.state)
+    if CinematicUiGate:IsBlocked() then
+        self._rewardPresentationStarted = false
+        return
     end
 
     if not (self._claimPopup and self._claimPopup:IsA("GuiObject")) then
         self:_bindUi(true)
     end
     if not (self._claimPopup and self._claimPopup:IsA("GuiObject")) then
+        self._rewardPresentationStarted = false
+        self:_queueBindRetry()
         return
     end
+    self._rewardPresentationStarted = true
 
     self._lastRewardSource = tostring(payload and payload.source or "Shop")
     self._lastRewardKeepSourceOpen = type(payload) == "table" and payload.keepSourceOpen == true or false
@@ -1536,6 +1622,7 @@ function ShopController:_playRewardPopup(payload)
         self._lastRewardClaimId = nil
     end
     self:_disconnectPopupInput()
+    self:_cancelRewardPopupTweens()
     self._rewardPopupCanClose = false
     self._rewardPopupSerial += 1
     local serial = self._rewardPopupSerial
@@ -1565,7 +1652,8 @@ function ShopController:_playRewardPopup(payload)
     end
 
     local uiScale = ensureUiScale(self._claimPopup)
-    local originalPosition = self._claimPopup.Position
+    local originalPosition = self._rewardPopupOriginalPosition or self._claimPopup.Position
+    self._rewardPopupOriginalPosition = originalPosition
     if uiScale then
         uiScale.Scale = 1
     end
@@ -1579,6 +1667,7 @@ function ShopController:_playRewardPopup(payload)
     local popupTween = TweenService:Create(self._claimPopup, TweenInfo.new(POPUP_OPEN_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
         Position = originalPosition,
     })
+    table.insert(self._rewardPopupTweens, popupTween)
     popupTween:Play()
 
     local rewards = type(payload and payload.rewards) == "table" and payload.rewards or {}
@@ -1586,14 +1675,16 @@ function ShopController:_playRewardPopup(payload)
         local frame = self:_preparePopupItem(reward, index)
         if frame then
             task.delay(POPUP_ITEM_STAGGER * (index - 1), function()
-                if self._rewardPopupSerial ~= serial or not (frame and frame.Parent) then
+                if CinematicUiGate:IsBlocked() or self._rewardPopupSerial ~= serial or not (frame and frame.Parent) then
                     return
                 end
                 local itemScale = ensureUiScale(frame)
                 if itemScale then
-                    TweenService:Create(itemScale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                    local tween = TweenService:Create(itemScale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
                         Scale = 1,
-                    }):Play()
+                    })
+                    table.insert(self._rewardPopupTweens, tween)
+                    tween:Play()
                 end
             end)
         end
@@ -1602,7 +1693,7 @@ function ShopController:_playRewardPopup(payload)
 
     local closeDelay = math.max(MIN_POPUP_CLOSE_DELAY, tonumber(payload and payload.closeDelay) or POPUP_CLOSE_DELAY)
     task.delay(closeDelay, function()
-        if self._rewardPopupSerial ~= serial or not (self._claimPopup and self._claimPopup.Parent) then
+        if CinematicUiGate:IsBlocked() or self._rewardPopupSerial ~= serial or not (self._claimPopup and self._claimPopup.Parent) then
             return
         end
         self._rewardPopupCanClose = true
@@ -1617,6 +1708,10 @@ function ShopController:_playRewardPopup(payload)
 end
 
 function ShopController:_playRewardFeedback(payload)
+    if CinematicUiGate:IsBlocked() then
+        self._rewardPresentationStarted = false
+        return
+    end
     local source = tostring(type(payload) == "table" and payload.source or "Shop")
     if source ~= "Chest" then
         self:_playRewardPopup(payload)
@@ -1626,6 +1721,7 @@ function ShopController:_playRewardFeedback(payload)
     if not (self._claimPopup and self._claimPopup:IsA("GuiObject")) then
         self:_bindUi(true)
     end
+    self._rewardPresentationStarted = true
     self:_disconnectPopupInput()
     self._rewardPopupCanClose = false
     if self._claimPopup and self._claimPopup:IsA("GuiObject") then
@@ -1641,14 +1737,14 @@ function ShopController:_playRewardFeedback(payload)
     local startedAt = os.clock()
 
     local function playPopupAfterAnimation()
-        if completed or self._chestRewardFeedbackSerial ~= serial then
+        if completed or CinematicUiGate:IsBlocked() or self._chestRewardFeedbackSerial ~= serial then
             return
         end
         completed = true
         local elapsed = os.clock() - startedAt
         local delaySeconds = math.max(0, CHEST_REWARD_POPUP_MIN_DELAY - elapsed)
         task.delay(delaySeconds, function()
-            if self._chestRewardFeedbackSerial == serial then
+            if not CinematicUiGate:IsBlocked() and self._chestRewardFeedbackSerial == serial then
                 self:_playRewardPopup(payload)
             end
         end)
@@ -1672,6 +1768,7 @@ function ShopController:_playRewardFeedback(payload)
 end
 
 function ShopController:_bindUi(silent)
+    self:_suspendRewardPresentation()
     self:_disconnectButtonBindings()
 
     self._mainGui = findMainGui(self._localPlayer)
@@ -1686,7 +1783,11 @@ function ShopController:_bindUi(silent)
     self._leftEntry = left and left:FindFirstChild("Shop")
     self._panel = self._mainGui:FindFirstChild("Shop")
     self._featuredOffer = self._mainGui:FindFirstChild("PhantomReaperOffer")
-    self._claimPopup = self._mainGui:FindFirstChild("ClaimSuccessful")
+    local claimPopup = self._mainGui:FindFirstChild("ClaimSuccessful")
+    if claimPopup ~= self._claimPopup then
+        self._rewardPopupOriginalPosition = claimPopup and claimPopup.Position or nil
+    end
+    self._claimPopup = claimPopup
 
     local shopInfo = self._panel and self._panel:FindFirstChild("Shopinfo")
     local scrollingFrame = shopInfo and shopInfo:FindFirstChild("ScrollingFrame")
@@ -1799,6 +1900,9 @@ function ShopController:_bindUi(silent)
     self:_bindFeaturedOffer()
     self:_applyPassOwnershipUi()
     self:_requestShopState(false)
+    task.defer(function()
+        self:_showNextRewardPopup()
+    end)
     return true
 end
 
@@ -1876,7 +1980,7 @@ function ShopController:_connectRemotes()
     end
     if self._rewardFeedbackEvent then
         table.insert(self._connections, self._rewardFeedbackEvent.OnClientEvent:Connect(function(payload)
-            self:_playRewardFeedback(payload)
+            self:_enqueueRewardFeedback(payload)
         end))
     end
 end
@@ -1900,6 +2004,8 @@ function ShopController:OpenDiamonds()
 end
 
 function ShopController:Init(dependencies)
+    disconnectAll(self._connections)
+    self:_suspendRewardPresentation()
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._wheelController = dependencies and dependencies.WheelController or nil
     self._subscriptionController = dependencies and dependencies.SubscriptionController or nil
@@ -1908,8 +2014,9 @@ function ShopController:Init(dependencies)
     self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
     self._lastRewardKeepSourceOpen = false
     self._lastRewardClaimId = nil
-    self._chestRewardFeedbackSerial += 1
-    disconnectAll(self._connections)
+    self._pendingRewardPayloads = {}
+    self._activeRewardPayload = nil
+    self._rewardPresentationStarted = false
     self:_disconnectButtonBindings()
     self:_disconnectMarketStallBindings()
     self:_disconnectPopupInput()
@@ -1928,6 +2035,19 @@ function ShopController:Init(dependencies)
     end
     if not self:_bindMarketStall(true) then
         self:_queueMarketStallBindRetry()
+    end
+
+    table.insert(self._connections, CinematicUiGate:Subscribe(function(blocked)
+        if blocked then
+            self:_suspendRewardPresentation()
+        else
+            self:_showNextRewardPopup()
+        end
+    end))
+    if CinematicUiGate:IsBlocked() then
+        self:_suspendRewardPresentation()
+    else
+        self:_showNextRewardPopup()
     end
 
     local playerGui = self._localPlayer and self._localPlayer:FindFirstChild("PlayerGui")

@@ -80,6 +80,7 @@ local success, failure = pcall(function()
     temporaryModules = Instance.new("Folder")
     temporaryModules.Name = "WeaponUnlockVerification_" .. HttpService:GenerateGUID(false)
     temporaryModules.Parent = game:GetService("ServerStorage")
+    controllers.CinematicUiGate:Clone().Parent = temporaryModules
     local modalModule = controllers.ModalUiController:Clone()
     modalModule.Parent = temporaryModules
     modal = require(modalModule)

@@ -52,6 +52,13 @@ TITLE_DATA_START_ROW = 5
 TITLE_BEGIN_MARKER = "-- BEGIN GENERATED TITLE ROWS"
 TITLE_END_MARKER = "-- END GENERATED TITLE ROWS"
 
+BADGE_CONFIG_PATH = ROOT / "BadgeConfig.lua"
+BADGE_SHEET_NAME = "徽章"
+BADGE_HEADER_ROW = 4
+BADGE_DATA_START_ROW = 5
+BADGE_BEGIN_MARKER = "-- BEGIN GENERATED BADGE ROWS"
+BADGE_END_MARKER = "-- END GENERATED BADGE ROWS"
+
 SHOP_CONFIG_PATH = ROOT / "ShopConfig.lua"
 DIAMOND_SHOP_SHEET_NAME = "钻石购买"
 DIAMOND_SHOP_HEADER_ROW = 5
@@ -768,6 +775,7 @@ TASK_TYPE_BY_ID = {
     1002: ("Daily", "PlayerKills"),
     1003: ("Daily", "InviteFriend"),
     1004: ("Daily", "WheelSpinsUsed"),
+    1005: ("Daily", "EnemyWeaponsBroken"),
     2001: ("Weekly", "OnlineSeconds"),
     2002: ("Weekly", "PlayerKills"),
     2003: ("Weekly", "DiamondsEarned"),
@@ -1706,6 +1714,89 @@ def build_title_generated_block(rows) -> str:
     return "\n".join(lines)
 
 
+def badge_integer(value, field: str, row_index: int, minimum: int) -> int:
+    # Badge identifiers are stored as decimal text to preserve all 16 digits in Excel.
+    if isinstance(value, bool):
+        raise RuntimeError(f"Badge row {row_index}: {field} must be an integer.")
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, float) and value.is_integer():
+        result = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        result = int(value.strip())
+    else:
+        raise RuntimeError(f"Badge row {row_index}: {field} must be a decimal integer.")
+    if result < minimum or result > 9007199254740991:
+        raise RuntimeError(f"Badge row {row_index}: {field} is outside the exact Lua integer range.")
+    return result
+
+
+def read_badge_rows():
+    workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True, read_only=True)
+    try:
+        if BADGE_SHEET_NAME not in workbook.sheetnames:
+            raise RuntimeError("Missing badge sheet: " + BADGE_SHEET_NAME)
+        worksheet = workbook[BADGE_SHEET_NAME]
+        if worksheet.max_column is None or worksheet.max_row is None:
+            worksheet.calculate_dimension(force=True)
+        headers = build_header_map(worksheet, BADGE_HEADER_ROW)
+        required_headers = ["Key", "英文名称", "英文说明", "分组", "条件字段", "目标值", "官方徽章ID", "UniverseId", "口径备注"]
+        missing = [header for header in required_headers if header not in headers]
+        if missing:
+            raise RuntimeError("Missing badge sheet headers: " + ", ".join(missing))
+        rows, warnings = [], []
+        keys, badge_ids = set(), set()
+        condition_types = {"Welcome", "HighestLevelReached", "TotalPlayerKills", "FirstBossDefeated", "Rebirth"}
+        for row_index in range(BADGE_DATA_START_ROW, worksheet.max_row + 1):
+            values = {header: cell_by_header(worksheet, row_index, headers, header) for header in required_headers}
+            if all(is_blank(value) for value in values.values()):
+                continue
+            key = str(values["Key"] or "").strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or key in keys:
+                raise RuntimeError(f"Badge row {row_index}: invalid or duplicate Key {key!r}.")
+            name = str(values["英文名称"] or "").strip()
+            description = str(values["英文说明"] or "").strip()
+            group = str(values["分组"] or "").strip()
+            condition = str(values["条件字段"] or "").strip()
+            if not name or not description or group != "Gameplay" or condition not in condition_types:
+                raise RuntimeError(f"Badge row {row_index}: invalid name, description, group or condition.")
+            badge_id = badge_integer(values["官方徽章ID"], "官方徽章ID", row_index, 0)
+            target = badge_integer(values["目标值"], "目标值", row_index, 1)
+            universe_id = badge_integer(values["UniverseId"], "UniverseId", row_index, 1)
+            if condition in {"Welcome", "FirstBossDefeated"} and target != 1:
+                raise RuntimeError(f"Badge row {row_index}: {condition} target must be 1.")
+            if badge_id > 0 and badge_id in badge_ids:
+                raise RuntimeError(f"Badge row {row_index}: duplicate official badge ID {badge_id}.")
+            if badge_id == 0:
+                warnings.append(f"badge {key}: ID=0 is unconfigured and cannot be awarded.")
+            keys.add(key)
+            badge_ids.add(badge_id)
+            rows.append({"Key": key, "Id": badge_id, "Name": name, "Description": description,
+                         "Group": group, "UniverseId": universe_id, "Condition": {"Type": condition, "Target": target}})
+        if not rows or len({row["UniverseId"] for row in rows}) != 1:
+            raise RuntimeError("Badge sheet must contain definitions from one UniverseId.")
+        return rows, warnings
+    finally:
+        workbook.close()
+
+
+def build_badge_generated_block(rows) -> str:
+    lines = [BADGE_BEGIN_MARKER,
+             "-- Source: IO_BaseBalanceDraft.xlsx / 徽章. Update via tools/SyncCodeConfigFromWorkbook.py --badge-only.",
+             f"BadgeConfig.UniverseId = {rows[0]['UniverseId']}", "BadgeConfig.Badges = {"]
+    for row in rows:
+        lines.extend([f"    {row['Key']} = {{", f"        Id = {row['Id']},",
+                      f"        Key = {lua_string(row['Key'])},", f"        Name = {lua_string(row['Name'])},",
+                      f"        Description = {lua_string(row['Description'])},", f"        Group = {lua_string(row['Group'])},",
+                      f"        UniverseId = {row['UniverseId']},",
+                      "        Condition = { Type = %s, Target = %d }," % (lua_string(row['Condition']['Type']), row['Condition']['Target']),
+                      "    },"])
+    lines.extend(["}", "BadgeConfig.ProgressBadgeKeys = {"])
+    lines.extend(f"    {lua_string(row['Key'])}," for row in rows)
+    lines.extend(["}", BADGE_END_MARKER])
+    return "\n".join(lines)
+
+
 def read_attribute_config_rows():
     workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
     config_sheet = get_sheet(workbook, ATTRIBUTE_CONFIG_SHEET_NAME, len(workbook.worksheets) - 3)
@@ -2219,6 +2310,16 @@ def sync_seven_day_login_reward_config() -> dict:
     }
 
 
+def sync_badge_config() -> dict:
+    rows, warnings = read_badge_rows()
+    source = BADGE_CONFIG_PATH.read_text(encoding="utf-8")
+    updated = replace_generated_block(source, build_badge_generated_block(rows),
+                                      BADGE_BEGIN_MARKER, BADGE_END_MARKER, BADGE_CONFIG_PATH)
+    BADGE_CONFIG_PATH.write_text(updated, encoding="utf-8", newline="\n")
+    return {"badgeRows": len(rows), "gameplayBadgeRows": len(rows),
+            "pendingBadgeIds": sum(row["Id"] == 0 for row in rows), "warnings": warnings}
+
+
 def sync_title_config() -> dict:
     title_rows, title_warnings = read_title_rows()
     title_source = TITLE_CONFIG_PATH.read_text(encoding="utf-8")
@@ -2341,6 +2442,7 @@ def main() -> None:
     parser.add_argument("--skin-only", action="store_true", help="Only sync SkinConfig.lua from the skin sheet and weapon metadata.")
     parser.add_argument("--trail-only", action="store_true", help="Only sync TrailConfig.lua from the trail sheet.")
     parser.add_argument("--title-only", action="store_true", help="Only sync TitleConfig.lua from the title sheet.")
+    parser.add_argument("--badge-only", action="store_true", help="Only sync BadgeConfig.lua from the badge sheet.")
     parser.add_argument("--task-only", action="store_true", help="Only sync TaskConfig.lua from the task sheet.")
     parser.add_argument("--special-event-only", action="store_true", help="Only sync SpecialEventConfig.lua from the special event sheet.")
     parser.add_argument("--monster-only", action="store_true", help="Only sync MonsterCatalog.lua from the monster catalog sheet.")
@@ -2350,6 +2452,10 @@ def main() -> None:
     parser.add_argument("--flash-only", action="store_true", help="Only sync GameConfig.FLASH from the skill sheet.")
     parser.add_argument("--level-progression-only", action="store_true", help="Only sync the player level cap, experience cap, and hidden weapon progression.")
     args = parser.parse_args()
+
+    if args.badge_only:
+        print(json.dumps(sync_badge_config(), ensure_ascii=False))
+        return
 
     if args.diamond_shop_only:
         print(json.dumps({
@@ -2448,6 +2554,7 @@ def main() -> None:
     TRAIL_CONFIG_PATH.write_text(updated_trail_source, encoding="utf-8", newline="\n")
 
     title_result = sync_title_config()
+    badge_result = sync_badge_config()
     chest_result = sync_chest_config()
     diamond_shop_result = sync_diamond_shop_config()
     wheel_result = sync_wheel_config()
@@ -2462,6 +2569,7 @@ def main() -> None:
         "skinRows": skin_result["skinRows"],
         "trailRows": len(trail_rows),
         "titleRows": title_result["titleRows"],
+        **badge_result,
         **chest_result,
         **potion_result,
         **wheel_result,
@@ -2474,6 +2582,7 @@ def main() -> None:
             + online_warnings
             + seven_day_result["warnings"]
             + title_result["warnings"]
+            + badge_result["warnings"]
             + wheel_result["warnings"]
             + task_result.get("warnings", []),
     }, ensure_ascii=False))

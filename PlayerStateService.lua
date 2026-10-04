@@ -546,6 +546,25 @@ local function normalizeEquippedTitleId(equippedTitleId, ownedTitles)
     return nil
 end
 
+-- V6.27 level weapon skins: manual base appearance must be a real tier unlocked by the
+-- server-tracked highest level; anything else falls back to nil (default level look).
+local function normalizeSelectedLevelWeaponTierIndex(value, highestLevelReached)
+    local tierIndex = math.floor(tonumber(value) or 0)
+    if tierIndex < 1 or tierIndex > WeaponTierConfig.TotalTierCount then
+        return nil
+    end
+    local highest = math.max(1, math.floor(tonumber(highestLevelReached) or GameConfig.PLAYER.BaseLevel))
+    if WeaponTierConfig.GetUnlockLevelForTierIndex(tierIndex) > highest then
+        return nil
+    end
+    return tierIndex
+end
+
+-- Only an explicit false disables auto upgrade; nil/garbage keeps the default true.
+local function normalizeLevelWeaponAutoUpgrade(value)
+    return value ~= false
+end
+
 local function shouldCountDiamondEarn(delta, context)
     if math.floor(tonumber(delta) or 0) <= 0 then
         return false
@@ -1081,6 +1100,7 @@ end
 function PlayerStateService:_applyLevelDerivedState(state)
     state.Level = normalizeLevel(state.Level)
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or state.Level), state.Level)
+    state.FirstBossDefeated = state.FirstBossDefeated == true
     self:_normalizeAttributeState(state)
     local finalStats = state.FinalStats or AttributeConfig.CalculateFinalStats(state.AttributeLevels, state.AttributeCaps)
     local baseMaxHealth = GameConfig.GetMaxHealthForLevel(state.Level)
@@ -1171,6 +1191,7 @@ function PlayerStateService:_createDefaultState(actor)
         DesiredWeaponIcon = WeaponTierConfig.GetIconImageForTier(GameConfig.PLAYER.BaseWeaponTier),
         KillCount = 0,
         TotalPlayerKills = 0,
+        FirstBossDefeated = false,
         Rebirth = 0,
         RebirthScore = 0,
         ExtraExperienceBonus = 0,
@@ -1206,6 +1227,8 @@ function PlayerStateService:_createDefaultState(actor)
         FavoritePromptState = normalizeFavoritePromptState(nil),
         OwnedSkins = {},
         EquippedSkinId = nil,
+        SelectedLevelWeaponTierIndex = nil,
+        AutoUpgradeLevelWeaponSkin = true,
         OwnedTrails = {},
         EquippedTrailId = nil,
         Chests = {},
@@ -2139,6 +2162,7 @@ function PlayerStateService:Init(dependencies)
 end
 
 function PlayerStateService:BindSystems(dependencies)
+    self._badgeAwardService = dependencies and dependencies.BadgeAwardService or self._badgeAwardService
     self._weaponService = dependencies and dependencies.WeaponService or self._weaponService
     self._weaponUnlockRewardService = dependencies and dependencies.WeaponUnlockRewardService or self._weaponUnlockRewardService
     self._leaderboardService = dependencies and dependencies.LeaderboardService or self._leaderboardService
@@ -2150,6 +2174,33 @@ function PlayerStateService:BindSystems(dependencies)
     self._specialEventService = dependencies and dependencies.SpecialEventService or self._specialEventService
     self._skinService = dependencies and dependencies.SkinService or self._skinService
     self._taskService = dependencies and dependencies.TaskService or self._taskService
+end
+
+function PlayerStateService:CheckAchievementBadges(actor, source)
+    if ActorUtils.IsPlayer(actor) and self._badgeAwardService and self._badgeAwardService.CheckProgress then
+        local success, message = pcall(self._badgeAwardService.CheckProgress, self._badgeAwardService, actor, source or "ProgressChanged")
+        if not success then
+            warn("[PlayerStateService] Achievement check failed: " .. tostring(message))
+        end
+    end
+end
+
+function PlayerStateService:RecordBossDefeated(actor)
+    if not (ActorUtils.IsPlayer(actor) and actor.Parent) then
+        return false
+    end
+    if not (self._rebirthService and self._rebirthService:IsPlayerLoaded(actor)) then
+        return false
+    end
+    local state = self:_getOrCreateState(actor)
+    if state.FirstBossDefeated == true then
+        self:CheckAchievementBadges(actor, "BossDefeated")
+        return false
+    end
+    state.FirstBossDefeated = true
+    self._rebirthService:MarkDirty(actor)
+    self:CheckAchievementBadges(actor, "BossDefeated")
+    return true
 end
 
 function PlayerStateService:_markArenaProgressDirty()
@@ -2289,6 +2340,8 @@ function PlayerStateService:BuildStatePayload(actor)
         chests = copyNumberMap(state.Chests),
         ownedTitles = copyBooleanMap(ownedTitles),
         equippedTitleId = state.EquippedTitleId,
+        selectedLevelWeaponTierIndex = state.SelectedLevelWeaponTierIndex,
+        levelWeaponSkinAutoUpgrade = state.AutoUpgradeLevelWeaponSkin ~= false,
         hasUnseenTitleUnlock = state.HasUnseenTitleUnlock == true,
         weaponUnlockRewards = {
             claimedTiers = copyBooleanMap(weaponUnlockRewards.ClaimedTiers or {}),
@@ -2428,6 +2481,7 @@ function PlayerStateService:AddKillCount(actor, amount)
     end
     state.KillCount += delta
     state.TotalPlayerKills += delta
+    self:CheckAchievementBadges(actor, "PlayerKill")
     self:_syncLeaderstats(actor, state)
     if self._leaderboardService then
         self._leaderboardService:MarkDirty()
@@ -2441,7 +2495,11 @@ end
 
 function PlayerStateService:SetTotalPlayerKills(actor, count)
     local state = self:_getOrCreateState(actor)
-    state.TotalPlayerKills = math.max(0, math.floor(tonumber(count) or 0))
+    state.TotalPlayerKills = math.max(normalizeNonNegativeInteger(state.TotalPlayerKills), normalizeNonNegativeInteger(count))
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    self:CheckAchievementBadges(actor, "PlayerKillsLoaded")
     self:_syncLeaderstats(actor, state)
     self:PushState(actor)
     if self._leaderboardService then
@@ -2804,6 +2862,9 @@ function PlayerStateService:EquipSkin(actor, skinId)
 
     local state = self:_getOrCreateState(actor)
     state.EquippedSkinId = skin.Id
+    -- V6.27 appearance-source mutex: a special skin clears the manual level look,
+    -- the same way equipping a level look clears the special skin equip state.
+    state.SelectedLevelWeaponTierIndex = nil
     self:PushState(actor)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
@@ -2841,6 +2902,120 @@ end
 function PlayerStateService:GetEquippedSkinConfig(actor)
     local skinId = self:GetEquippedSkinId(actor)
     return skinId and SkinConfig.GetSkin(skinId) or nil
+end
+
+function PlayerStateService:GetMaxUnlockedLevelWeaponTierIndex(actor)
+    local state = self:_getOrCreateState(actor)
+    local loadout = WeaponTierConfig.ResolveLoadoutForLevel(state.HighestLevelReached)
+    return math.max(1, math.floor(tonumber(loadout and loadout.TierIndex) or 1))
+end
+
+function PlayerStateService:GetLevelWeaponSkinState(actor)
+    local state = self:_getOrCreateState(actor)
+    state.SelectedLevelWeaponTierIndex = normalizeSelectedLevelWeaponTierIndex(
+        state.SelectedLevelWeaponTierIndex,
+        state.HighestLevelReached
+    )
+    state.AutoUpgradeLevelWeaponSkin = normalizeLevelWeaponAutoUpgrade(state.AutoUpgradeLevelWeaponSkin)
+    return {
+        selectedTierIndex = state.SelectedLevelWeaponTierIndex,
+        autoUpgrade = state.AutoUpgradeLevelWeaponSkin,
+        highestLevelReached = state.HighestLevelReached,
+        maxUnlockedTierIndex = self:GetMaxUnlockedLevelWeaponTierIndex(actor),
+    }
+end
+
+-- Per-slot visual resolution used by WeaponService._createWeaponState. Returns nil when the
+-- slot should keep its actual tier template (default level look, or auto mode with a higher
+-- actual tier), otherwise the manually selected tier config {TemplateName, IconImage, TierIndex}.
+function PlayerStateService:GetLevelWeaponVisualConfig(actor, tierConfig)
+    if not (tierConfig and tierConfig.TierIndex) then
+        return nil
+    end
+    local state = self:_getOrCreateState(actor)
+    local selectedTierIndex = normalizeSelectedLevelWeaponTierIndex(
+        state.SelectedLevelWeaponTierIndex,
+        state.HighestLevelReached
+    )
+    if not selectedTierIndex then
+        return nil
+    end
+    if state.AutoUpgradeLevelWeaponSkin ~= false and tierConfig.TierIndex > selectedTierIndex then
+        return nil
+    end
+    local selectedTierName = WeaponTierConfig.Order[selectedTierIndex]
+    local selectedTierConfig = selectedTierName and WeaponTierConfig.Tiers[selectedTierName] or nil
+    if not selectedTierConfig then
+        return nil
+    end
+    return {
+        TemplateName = selectedTierConfig.TemplateName,
+        IconImage = selectedTierConfig.IconImage or WeaponTierConfig.DefaultIconImage,
+        TierIndex = selectedTierConfig.TierIndex,
+    }
+end
+
+function PlayerStateService:EquipLevelWeaponSkin(actor, tierIndex)
+    local requestedTierIndex = tonumber(tierIndex)
+    if not requestedTierIndex or requestedTierIndex % 1 ~= 0 then
+        return false, "InvalidTierIndex"
+    end
+    local normalizedTierIndex = requestedTierIndex
+    if normalizedTierIndex < 1 or normalizedTierIndex > WeaponTierConfig.TotalTierCount then
+        return false, "InvalidTierIndex"
+    end
+    local state = self:_getOrCreateState(actor)
+    if WeaponTierConfig.GetUnlockLevelForTierIndex(normalizedTierIndex) > state.HighestLevelReached then
+        return false, "Locked"
+    end
+
+    state.SelectedLevelWeaponTierIndex = normalizedTierIndex
+    -- V6.27 appearance-source mutex: keep ownership, drop the special skin equip state.
+    state.EquippedSkinId = nil
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if self._weaponService and self._weaponService.RebuildWeaponsForActor then
+        self._weaponService:RebuildWeaponsForActor(actor)
+    end
+    return true, "Equipped"
+end
+
+function PlayerStateService:UseLevelWeaponLook(actor)
+    local state = self:_getOrCreateState(actor)
+    state.SelectedLevelWeaponTierIndex = nil
+    state.AutoUpgradeLevelWeaponSkin = true
+    state.EquippedSkinId = nil
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if self._weaponService and self._weaponService.RebuildWeaponsForActor then
+        self._weaponService:RebuildWeaponsForActor(actor)
+    end
+    return true, "Reset"
+end
+
+function PlayerStateService:SetLevelWeaponAutoUpgrade(actor, enabled)
+    if type(enabled) ~= "boolean" then
+        return false, "InvalidArgument"
+    end
+    local state = self:_getOrCreateState(actor)
+    state.AutoUpgradeLevelWeaponSkin = enabled
+    if not enabled and state.SelectedLevelWeaponTierIndex == nil then
+        -- Turning auto off without a manual pick still needs something to pin;
+        -- pin the highest unlocked tier as the base appearance.
+        state.SelectedLevelWeaponTierIndex = self:GetMaxUnlockedLevelWeaponTierIndex(actor)
+    end
+    self:PushState(actor)
+    if self._rebirthService then
+        self._rebirthService:MarkDirty(actor)
+    end
+    if self._weaponService and self._weaponService.RebuildWeaponsForActor then
+        self._weaponService:RebuildWeaponsForActor(actor)
+    end
+    return true, "AutoUpdated"
 end
 
 function PlayerStateService:GetOwnedTrails(actor)
@@ -3452,6 +3627,7 @@ end
 function PlayerStateService:SetRebirth(actor, count)
     local state = self:_getOrCreateState(actor)
     state.Rebirth = math.max(0, math.floor(tonumber(count) or 0))
+    self:CheckAchievementBadges(actor, "RebirthChanged")
     self:_syncLeaderstats(actor, state)
     self:PushState(actor)
     if self._leaderboardService then
@@ -3468,6 +3644,7 @@ function PlayerStateService:AddRebirth(actor, amount)
     local delta = math.max(0, math.floor(tonumber(amount) or 0))
     state.Rebirth = math.max(0, math.floor(tonumber(state.Rebirth) or 0))
     state.Rebirth += delta
+    self:CheckAchievementBadges(actor, "RebirthChanged")
     self:_syncLeaderstats(actor, state)
     self:PushState(actor)
     if self._leaderboardService then
@@ -3509,12 +3686,23 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         state.Chests = normalizeChests(savedProgress.chests or savedProgress.Chests)
         state.OwnedTitles = normalizeOwnedTitles(savedProgress.ownedTitles or savedProgress.OwnedTitles)
         state.EquippedTitleId = normalizeEquippedTitleId(savedProgress.equippedTitleId or savedProgress.EquippedTitleId, state.OwnedTitles)
+        state.SelectedLevelWeaponTierIndex = normalizeSelectedLevelWeaponTierIndex(
+            savedProgress.selectedLevelWeaponTierIndex or savedProgress.SelectedLevelWeaponTierIndex,
+            state.HighestLevelReached
+        )
+        local savedAutoUpgrade = savedProgress.autoUpgradeLevelWeaponSkin
+        if savedAutoUpgrade == nil then
+            savedAutoUpgrade = savedProgress.AutoUpgradeLevelWeaponSkin
+        end
+        state.AutoUpgradeLevelWeaponSkin = normalizeLevelWeaponAutoUpgrade(savedAutoUpgrade)
         local savedAttributeCaps = savedProgress.attributeCaps or savedProgress.AttributeCaps or state.AttributeCaps
         preserveLegacyBladeRecoveryCap(state, savedAttributeCaps, savedProgress.legacyBladeRecoveryCap or savedProgress.LegacyBladeRecoveryCap)
         state.AttributeCaps = AttributeConfig.NormalizeCaps(savedAttributeCaps)
         state.TotalDeaths = normalizeNonNegativeInteger(savedProgress.totalDeaths or savedProgress.TotalDeaths)
         state.TotalDiamondsEarned = normalizeNonNegativeInteger(savedProgress.totalDiamondsEarned or savedProgress.TotalDiamondsEarned)
         state.TotalOnlineSeconds = normalizeNonNegativeInteger(savedProgress.totalOnlineSeconds or savedProgress.TotalOnlineSeconds)
+        state.TotalPlayerKills = math.max(normalizeNonNegativeInteger(state.TotalPlayerKills), normalizeNonNegativeInteger(savedProgress.totalPlayerKills or savedProgress.TotalPlayerKills))
+        state.FirstBossDefeated = state.FirstBossDefeated == true or savedProgress.firstBossDefeated == true or savedProgress.FirstBossDefeated == true
         state.HasUnseenTitleUnlock = savedProgress.hasUnseenTitleUnlock == true or savedProgress.HasUnseenTitleUnlock == true
         state.LastOnlineClock = os.clock()
         local savedWeaponUnlockRewards = savedProgress.weaponUnlockRewards or savedProgress.WeaponUnlockRewards
@@ -3546,6 +3734,12 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
                 state.CurrentHealth = GameConfig.GetMaxHealthForLevel(restoredLevel)
             end
         end
+        -- Snapshot restore may raise HighestLevelReached after the initial read; re-check the
+        -- manual selection against the final value so equips stay within unlocked tiers.
+        state.SelectedLevelWeaponTierIndex = normalizeSelectedLevelWeaponTierIndex(
+            state.SelectedLevelWeaponTierIndex,
+            state.HighestLevelReached
+        )
         state.ActivePotions = normalizeActivePotions(savedProgress.activePotions or savedProgress.ActivePotions, savedProgress.activePotion or savedProgress.ActivePotion)
         state.ActivePotion = nil
     end
@@ -3581,6 +3775,7 @@ function PlayerStateService:ApplyRebirth(actor, spendRequiredScore)
     -- Commit both authoritative values before any notification can yield or fail.
     state.RebirthScore = currentScore - requiredScore
     state.Rebirth = previousRebirth + 1
+    self:CheckAchievementBadges(actor, "RebirthCompleted")
     local syncSuccess, syncError = pcall(function()
         if self._rebirthService then
             self._rebirthService:MarkDirty(actor)
@@ -3693,6 +3888,7 @@ function PlayerStateService:_addExperience(actor, amount, requireActiveInArena)
     if didLevelUp then
         self:_awardSkillPointsForLevelGain(state, previousLevel, state.Level)
         self:_applyLevelDerivedState(state)
+        self:CheckAchievementBadges(actor, "LevelChanged")
         local healthGain = math.max(0, state.MaxHealth - previousMaxHealth)
         state.CurrentHealth = math.min(state.MaxHealth, state.CurrentHealth + healthGain)
         if self._weaponUnlockRewardService and self._weaponUnlockRewardService.HandleLevelChanged then
@@ -3767,6 +3963,7 @@ function PlayerStateService:SetLevelForStudioCommand(actor, level)
 
     state.Level = targetLevel
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), targetLevel)
+    self:CheckAchievementBadges(actor, "StudioLevelChanged")
     state.Experience = math.min(math.max(0, math.floor(tonumber(state.Experience) or 0)), GameConfig.GetNextLevelExperience(targetLevel))
     if targetLevel > previousLevel then
         self:_awardSkillPointsForLevelGain(state, previousLevel, targetLevel)
@@ -3822,6 +4019,7 @@ function PlayerStateService:ApplyLevelMultiplier(actor, multiplier)
     local previousMaxHealth = state.MaxHealth
     state.Level = targetLevel
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), targetLevel)
+    self:CheckAchievementBadges(actor, "LevelMultiplier")
     state.Experience = math.min(math.max(0, math.floor(tonumber(state.Experience) or 0)), GameConfig.GetNextLevelExperience(targetLevel))
     self:_awardSkillPointsForLevelGain(state, previousLevel, state.Level)
     self:_applyLevelDerivedState(state)
@@ -3879,6 +4077,7 @@ function PlayerStateService:RestoreCombatProgress(actor, snapshot, options)
     state.MoveSpeed = GameConfig.PLAYER.BaseMoveSpeed
     state.Buffs = {}
     state.HighestLevelReached = math.max(normalizeLevel(state.HighestLevelReached or previousLevel), restoredLevel)
+    self:CheckAchievementBadges(actor, "CombatProgressRestored")
     self:_applyAttributeSnapshot(state, snapshot.attributeSnapshot or snapshot.attributes)
     self:_ensureSkillPointsForLevel(state, restoredLevel)
     self:_applyLevelDerivedState(state)

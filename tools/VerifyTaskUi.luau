@@ -156,6 +156,7 @@ local success, failure = pcall(function()
     temporaryModules.Parent = game:GetService("ServerStorage")
     -- Keep the cloned GUI inside the DataModel so real tweens advance during the V6.16 motion checks.
     detached.Parent = temporaryModules
+    controllers.CinematicUiGate:Clone().Parent = temporaryModules
     local isolatedModule = sourceModule:Clone()
     isolatedModule.Parent = temporaryModules
     controller = require(isolatedModule)

@@ -102,6 +102,7 @@ local NewWeaponUnlockController = requireLocalModule("NewWeaponUnlockController"
 local OverheadLevelController = requireLocalModule("OverheadLevelController")
 local WheelController = requireLocalModule("WheelController")
 local SkinController = requireLocalModule("SkinController")
+local LevelWeaponSkinController = requireLocalModule("LevelWeaponSkinController")
 local TrailFxController = requireLocalModule("TrailFxController")
 local SubscriptionController = requireLocalModule("SubscriptionController")
 local ShopController = requireLocalModule("ShopController")
@@ -111,6 +112,7 @@ local OnlineRewardController = requireLocalModule("OnlineRewardController")
 local SevenDayLoginRewardController = requireLocalModule("SevenDayLoginRewardController")
 local TaskController = requireLocalModule("TaskController")
 local ChestController = requireLocalModule("ChestController")
+local TaskChestNavigationController = requireLocalModule("TaskChestNavigationController")
 local OptionController = requireLocalModule("OptionController")
 local BossHitFeedbackController = requireLocalModule("BossHitFeedbackController")
 local NoobMachineController = requireLocalModule("NoobMachineController")
@@ -285,14 +287,21 @@ initController("SevenDayLoginRewardController", SevenDayLoginRewardController, {
     RootScript = script,
 })
 
+initController("TaskChestNavigationController", TaskChestNavigationController, {
+    TaskController = TaskController,
+    ChestController = ChestController,
+})
+
 initController("TaskController", TaskController, {
     LocalPlayer = localPlayer,
     RootScript = script,
+    TaskChestNavigationController = TaskChestNavigationController,
 })
 
 initController("ChestController", ChestController, {
     LocalPlayer = localPlayer,
     RootScript = script,
+    TaskChestNavigationController = TaskChestNavigationController,
 })
 
 initController("SkinController", SkinController, {
@@ -301,6 +310,12 @@ initController("SkinController", SkinController, {
     WheelController = WheelController,
     SevenDayLoginRewardController = SevenDayLoginRewardController,
     ChestController = ChestController,
+})
+
+initController("LevelWeaponSkinController", LevelWeaponSkinController, {
+    LocalPlayer = localPlayer,
+    RootScript = script,
+    ModalUiController = ModalUiController,
 })
 
 initController("TrailFxController", TrailFxController, {
@@ -370,6 +385,10 @@ initController("FlashController", FlashController, {
 initController("DefeatedController", DefeatedController, {
 	LocalPlayer = localPlayer,
 	RootScript = script,
+    ShopController = ShopController,
+    NewWeaponUnlockController = NewWeaponUnlockController,
+    SkinController = SkinController,
+    WheelController = WheelController,
 })
 
 initController("NukeCinematicController", NukeCinematicController, {

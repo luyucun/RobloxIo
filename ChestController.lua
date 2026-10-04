@@ -33,6 +33,7 @@ local ChestConfig = requireSharedModule("ChestConfig")
 local GameConfig = requireSharedModule("GameConfig")
 local RemoteNames = requireSharedModule("RemoteNames")
 local ShopConfig = requireSharedModule("ShopConfig")
+local CinematicUiGate = require((script.Parent:FindFirstChild("Controllers") or script.Parent):WaitForChild("CinematicUiGate"))
 
 local function isChestEntryVisible()
     local entryVisibility = GameConfig.UI_ENTRY_VISIBILITY
@@ -44,6 +45,11 @@ local ChestController = {}
 ChestController.DefaultChestId = 101
 ChestController._localPlayer = nil
 ChestController._connections = {}
+ChestController._navigationController = nil
+ChestController._isOpen = false
+ChestController._hasReceivedState = false
+ChestController._openRequestPending = false
+ChestController._openRequestSerial = 0
 ChestController._buttonBindings = {}
 ChestController._mainGui = nil
 ChestController._leftEntry = nil
@@ -53,6 +59,10 @@ ChestController._panel = nil
 ChestController._countText = nil
 ChestController._countdownText = nil
 ChestController._dropRows = {}
+ChestController._visualConnections = {}
+ChestController._entryRedPoint = nil
+ChestController._redPointMotion = nil
+ChestController._trailRowVisuals = {}
 ChestController._requestStateSyncEvent = nil
 ChestController._stateSyncEvent = nil
 ChestController._requestOpenEvent = nil
@@ -83,6 +93,13 @@ local BEIJING_UTC_OFFSET_SECONDS = 8 * 3600
 local WEEKLY_REFRESH_WEEKDAY = 7
 local WEEKLY_REFRESH_HOUR = 22
 local COUNTDOWN_REFRESH_INTERVAL_SECONDS = 30
+local RED_POINT_SHAKE = TweenInfo.new(0.22, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+local RED_POINT_PULSE = TweenInfo.new(0.65, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+local TRAIL_ICON_GROW = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TRAIL_ICON_SHAKE_SHORT = TweenInfo.new(0.07, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+local TRAIL_ICON_SHAKE_LONG = TweenInfo.new(0.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+local TRAIL_ICON_SETTLE = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TRAIL_ICON_PAUSE_SECONDS = 1.25
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -491,6 +508,7 @@ function ChestController:_getClientChestConfig(chestId)
 end
 
 function ChestController:_setOpen(isOpen)
+    self._isOpen = isOpen == true
     if self._panel and self._panel:IsA("GuiObject") then
         self._panel.Visible = isOpen == true
     end
@@ -498,9 +516,22 @@ function ChestController:_setOpen(isOpen)
         self:_updateCountdownText()
         self:RefreshNow()
     end
+    self:_refreshVisualEffects()
 end
 
 function ChestController:Open()
+    if self._navigationController then
+        self._navigationController:Open("Chests")
+        return
+    end
+    self:_setNavigationOpen(true)
+end
+
+function ChestController:_setNavigationOpen(isOpen)
+    if not isOpen then
+        self:_setOpen(false)
+        return
+    end
     if not self:_bindUi(true) then
         self:_queueBindRetry()
     end
@@ -508,17 +539,32 @@ function ChestController:Open()
 end
 
 function ChestController:Close()
+    if self._navigationController and self._navigationController:Close("Chests") then return end
     self:_setOpen(false)
 end
 
 function ChestController:_requestOpen(mode)
+    if self._openRequestPending or not self._hasReceivedState then
+        self:RefreshNow()
+        return
+    end
+    if self:_getChestCount(ChestController.DefaultChestId) <= 0 then
+        if self._navigationController then self._navigationController:Navigate("Chests", "Tasks") end
+        return
+    end
     if not self._requestOpenEvent then
         return
     end
+    self._openRequestPending = true
+    self._openRequestSerial += 1
+    local serial = self._openRequestSerial
     self:_setBindingEnabled(self._openOneBinding, false)
     self:_setBindingEnabled(self._openAllBinding, false)
     task.delay(2, function()
-        self:_updateUi()
+        if self._openRequestSerial == serial then
+            self._openRequestPending = false
+            self:_updateUi()
+        end
     end)
     self._requestOpenEvent:FireServer({
         chestId = ChestController.DefaultChestId,
@@ -834,12 +880,163 @@ function ChestController:_collectDropRows(rateList)
     return rows
 end
 
+local function isGuiShown(node)
+    if not (node and node.Parent) then return false end
+    local current = node
+    while current do
+        if current:IsA("GuiObject") and not current.Visible then return false end
+        if current:IsA("ScreenGui") and (not current.Enabled or not current.Parent) then return false end
+        current = current.Parent
+    end
+    return true
+end
+
+function ChestController:_stopRedPointMotion()
+    local motion = self._redPointMotion
+    if not motion then return end
+    self._redPointMotion = nil
+    motion.shake:Cancel()
+    motion.pulse:Cancel()
+    if motion.dot.Parent then motion.dot.Rotation = motion.rotation end
+    if motion.scale.Parent then motion.scale.Scale = motion.baseScale end
+end
+
+function ChestController:_stopTrailRowMotion(visual)
+    local motion = visual.motion
+    if not motion then return end
+    visual.motion = nil
+    if motion.scaleTween then motion.scaleTween:Cancel() end
+    if motion.rotationTween then motion.rotationTween:Cancel() end
+    if motion.thread and motion.thread ~= coroutine.running() and coroutine.status(motion.thread) ~= "dead" then
+        task.cancel(motion.thread)
+    end
+    if visual.icon.Parent then visual.icon.Rotation = visual.rotation end
+    if visual.scale.Parent then visual.scale.Scale = visual.baseScale end
+end
+
+function ChestController:_startTrailIconMotion(visual)
+    if visual.motion then return end
+    local motion = {}
+    visual.motion = motion
+    motion.thread = task.spawn(function()
+        local function play(target, tweenInfo, goal, key)
+            if visual.motion ~= motion or not target.Parent then return false end
+            local tween = TweenService:Create(target, tweenInfo, goal)
+            motion[key] = tween
+            tween:Play()
+            local state = tween.Completed:Wait()
+            motion[key] = nil
+            return visual.motion == motion and state == Enum.PlaybackState.Completed
+        end
+        while visual.motion == motion do
+            if not play(visual.scale, TRAIL_ICON_GROW, { Scale = visual.baseScale * 1.14 }, "scaleTween") then break end
+            if not play(visual.icon, TRAIL_ICON_SHAKE_SHORT, { Rotation = visual.rotation - 7 }, "rotationTween") then break end
+            if not play(visual.icon, TRAIL_ICON_SHAKE_LONG, { Rotation = visual.rotation + 7 }, "rotationTween") then break end
+            if not play(visual.icon, TRAIL_ICON_SHAKE_SHORT, { Rotation = visual.rotation - 4 }, "rotationTween") then break end
+            if not play(visual.icon, TRAIL_ICON_SHAKE_LONG, { Rotation = visual.rotation }, "rotationTween") then break end
+            if not play(visual.scale, TRAIL_ICON_SETTLE, { Scale = visual.baseScale }, "scaleTween") then break end
+            task.wait(TRAIL_ICON_PAUSE_SECONDS)
+        end
+        if visual.motion == motion then self:_stopTrailRowMotion(visual) end
+    end)
+end
+
+function ChestController:_disconnectVisualEffects()
+    disconnectAll(self._visualConnections)
+    self:_stopRedPointMotion()
+    for _, visual in pairs(self._trailRowVisuals) do
+        self:_stopTrailRowMotion(visual)
+    end
+    table.clear(self._trailRowVisuals)
+    self._entryRedPoint = nil
+end
+
+function ChestController:_refreshVisualEffects()
+    local blocked = CinematicUiGate:IsBlocked()
+    local dot = self._entryRedPoint
+    local dotShown = not blocked and self._hasReceivedState and isChestEntryVisible()
+        and self:_getChestCount(ChestController.DefaultChestId) > 0 and isGuiShown(dot)
+    if dotShown and not self._redPointMotion then
+        local scale = dot:FindFirstChildOfClass("UIScale")
+        if scale then
+            local rotation, baseScale = dot.Rotation, scale.Scale
+            dot.Rotation = rotation - 12
+            local shake = TweenService:Create(dot, RED_POINT_SHAKE, { Rotation = rotation + 12 })
+            local pulse = TweenService:Create(scale, RED_POINT_PULSE, { Scale = baseScale * 1.12 })
+            self._redPointMotion = { dot = dot, scale = scale, rotation = rotation, baseScale = baseScale,
+                shake = shake, pulse = pulse }
+            shake:Play()
+            pulse:Play()
+        end
+    elseif not dotShown then
+        self:_stopRedPointMotion()
+    end
+
+    for _, visual in pairs(self._trailRowVisuals) do
+        local shown = visual.isTrail and not blocked and self._isOpen and isGuiShown(visual.icon)
+        if shown and not visual.motion then
+            self:_startTrailIconMotion(visual)
+        elseif not shown then
+            self:_stopTrailRowMotion(visual)
+        end
+    end
+end
+
+function ChestController:_bindVisualEffects(mainGui)
+    self._entryRedPoint = self._leftEntry:FindFirstChild("RedPoint")
+    if self._entryRedPoint and not self._entryRedPoint:IsA("GuiObject") then self._entryRedPoint = nil end
+    for _, row in ipairs(self._dropRows) do
+        local icon = row:FindFirstChild("Icon", true) or row:FindFirstChild("ItemIcon", true)
+            or row:FindFirstChild("Preview", true) or row:FindFirstChild("ImageLabel", true)
+        if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then
+            local scale = ensureUiScale(icon)
+            self._trailRowVisuals[row] = { row = row, icon = icon, scale = scale, isTrail = false,
+                rotation = icon.Rotation, baseScale = scale.Scale }
+        end
+    end
+
+    local observed = {}
+    local function observeAncestors(node)
+        while node do
+            if not observed[node] then
+                observed[node] = true
+                local property = node:IsA("GuiObject") and "Visible" or node:IsA("ScreenGui") and "Enabled" or nil
+                if property then
+                    table.insert(self._visualConnections, node:GetPropertyChangedSignal(property):Connect(function()
+                        self:_refreshVisualEffects()
+                    end))
+                end
+                table.insert(self._visualConnections, node.AncestryChanged:Connect(function()
+                    self:_refreshVisualEffects()
+                end))
+            end
+            if node == mainGui then break end
+            node = node.Parent
+        end
+    end
+    observeAncestors(self._entryRedPoint)
+    observeAncestors(self._panel)
+    for _, visual in pairs(self._trailRowVisuals) do observeAncestors(visual.icon) end
+    table.insert(self._visualConnections, CinematicUiGate:Subscribe(function()
+        self:_refreshVisualEffects()
+    end))
+    table.insert(self._visualConnections, mainGui.Destroying:Connect(function()
+        self:_disconnectVisualEffects()
+    end))
+end
+
 function ChestController:_updateDropRow(row, reward, totalWeight)
     if not (row and row:IsA("GuiObject")) then
         return
     end
 
     local hasReward = type(reward) == "table"
+    local visual = self._trailRowVisuals[row]
+    local isTrail = hasReward and tostring(reward.rewardType or reward.RewardType) == "Trail"
+    if visual and visual.isTrail ~= isTrail then
+        visual.isTrail = isTrail
+        if not isTrail then self:_stopTrailRowMotion(visual) end
+    end
     row.Visible = hasReward
     if not hasReward then
         return
@@ -872,10 +1069,12 @@ function ChestController:_updateUi()
     setButtonInteractivity(self._leftEntry, entryVisible)
     setText(self._leftInfoText, tostring(count))
     setGuiVisible(self._leftInfo, entryVisible and count > 0)
+    setGuiVisible(self._entryRedPoint, entryVisible and self._hasReceivedState and count > 0)
     setText(self._countText, "You have: " .. tostring(count))
 
-    self:_setBindingEnabled(self._openOneBinding, count > 0)
-    self:_setBindingEnabled(self._openAllBinding, count > 0)
+    local canClickOpen = self._hasReceivedState and not self._openRequestPending
+    self:_setBindingEnabled(self._openOneBinding, canClickOpen)
+    self:_setBindingEnabled(self._openAllBinding, canClickOpen)
 
     local chest = self:_getClientChestConfig(ChestController.DefaultChestId)
     local rewards = chest and type(chest.rewards) == "table" and chest.rewards or {}
@@ -887,15 +1086,22 @@ function ChestController:_updateUi()
     for index, row in ipairs(self._dropRows) do
         self:_updateDropRow(row, rewards[index], totalWeight)
     end
+    self:_refreshVisualEffects()
 end
 
 function ChestController:_applyPayload(payload)
     if type(payload) ~= "table" then
         return
     end
+    self._hasReceivedState = true
     self._latestState.chests = type(payload.chests) == "table" and payload.chests or type(payload.Chests) == "table" and payload.Chests or self._latestState.chests or {}
     self._latestState.chestConfigs = type(payload.chestConfigs) == "table" and payload.chestConfigs or type(payload.ChestConfigs) == "table" and payload.ChestConfigs or self._latestState.chestConfigs or {}
     self:_updateUi()
+    if payload.openRejectedReason == "NoChest" and self._openRequestPending then
+        self._openRequestPending = false
+        self:_updateUi()
+        if self._isOpen and self._navigationController then self._navigationController:Navigate("Chests", "Tasks") end
+    end
 end
 
 function ChestController:_bindUi(silent)
@@ -928,6 +1134,7 @@ function ChestController:_bindUi(silent)
         return false
     end
 
+    self:_disconnectVisualEffects()
     self:_disconnectButtonBindings()
     self._leftEntry = leftEntry
     self._leftInfo = leftInfo
@@ -937,9 +1144,8 @@ function ChestController:_bindUi(silent)
     self._countdownText = countdownText
     self._dropRows = self:_collectDropRows(rateList)
 
-    if self._panel.Visible ~= false then
-        self._panel.Visible = false
-    end
+    self._panel.Visible = self._isOpen == true
+    self:_bindVisualEffects(mainGui)
 
     local leftButton = leftEntry:IsA("GuiButton") and leftEntry or leftEntry:FindFirstChildWhichIsA("GuiButton", true)
     self:_bindButton(leftButton, function()
@@ -1022,11 +1228,17 @@ end
 
 function ChestController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    self._navigationController = dependencies and dependencies.TaskChestNavigationController or nil
+    self._isOpen = false
+    self._hasReceivedState = false
+    self._openRequestPending = false
+    self._openRequestSerial += 1
     self._latestState = {
         chests = {},
         chestConfigs = {},
     }
     disconnectAll(self._connections)
+    self:_disconnectVisualEffects()
     self:_disconnectButtonBindings()
     self._countdownLoopSerial += 1
 

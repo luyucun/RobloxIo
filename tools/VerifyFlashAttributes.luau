@@ -19,9 +19,10 @@ local actors = {
 }
 local fakeGame = {}
 local tweens = {}
+local fakePlayersByUserId = {}
 function fakeGame:GetService(name)
     if name == "Players" then
-        return {GetPlayers=function() return {} end, GetPlayerByUserId=function() return nil end}
+        return {GetPlayers=function() return {} end, GetPlayerByUserId=function(_,userId) return fakePlayersByUserId[userId] end}
     elseif name == "MarketplaceService" or name == "DataStoreService" then
         return setmetatable({}, {__index=function() return forbidden end})
     elseif name == "TweenService" then
@@ -77,6 +78,9 @@ local function cloneService(module)
 end
 local function fixture()
     local p={UserId=91614,Name="FlashVerification",Parent=true}
+    -- The persistence loader now rejects a player that left during GetAsync.
+    -- Register the private fixture instead of returning nil for every lookup.
+    fakePlayersByUserId[p.UserId]=p
     local ps=cloneService(PlayerState)
     for _,name in ipairs({"_syncLeaderstats","SyncHumanoidMovement","SyncCharacterState","UpdateOverheadHealthBar","CheckTitleUnlocks","RefreshOnlineTime","PushState"}) do ps[name]=function() end end
     local state=ps:_createDefaultState(p)

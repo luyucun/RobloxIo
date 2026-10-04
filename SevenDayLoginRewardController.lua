@@ -13,6 +13,7 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -345,12 +346,13 @@ end
 
 function SevenDayLoginRewardController:_setPanelVisible(panel, visible)
     if panel and panel:IsA("GuiObject") then
+        ModalUiController:SetRestoredVisible(panel, visible)
         panel.Visible = visible == true
     end
 end
 
 function SevenDayLoginRewardController:_isPanelVisible(panel)
-    return panel and panel:IsA("GuiObject") and panel.Visible == true
+    return panel and panel:IsA("GuiObject") and ModalUiController:IsPanelRequestedVisible(panel)
 end
 
 function SevenDayLoginRewardController:_isAnyPanelVisible()
@@ -373,7 +375,7 @@ function SevenDayLoginRewardController:_syncActivePanel(keepPanelOpen)
     for _, panelKey in ipairs(panelKeys) do
         local panel = self._panels and self._panels[panelKey] or nil
         if panel and panel:IsA("GuiObject") then
-            panel.Visible = keepPanelOpen == true and panelKey == activePanelKey
+            self:_setPanelVisible(panel, keepPanelOpen == true and panelKey == activePanelKey)
         end
     end
     self._root = activePanel
@@ -403,16 +405,18 @@ function SevenDayLoginRewardController:_openPanel()
 end
 
 function SevenDayLoginRewardController:_closePanel()
+    self._autoOpenPendingKey = ""
+    CinematicUiGate:CancelDeferred("SevenDayClaimablePanel")
     local closingRoot = self._root
     ModalUiController:PlayPanelClose(MODAL_OWNER_ID, closingRoot, {
         OnClosed = function()
             local firstPanel = self._panels and self._panels[FIRST_PANEL_KEY] or nil
             local repeatPanel = self._panels and self._panels[REPEAT_PANEL_KEY] or nil
             if firstPanel and firstPanel:IsA("GuiObject") then
-                firstPanel.Visible = false
+                self:_setPanelVisible(firstPanel, false)
             end
             if repeatPanel and repeatPanel:IsA("GuiObject") then
-                repeatPanel.Visible = false
+                self:_setPanelVisible(repeatPanel, false)
             end
             ModalUiController:Release(MODAL_OWNER_ID)
         end,
@@ -599,7 +603,7 @@ function SevenDayLoginRewardController:_maybeAutoOpenClaimablePanel()
     if claimableKey == self._autoOpenedClaimableKey or claimableKey == self._autoOpenPendingKey then
         return
     end
-    if self._root and self._root.Visible == true then
+    if self._root and ModalUiController:IsPanelRequestedVisible(self._root) then
         self._autoOpenedClaimableKey = claimableKey
         return
     end
@@ -618,8 +622,9 @@ function SevenDayLoginRewardController:_maybeAutoOpenClaimablePanel()
     end
 
     self._autoOpenPendingKey = claimableKey
-    task.defer(function()
-        if self._autoOpenPendingKey ~= claimableKey then
+    local generation = self._presentationGeneration
+    CinematicUiGate:Defer("SevenDayClaimablePanel", function()
+        if self._presentationGeneration ~= generation or self._autoOpenPendingKey ~= claimableKey then
             return
         end
         if self:_getFirstClaimableRewardKey() ~= claimableKey then
@@ -672,7 +677,7 @@ function SevenDayLoginRewardController:_applyState(payload)
 
     local desiredPanelKey = self:_getPanelKey()
     if self._root and self._activePanelKey ~= desiredPanelKey then
-        local wasOpen = self._root.Visible == true
+        local wasOpen = ModalUiController:IsPanelRequestedVisible(self._root)
         if not self:_bindUi(true, {
             KeepOpen = wasOpen,
             ReleaseModalOnFailure = true,
@@ -792,13 +797,13 @@ function SevenDayLoginRewardController:_bindUi(silent, options)
     local firstPanel = self._panels[FIRST_PANEL_KEY]
     local repeatPanel = self._panels[REPEAT_PANEL_KEY]
     if self._root and self._root:IsA("GuiObject") then
-        self._root.Visible = keepPanelOpen == true
+        self:_setPanelVisible(self._root, keepPanelOpen)
     end
     if firstPanel and firstPanel ~= self._root and firstPanel:IsA("GuiObject") then
-        firstPanel.Visible = false
+        self:_setPanelVisible(firstPanel, false)
     end
     if repeatPanel and repeatPanel ~= self._root and repeatPanel:IsA("GuiObject") then
-        repeatPanel.Visible = false
+        self:_setPanelVisible(repeatPanel, false)
     end
     self:_releaseModalIfPanelsHidden()
 
@@ -829,6 +834,7 @@ function SevenDayLoginRewardController:_queueBindRetry()
 end
 
 function SevenDayLoginRewardController:Init(dependencies)
+    self._presentationGeneration = (self._presentationGeneration or 0) + 1
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()

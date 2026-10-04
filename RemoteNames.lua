@@ -12,6 +12,7 @@ local RemoteNames = {
     -- Ephemeral Player attributes for Studio presentation tools, not RemoteEvents.
     StudioAttributes = {
         PassUiPreview = "StudioPassUiPreview",
+        LevelSkinUiPreview = "StudioLevelSkinUiPreview", -- V6.27 GM /levelskin opens the LevelWeaponSkins window.
     },
     System = {
         -- V6.14: attribute maps include FlashCooldown/FlashDistance; finalStats includes
@@ -88,10 +89,19 @@ local RemoteNames = {
         RequestTaskStateSync = "RequestTaskStateSync",
         RequestTaskClaim = "RequestTaskClaim",
         RequestInviteTaskProgress = "RequestInviteTaskProgress",
-        ChestStateSync = "ChestStateSync",
+        ChestStateSync = "ChestStateSync", -- Optional openRejectedReason = NoChest on rejected opening (V6.22).
         RequestChestStateSync = "RequestChestStateSync",
         RequestChestOpen = "RequestChestOpen",
         RequestChestRewardClaim = "RequestChestRewardClaim",
+        -- V6.27 level weapon skins: payload {selectedTierIndex=nil|number, autoUpgrade=boolean,
+        -- highestLevelReached=number, timestamp}; unlock catalog derived client-side from WeaponTierConfig.
+        LevelWeaponSkinStateSync = "LevelWeaponSkinStateSync",
+        RequestLevelWeaponSkinStateSync = "RequestLevelWeaponSkinStateSync",
+        -- Equip: FireServer(tierIndex:number); reset: FireServer("UseLevelLook");
+        -- auto toggle: FireServer("AutoUpgrade", enabled:boolean). Server re-validates unlock + strict bool.
+        RequestLevelWeaponSkinEquip = "RequestLevelWeaponSkinEquip",
+        -- eventType Equipped/Reset/AutoUpdated/Failed, reason, state = same payload as LevelWeaponSkinStateSync.
+        LevelWeaponSkinFeedback = "LevelWeaponSkinFeedback",
     },
     Battle = {
         PickupFeedback = "PickupFeedback",
@@ -107,10 +117,13 @@ local RemoteNames = {
         -- Global boards and self ranks only; native PlayerList reads leaderstats.
         LeaderboardSync = "LeaderboardSync",
         ArenaProgressSync = "ArenaProgressSync",
+        -- Server -> clients: optional serverStartTime (Workspace:GetServerTimeNow)
+        -- aligns visual stages; existing fields and server-owned settlement stay intact.
         NukeCinematic = "NukeCinematic",
         RevengeCinematic = "RevengeCinematic",
         NukeLocalMonsterSweep = "NukeLocalMonsterSweep",
     },
 }
 
+-- V6.17 badges are server-only. FirstBossDefeated is not a Remote or client payload field.
 return RemoteNames

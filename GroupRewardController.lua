@@ -12,6 +12,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -479,6 +480,8 @@ function GroupRewardController:_handlePlayerState(payload)
 end
 
 function GroupRewardController:Init(dependencies)
+    self._presentationGeneration = (self._presentationGeneration or 0) + 1
+    local generation = self._presentationGeneration
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._connections)
     self:_disconnectButtonBindings()
@@ -502,11 +505,16 @@ function GroupRewardController:Init(dependencies)
             self:_applyClaimState()
             self:_applyTopRightEntryState()
         end
-        if self:_bindUi(true) then
-            self:_setOpen(true)
-        else
-            self:_queueBindRetry()
-        end
+        CinematicUiGate:Defer("GroupRewardPrompt", function()
+            if self._presentationGeneration ~= generation or self._isClaimed then
+                return
+            end
+            if self:_bindUi(true) then
+                self:_setOpen(true)
+            else
+                self:_queueBindRetry()
+            end
+        end)
     end))
 
     table.insert(self._connections, self._groupRewardFeedbackEvent.OnClientEvent:Connect(function(payload)

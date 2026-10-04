@@ -33,6 +33,7 @@ end
 
 local GameConfig = requireSharedModule("GameConfig")
 local RemoteNames = requireSharedModule("RemoteNames")
+local CinematicUiGate = require((script.Parent:FindFirstChild("Controllers") or script.Parent):WaitForChild("CinematicUiGate"))
 
 local function isTaskEntryVisible()
     local entryVisibility = GameConfig.UI_ENTRY_VISIBILITY
@@ -46,6 +47,8 @@ TaskController._connections = {}
 TaskController._buttonBindings = {}
 TaskController._rowBindings = {}
 TaskController._detailBindings = {}
+TaskController._rewardBindings = {}
+TaskController._navigationController = nil
 TaskController._generatedRows = {}
 TaskController._generatedRewardRows = {}
 TaskController._rowEntriesByTaskId = {}
@@ -546,6 +549,7 @@ local function cloneReward(reward)
     local copied = {
         rewardType = tostring(reward.rewardType or reward.RewardType or ""),
         potionId = math.max(0, math.floor(tonumber(reward.potionId or reward.PotionId) or 0)),
+        chestId = math.max(0, math.floor(tonumber(reward.chestId or reward.ChestId) or 0)),
         amount = math.max(1, math.floor(tonumber(reward.amount or reward.Amount) or 1)),
         icon = tostring(reward.icon or reward.Icon or ""),
         label = tostring(reward.label or reward.Label or ""),
@@ -572,6 +576,7 @@ local function cloneRewards(task)
         local fallback = cloneReward({
             rewardType = task.rewardType or task.RewardType,
             potionId = task.potionId or task.PotionId,
+            chestId = task.chestId or task.ChestId,
             amount = task.amount or task.Amount,
             icon = task.icon or task.Icon,
         })
@@ -595,6 +600,7 @@ local function cloneTask(task)
         progress = math.max(0, math.floor(tonumber(task.progress or task.Progress) or 0)),
         rewardType = tostring(task.rewardType or task.RewardType or ""),
         potionId = math.max(0, math.floor(tonumber(task.potionId or task.PotionId) or 0)),
+        chestId = math.max(0, math.floor(tonumber(task.chestId or task.ChestId) or 0)),
         amount = math.max(1, math.floor(tonumber(task.amount or task.Amount) or 1)),
         description = tostring(task.description or task.Description or ""),
         shortTitle = tostring(task.shortTitle or task.ShortTitle or ""),
@@ -1151,6 +1157,9 @@ end
 
 -- Claim/ready feedback waits until the panel is actually visible: the reward popup hides it first.
 function TaskController:_flushCelebrations()
+    if CinematicUiGate:IsBlocked() then
+        return
+    end
     if not self._isOpen then
         table.clear(self._queuedCelebrations)
         return
@@ -1343,6 +1352,7 @@ function TaskController:_clearRows()
 end
 
 function TaskController:_clearRewardRows()
+    self:_disconnectBindings(self._rewardBindings)
     self._rewardRenderSignature = nil
     for _, row in ipairs(self._generatedRewardRows) do
         if row and row.Parent then
@@ -1397,7 +1407,7 @@ function TaskController:_renderRewardList(taskData)
 
     local signatureParts = {}
     for _, reward in ipairs(taskData.rewards or {}) do
-        table.insert(signatureParts, tostring(reward.icon or "") .. ":" .. tostring(reward.amount or 0))
+        table.insert(signatureParts, table.concat({ tostring(reward.rewardType or ""), tostring(reward.chestId or ""), tostring(reward.icon or ""), tostring(reward.amount or 0) }, ":"))
     end
     local signature = table.concat(signatureParts, "|")
     local rowsValid = #self._generatedRewardRows == #(taskData.rewards or {})
@@ -1429,6 +1439,12 @@ function TaskController:_renderRewardList(taskData)
             or rewardRow:FindFirstChild("Number", true)
         setImage(icon, reward.icon)
         setText(amountLabel, "x" .. formatCompactInteger(reward.amount))
+        if reward.rewardType == "Chest" then
+            local button = resolveClickTarget(rewardRow, "RewardChestClickTarget")
+            self:_bindButton(button, function()
+                if self._navigationController then self._navigationController:Navigate("Tasks", "Chests") end
+            end, { ScaleTarget = rewardRow }, self._rewardBindings)
+        end
     end
     self._rewardRenderSignature = signature
 end
@@ -1712,12 +1728,12 @@ function TaskController:_requestState()
 end
 
 function TaskController:_setOpen(isOpen, immediate)
-    if not self._panel and not self:_bindUi(true) then
-        return
-    end
-
     local wasOpen = self._isOpen
     self._isOpen = isOpen == true
+    if not self._panel and not self:_bindUi(true) then
+        if self._isOpen then self:_queueBindRetry() end
+        return
+    end
     if self._isOpen then
         self:_requestState()
         self:_renderAll()
@@ -1733,11 +1749,35 @@ function TaskController:_setOpen(isOpen, immediate)
     end
 end
 
+function TaskController:_setNavigationOpen(isOpen, immediate)
+    self:_setOpen(isOpen, immediate)
+end
+
+function TaskController:_captureNavigationState()
+    return {
+        period = self._selectedPeriod,
+        selected = table.clone(self._selectedTaskIdByPeriod),
+        canvasPosition = self._scrollingFrame and self._scrollingFrame.CanvasPosition,
+    }
+end
+
+function TaskController:_restoreNavigationState(context)
+    self._selectedPeriod = context.period == "weekly" and "weekly" or "daily"
+    self._selectedTaskIdByPeriod = table.clone(context.selected or {})
+    self:_renderAll()
+    if self._scrollingFrame and context.canvasPosition then self._scrollingFrame.CanvasPosition = context.canvasPosition end
+end
+
 function TaskController:Open()
+    if self._navigationController then
+        self._navigationController:Open("Tasks")
+        return
+    end
     self:_setOpen(true, false)
 end
 
 function TaskController:Close()
+    if self._navigationController and self._navigationController:Close("Tasks") then return end
     self:_setOpen(false, false)
 end
 
@@ -1860,7 +1900,7 @@ function TaskController:_bindUi(silent)
 
     self:_bindButton(self._entryButton, function()
         if isTaskEntryVisible() then
-            self:_setOpen(true, false)
+            self:Open()
         end
     end, {
         ScaleTarget = self._entryRoot,
@@ -1870,7 +1910,7 @@ function TaskController:_bindUi(silent)
 
     if self._closeButton then
         self:_bindButton(self._closeButton, function()
-            self:_setOpen(false, false)
+            self:Close()
         end, {
             RotationTarget = self._closeButton,
             HoverRotation = HOVER_ROTATION,
@@ -1926,6 +1966,7 @@ end
 
 function TaskController:Init(dependencies)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    self._navigationController = dependencies and dependencies.TaskChestNavigationController or nil
     self._state = self:_newDefaultState()
     self._selectedPeriod = "daily"
     self._selectedTaskIdByPeriod = {}
@@ -1936,6 +1977,13 @@ function TaskController:Init(dependencies)
     self._queuedCelebrations = {}
 
     disconnectAll(self._connections)
+    table.insert(self._connections, CinematicUiGate:Subscribe(function(blocked)
+        if blocked then
+            self:_stopAmbientEffects()
+        else
+            self:_scheduleCelebrationFlush()
+        end
+    end))
     disconnectAll(self._panelConnections)
     self:_stopAmbientEffects()
     self:_disconnectBindings(self._buttonBindings)

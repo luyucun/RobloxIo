@@ -32,6 +32,7 @@ local function requireSharedModule(moduleName)
 end
 
 local RemoteNames = requireSharedModule("RemoteNames")
+local CinematicUiGate = require((script.Parent:FindFirstChild("Controllers") or script.Parent):WaitForChild("CinematicUiGate"))
 
 local KillTipsController = {}
 
@@ -390,6 +391,15 @@ function KillTipsController:_createTip(payload)
 end
 
 function KillTipsController:_showTip(payload)
+    if CinematicUiGate:IsBlocked() then
+        local serial = self._cinematicSerial
+        CinematicUiGate:Defer({}, function()
+            if self._cinematicSerial == serial then
+                self:_showTip(payload)
+            end
+        end)
+        return
+    end
     if not self._template and not self:_bindUi(true) then
         self:_queueBindRetry()
         return
@@ -471,6 +481,7 @@ function KillTipsController:_queueBindRetry()
 end
 
 function KillTipsController:Init(dependencies)
+    self._cinematicSerial = (self._cinematicSerial or 0) + 1
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._connections)
     self:_clearActiveTips()

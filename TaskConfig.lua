@@ -18,6 +18,7 @@ TaskConfig.TaskType = {
     PlayerKills = "PlayerKills",
     InviteFriend = "InviteFriend",
     WheelSpinsUsed = "WheelSpinsUsed",
+    EnemyWeaponsBroken = "EnemyWeaponsBroken",
     DiamondsEarned = "DiamondsEarned",
     LoginDays = "LoginDays",
 }
@@ -134,6 +135,23 @@ TaskConfig.Tasks = {
         Icon = 'rbxassetid://100403311120383',
         Rewards = {
             { RewardType = 'Chest', ChestId = 101, Amount = 3, Icon = 'rbxassetid://100403311120383' },
+        },
+    },
+    {
+        TaskId = 107,
+        Period = 'Daily',
+        TaskType = 'EnemyWeaponsBroken',
+        TaskTypeId = 1005,
+        Target = 30,
+        RewardType = 'Chest',
+        ChestId = 101,
+        Amount = 2,
+        Description = 'Break 30 enemy weapons today',
+        ShortTitle = 'Blade Breaker',
+        ShortDescription = 'Break 30 enemy weapons today',
+        Icon = 'rbxassetid://100403311120383',
+        Rewards = {
+            { RewardType = 'Chest', ChestId = 101, Amount = 2, Icon = 'rbxassetid://100403311120383' },
         },
     },
     {

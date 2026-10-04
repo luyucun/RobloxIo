@@ -38,6 +38,7 @@ local CombatService = {}
 CombatService._playerStateService = nil
 CombatService._weaponService = nil
 CombatService._healthService = nil
+CombatService._taskService = nil
 CombatService._arenaService = nil
 CombatService._remoteEventService = nil
 CombatService._combatFeedbackEvent = nil
@@ -282,6 +283,16 @@ function CombatService:_isSafeZoneProtected(actor)
         and self._arenaService:IsActorInsideSafeZone(actor) == true
 end
 
+function CombatService:_recordEnemyWeaponBroken(sourceActor, targetActor)
+    if not (self._taskService and self._taskService.RecordEnemyWeaponBroken) then
+        return
+    end
+    local ok, failure = pcall(self._taskService.RecordEnemyWeaponBroken, self._taskService, sourceActor, targetActor)
+    if not ok then
+        warn("[CombatService] Failed to record enemy weapon break: " .. tostring(failure))
+    end
+end
+
 function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
     local ownerA = self._weaponService:_resolveActorByCombatUserId(weaponStateA.OwnerUserId)
     local ownerB = self._weaponService:_resolveActorByCombatUserId(weaponStateB.OwnerUserId)
@@ -313,6 +324,7 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
             launchDirection = positionA and positionB and (positionA - positionB) or nil,
         })
         if didBreakA then
+            self:_recordEnemyWeaponBroken(ownerB, ownerA)
             self:_fireCombatFeedback("WeaponBroken", weaponStateB.OwnerUserId, weaponStateA.OwnerUserId, weaponStateB.BaseDamage, 0)
         end
 
@@ -323,6 +335,7 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
             launchDirection = positionB and positionA and (positionB - positionA) or nil,
         })
         if didBreakB then
+            self:_recordEnemyWeaponBroken(ownerA, ownerB)
             self:_fireCombatFeedback("WeaponBroken", weaponStateA.OwnerUserId, weaponStateB.OwnerUserId, weaponStateA.BaseDamage, 0)
         end
         return
@@ -336,6 +349,7 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
             launchDirection = positionB and positionA and (positionB - positionA) or nil,
         })
         if didBreakB then
+            self:_recordEnemyWeaponBroken(ownerA, ownerB)
             self:_fireCombatFeedback("WeaponBroken", weaponStateA.OwnerUserId, weaponStateB.OwnerUserId, weaponStateA.BaseDamage, 0)
         end
         return
@@ -348,6 +362,7 @@ function CombatService:_applyWeaponVsWeapon(weaponStateA, weaponStateB)
         launchDirection = positionA and positionB and (positionA - positionB) or nil,
     })
     if didBreakA then
+        self:_recordEnemyWeaponBroken(ownerB, ownerA)
         self:_fireCombatFeedback("WeaponBroken", weaponStateB.OwnerUserId, weaponStateA.OwnerUserId, weaponStateB.BaseDamage, 0)
     end
 end
@@ -478,6 +493,7 @@ function CombatService:Init(dependencies)
     self._playerStateService = dependencies.PlayerStateService
     self._weaponService = dependencies.WeaponService
     self._healthService = dependencies.HealthService
+    self._taskService = dependencies.TaskService
     self._arenaService = dependencies.ArenaService
     self._remoteEventService = dependencies.RemoteEventService
     self._combatFeedbackEvent = self._remoteEventService and self._remoteEventService:GetEvent("CombatFeedback") or nil

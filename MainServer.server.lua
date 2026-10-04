@@ -83,6 +83,7 @@ local FavoritePlacePromptService = requireServerModule("FavoritePlacePromptServi
 local ActivityRsvpPromptService = requireServerModule("ActivityRsvpPromptService")
 local BadgeAwardService = requireServerModule("BadgeAwardService")
 local ArenaProgressService = requireServerModule("ArenaProgressService")
+local LevelWeaponSkinService = requireServerModule("LevelWeaponSkinService")
 local WheelService = requireServerModule("WheelService")
 local SkinService = requireServerModule("SkinService")
 local SubscriptionService = requireServerModule("SubscriptionService")
@@ -311,7 +312,6 @@ SubscriptionService:Init({
     RemoteEventService = RemoteEventService,
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
-    BadgeAwardService = BadgeAwardService,
     GameAnalyticsService = GameAnalyticsService,
 })
 ShopService:Init({
@@ -328,6 +328,11 @@ ChestService:Init({
     PotionService = PotionService,
     SkinService = SkinService,
     GameAnalyticsService = GameAnalyticsService,
+})
+LevelWeaponSkinService:Init({
+    RemoteEventService = RemoteEventService,
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
 })
 CodeService:Init({
     RemoteEventService = RemoteEventService,
@@ -417,6 +422,7 @@ CombatService:Init({
     HealthService = HealthService,
     ArenaService = ArenaService,
     RemoteEventService = RemoteEventService,
+    TaskService = TaskService,
 })
 ExperienceOrbService:Init({
     PlayerStateService = PlayerStateService,
@@ -505,6 +511,7 @@ GMCommandService:Init({
     SkinService = SkinService,
 })
 PlayerStateService:BindSystems({
+    BadgeAwardService = BadgeAwardService,
     WeaponService = WeaponService,
     WeaponUnlockRewardService = WeaponUnlockRewardService,
     LeaderboardService = LeaderboardService,
@@ -569,7 +576,6 @@ SkinService:BindSystems({
 SubscriptionService:BindSystems({
     PlayerStateService = PlayerStateService,
     RebirthService = RebirthService,
-    BadgeAwardService = BadgeAwardService,
     GameAnalyticsService = GameAnalyticsService,
 })
 ShopService:BindSystems({
@@ -627,6 +633,10 @@ TaskService:BindSystems({
     PotionService = PotionService,
     GameAnalyticsService = GameAnalyticsService,
 })
+BadgeAwardService:BindSystems({
+    PlayerStateService = PlayerStateService,
+    RebirthService = RebirthService,
+})
 
 local function onPlayerAdded(player)
     if #Players:GetPlayers() > GameConfig.SERVER.MaxPlayers then
@@ -650,6 +660,7 @@ local function onPlayerAdded(player)
     ArenaProgressService:OnPlayerAdded(player)
     FavoritePlacePromptService:OnPlayerAdded(player)
     ActivityRsvpPromptService:OnPlayerAdded(player)
+    LevelWeaponSkinService:OnPlayerAdded(player)
 
     local function handleCharacterAdded()
         local shouldReviveInArena = RespawnService:ConsumeArenaReviveRequest(player)
@@ -677,6 +688,7 @@ local function onPlayerAdded(player)
 end
 
 local function onPlayerRemoving(player)
+    BadgeAwardService:OnPlayerRemoving(player)
     GameAnalyticsService:OnPlayerRemoving(player)
     WeaponService:ClearPlayerWeapons(player)
     if LocalMonsterRewardService.OnPlayerRemoving then
@@ -699,11 +711,11 @@ local function onPlayerRemoving(player)
     SubscriptionService:OnPlayerRemoving(player)
     ShopService:OnPlayerRemoving(player)
     ChestService:OnPlayerRemoving(player)
+    LevelWeaponSkinService:OnPlayerRemoving(player)
     SevenDayLoginRewardService:OnPlayerRemoving(player)
     OnlineRewardService:OnPlayerRemoving(player)
     FavoritePlacePromptService:OnPlayerRemoving(player)
     ActivityRsvpPromptService:OnPlayerRemoving(player)
-    BadgeAwardService:OnPlayerRemoving(player)
     RebirthService:OnPlayerRemoving(player)
     LeaderboardService:OnPlayerRemoving(player)
     if FriendsRankingService.OnPlayerRemoving then

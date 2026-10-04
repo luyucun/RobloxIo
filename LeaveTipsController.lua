@@ -2,368 +2,264 @@
 Script: LeaveTipsController
 Type: ModuleScript
 Studio path: StarterPlayer/StarterPlayerScripts/Controllers/LeaveTipsController
-Purpose: Shows Main.LeaveTips when the Roblox escape menu opens.
+Purpose: ESC banners adapted from 加1陀螺 OfflineBannerController, using this game's existing text.
 ]]
 
 local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 
 local LeaveTipsController = {}
-
-local OWNER_NAME = "LeaveTips"
-local OPEN_TWEEN_INFO = TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-local CLOSE_TWEEN_INFO = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-local PRESS_TWEEN_INFO = TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-local RESET_TWEEN_INFO = TweenInfo.new(0.1, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-local SLIDE_OFFSET_SCALE = -0.16
-local PRESS_SCALE = 0.96
-local HOVER_SCALE = 1.02
-local MAX_BIND_RETRY_ATTEMPTS = 80
-
 LeaveTipsController._localPlayer = nil
-LeaveTipsController._modalUiController = nil
+LeaveTipsController._playerGui = nil
 LeaveTipsController._connections = {}
-LeaveTipsController._textConnections = {}
-LeaveTipsController._root = nil
-LeaveTipsController._text = nil
-LeaveTipsController._textOriginalPosition = nil
-LeaveTipsController._textScale = nil
+LeaveTipsController._uiConnections = {}
+LeaveTipsController._gui = nil
+LeaveTipsController._topBanner = nil
+LeaveTipsController._bottomBanner = nil
+LeaveTipsController._gradients = {}
 LeaveTipsController._activeTweens = {}
-LeaveTipsController._motionCleanup = nil
-LeaveTipsController._bindRetryQueued = false
-LeaveTipsController._bindRetryAttempts = 0
-LeaveTipsController._animationSerial = 0
-LeaveTipsController._isPressed = false
-LeaveTipsController._isHovered = false
+LeaveTipsController._hideThread = nil
+LeaveTipsController._uiSerial = 0
+LeaveTipsController._pollSerial = 0
+LeaveTipsController._menuOpen = false
+LeaveTipsController._effectiveOpen = nil
+LeaveTipsController._lastPolledMenuOpen = false
+LeaveTipsController._bannersVisible = false
+LeaveTipsController._rainbowAccumulated = 0
+LeaveTipsController._bindAttempts = 0
+
+local GUI_NAME = "LeaveTipsGui"
+local PARK_MARGIN = 0.01
+local SLIDE_IN_INFO = TweenInfo.new(0.35, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+local SLIDE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.In)
+local RAINBOW_SCROLL_SPEED = 0.12
+local RAINBOW_INTERVAL = 1 / 30
+local MENU_POLL_SECONDS = 0.2
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
-        if connection and connection.Connected then
-            connection:Disconnect()
-        end
+        if connection and connection.Connected then connection:Disconnect() end
     end
     table.clear(connections)
 end
 
-local function findMainGui(localPlayer)
-    local playerGui = localPlayer and (localPlayer:FindFirstChild("PlayerGui") or localPlayer:WaitForChild("PlayerGui", 5))
-    if not playerGui then
-        return nil
-    end
-    return playerGui:FindFirstChild("Main") or playerGui:FindFirstChild("Main", true)
+-- The reference derives edge/park positions from the banner's own anchor and height.
+-- Include offset height too, so manually resized banners still park fully offscreen.
+local function shownTop(banner)
+    return UDim2.new(0, 0, banner.AnchorPoint.Y * banner.Size.Y.Scale, banner.AnchorPoint.Y * banner.Size.Y.Offset)
 end
 
-local function ensureUiScale(guiObject)
-    if not (guiObject and guiObject:IsA("GuiObject")) then
-        return nil
-    end
-
-    local uiScale = guiObject:FindFirstChildOfClass("UIScale")
-    if uiScale then
-        return uiScale
-    end
-
-    uiScale = Instance.new("UIScale")
-    uiScale.Scale = 1
-    uiScale.Parent = guiObject
-    return uiScale
+local function shownBottom(banner)
+    return UDim2.new(0, 0, 1 - (1 - banner.AnchorPoint.Y) * banner.Size.Y.Scale,
+        -(1 - banner.AnchorPoint.Y) * banner.Size.Y.Offset)
 end
 
-local function offsetPosition(position, yScale)
-    return UDim2.new(
-        position.X.Scale,
-        position.X.Offset,
-        position.Y.Scale + yScale,
-        position.Y.Offset
-    )
+local function parkedTop(banner)
+    return shownTop(banner) - UDim2.new(0, 0, banner.Size.Y.Scale + PARK_MARGIN, banner.Size.Y.Offset)
 end
 
-local function isPrimaryPointer(inputObject)
-    local inputType = inputObject and inputObject.UserInputType
-    return inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch
+local function parkedBottom(banner)
+    return shownBottom(banner) + UDim2.new(0, 0, banner.Size.Y.Scale + PARK_MARGIN, banner.Size.Y.Offset)
+end
+
+-- Same hue cycle and keypoints as 加1陀螺; no Offset reset or endpoint color jump.
+local function applyRainbowPhase(gradient, phase)
+    local keypoints = {}
+    for index = 0, 5 do
+        table.insert(keypoints, ColorSequenceKeypoint.new(index / 6,
+            Color3.fromHSV((phase + index / 6) % 1, 0.75, 1)))
+    end
+    table.insert(keypoints, ColorSequenceKeypoint.new(1, Color3.fromHSV(phase % 1, 0.75, 1)))
+    gradient.Color = ColorSequence.new(keypoints)
 end
 
 function LeaveTipsController:_cancelTweens()
-    for _, tween in ipairs(self._activeTweens) do
-        tween:Cancel()
+    self._uiSerial += 1
+    if self._hideThread then
+        task.cancel(self._hideThread)
+        self._hideThread = nil
     end
+    for _, tween in ipairs(self._activeTweens) do tween:Cancel() end
     table.clear(self._activeTweens)
 end
 
-function LeaveTipsController:_playTextScale(scale, tweenInfo)
-    if not (self._textScale and self._textScale.Parent) then
-        return
+function LeaveTipsController:_unbindUi()
+    disconnectAll(self._uiConnections)
+    self:_cancelTweens()
+    if self._gui then
+        self._gui.Enabled = false
+        if self._topBanner and self._topBanner.Parent then self._topBanner.Position = parkedTop(self._topBanner) end
+        if self._bottomBanner and self._bottomBanner.Parent then self._bottomBanner.Position = parkedBottom(self._bottomBanner) end
     end
-
-    local tween = TweenService:Create(self._textScale, tweenInfo, {
-        Scale = scale,
-    })
-    table.insert(self._activeTweens, tween)
-    tween.Completed:Connect(function()
-        local index = table.find(self._activeTweens, tween)
-        if index then
-            table.remove(self._activeTweens, index)
-        end
-    end)
-    tween:Play()
+    self._gui = nil
+    self._topBanner = nil
+    self._bottomBanner = nil
+    table.clear(self._gradients)
+    self._effectiveOpen = nil
+    self._bannersVisible = false
+    self._rainbowAccumulated = 0
 end
 
-function LeaveTipsController:_applyPointerState()
-    if self._isPressed then
-        self:_playTextScale(PRESS_SCALE, PRESS_TWEEN_INFO)
-    elseif self._isHovered then
-        self:_playTextScale(HOVER_SCALE, RESET_TWEEN_INFO)
+function LeaveTipsController:_slideTo(open, immediate)
+    local top, bottom = self._topBanner, self._bottomBanner
+    if not (top and top.Parent and bottom and bottom.Parent) then return end
+    self:_cancelTweens()
+    local serial = self._uiSerial
+    local topPosition = open and shownTop(top) or parkedTop(top)
+    local bottomPosition = open and shownBottom(bottom) or parkedBottom(bottom)
+    if immediate then
+        top.Position = topPosition
+        bottom.Position = bottomPosition
+        self._bannersVisible = open
+        return
+    end
+    local info = open and SLIDE_IN_INFO or SLIDE_OUT_INFO
+    table.insert(self._activeTweens, TweenService:Create(top, info, { Position = topPosition }))
+    table.insert(self._activeTweens, TweenService:Create(bottom, info, { Position = bottomPosition }))
+    for _, tween in ipairs(self._activeTweens) do tween:Play() end
+    if open then
+        self._bannersVisible = true
+        local phase = (os.clock() * RAINBOW_SCROLL_SPEED) % 1
+        for _, gradient in ipairs(self._gradients) do applyRainbowPhase(gradient, phase) end
     else
-        self:_playTextScale(1, RESET_TWEEN_INFO)
+        -- Keep colors flowing through slide-out; cancel this delay if the menu reopens.
+        self._hideThread = task.delay(0.35, function()
+            if serial ~= self._uiSerial then return end
+            self._hideThread = nil
+            self._bannersVisible = false
+        end)
     end
 end
 
-function LeaveTipsController:_disconnectText()
-    disconnectAll(self._textConnections)
-    if self._motionCleanup then
-        self._motionCleanup()
-        self._motionCleanup = nil
-    end
-    self._isPressed = false
-    self._isHovered = false
+function LeaveTipsController:_applyMenuState()
+    if not (self._gui and self._gui.Parent) then return end
+    local blocked = CinematicUiGate:IsBlocked()
+    local open = self._menuOpen and not blocked
+    local enabled = not blocked
+    if self._effectiveOpen == open and self._gui.Enabled == enabled then return end
+    self._effectiveOpen = open
+    self._gui.Enabled = enabled
+    self:_slideTo(open, blocked)
 end
 
-function LeaveTipsController:_bindTextClickTarget()
-    self:_disconnectText()
-    if not (self._text and self._text:IsA("GuiObject")) then
-        return
-    end
-
-    self._text.Active = true
-    self._text.Selectable = false
-    self._textScale = ensureUiScale(self._text)
-    if self._modalUiController and self._modalUiController.BindButtonMotion then
-        self._motionCleanup = self._modalUiController:BindButtonMotion(self._text, {
-            HoverScale = HOVER_SCALE,
-            PressScale = PRESS_SCALE,
-        })
-    end
-
-    table.insert(self._textConnections, self._text.MouseEnter:Connect(function()
-        self._isHovered = true
-        if not self._motionCleanup then
-            self:_applyPointerState()
-        end
-    end))
-
-    table.insert(self._textConnections, self._text.MouseLeave:Connect(function()
-        self._isHovered = false
-        self._isPressed = false
-        if not self._motionCleanup then
-            self:_applyPointerState()
-        end
-    end))
-
-    table.insert(self._textConnections, self._text.InputBegan:Connect(function(inputObject)
-        if not isPrimaryPointer(inputObject) then
-            return
-        end
-        self._isPressed = true
-        if inputObject.UserInputType == Enum.UserInputType.Touch then
-            self._isHovered = true
-        end
-        if not self._motionCleanup then
-            self:_applyPointerState()
-        end
-    end))
-
-    table.insert(self._textConnections, self._text.InputEnded:Connect(function(inputObject)
-        if not isPrimaryPointer(inputObject) then
-            return
-        end
-        local wasPressed = self._isPressed
-        self._isPressed = false
-        if inputObject.UserInputType == Enum.UserInputType.Touch then
-            self._isHovered = false
-        end
-        if not self._motionCleanup then
-            self:_applyPointerState()
-        end
-        if wasPressed then
-            self:_handleContinue()
-        end
-    end))
+function LeaveTipsController:_setMenuOpen(open)
+    self._menuOpen = open == true
+    self:_applyMenuState()
 end
 
-function LeaveTipsController:_queueBindRetry()
-    if self._bindRetryQueued then
-        return
-    end
-    if self._bindRetryAttempts >= MAX_BIND_RETRY_ATTEMPTS then
-        warn("[LeaveTipsController] Give up binding PlayerGui/Main/LeaveTips/Text after retries.")
-        return
-    end
-    self._bindRetryAttempts += 1
-    self._bindRetryQueued = true
-    task.delay(0.25, function()
-        self._bindRetryQueued = false
-        if not self:_bindUi(true) then
-            self:_queueBindRetry()
-        end
-    end)
+function LeaveTipsController:_hideLegacyTip()
+    local main = self._playerGui and self._playerGui:FindFirstChild("Main")
+    local legacy = main and main:FindFirstChild("LeaveTips")
+    if legacy and legacy:IsA("GuiObject") then legacy.Visible = false end
 end
 
 function LeaveTipsController:_bindUi(silent)
-    local mainGui = findMainGui(self._localPlayer)
-    local root = mainGui and mainGui:FindFirstChild("LeaveTips")
-    local text = root and root:FindFirstChild("Text")
-    if not (root and root:IsA("GuiObject") and text and text:IsA("GuiObject")) then
-        if not silent then
-            warn("[LeaveTipsController] Missing PlayerGui/Main/LeaveTips/Text; retrying.")
-        end
+    local gui = self._playerGui and self._playerGui:FindFirstChild(GUI_NAME)
+    local top = gui and gui:FindFirstChild("TopBanner")
+    local bottom = gui and gui:FindFirstChild("BottomBanner")
+    if not (gui and gui:IsA("ScreenGui") and top and top:IsA("Frame") and bottom and bottom:IsA("Frame")) then
+        if not silent then warn("[LeaveTipsController] Missing PlayerGui/LeaveTipsGui/TopBanner or BottomBanner.") end
         return false
     end
-
-    if self._root == root and self._text == text then
-        return true
+    local gradients = {}
+    for _, banner in ipairs({ top, bottom }) do
+        local label = banner:FindFirstChild("Text")
+        local gradient = label and label:FindFirstChildOfClass("UIGradient")
+        if not (label and label:IsA("TextLabel") and gradient) then
+            if not silent then warn("[LeaveTipsController] Missing banner Text/UIGradient: " .. banner.Name) end
+            return false
+        end
+        table.insert(gradients, gradient)
     end
-
-    self:_disconnectText()
-    self:_cancelTweens()
-    self._root = root
-    self._text = text
-    self._textOriginalPosition = text.Position
-    self._textScale = ensureUiScale(text)
-    self._root.Visible = false
-    self._bindRetryAttempts = 0
-    self:_bindTextClickTarget()
+    if self._gui == gui and self._topBanner == top and self._bottomBanner == bottom
+        and self._gradients[1] == gradients[1] and self._gradients[2] == gradients[2] then return true end
+    self:_unbindUi()
+    self._gui, self._topBanner, self._bottomBanner = gui, top, bottom
+    self._gradients = gradients
+    self._bindAttempts = 0
+    gui.Enabled = false
+    top.Position = parkedTop(top)
+    bottom.Position = parkedBottom(bottom)
+    self:_hideLegacyTip()
+    table.insert(self._uiConnections, gui.AncestryChanged:Connect(function()
+        if not gui:IsDescendantOf(self._playerGui) and self._gui == gui then self:_unbindUi() end
+    end))
+    table.insert(self._uiConnections, gui.Destroying:Connect(function()
+        if self._gui == gui then self:_unbindUi() end
+    end))
+    self:_applyMenuState()
     return true
 end
 
-function LeaveTipsController:_show(immediate)
+-- Poll only property edges. A stale false property must never undo an earlier MenuOpened event.
+function LeaveTipsController:_pollMenu()
+    local open = GuiService.MenuIsOpen == true
+    if open ~= self._lastPolledMenuOpen then
+        self._lastPolledMenuOpen = open
+        self:_setMenuOpen(open)
+    end
     if not self:_bindUi(true) then
-        self:_queueBindRetry()
-        return
+        self._bindAttempts += 1
+        if self._bindAttempts == 150 then self:_bindUi(false) end
     end
-
-    self._animationSerial += 1
-    local serial = self._animationSerial
-    self:_cancelTweens()
-
-    local root = self._root
-    local text = self._text
-    local originalPosition = self._textOriginalPosition or text.Position
-    root.Visible = true
-    text.Visible = true
-    text.Position = offsetPosition(originalPosition, SLIDE_OFFSET_SCALE)
-    if self._textScale then
-        self._textScale.Scale = 1
-    end
-
-    if immediate == true then
-        text.Position = originalPosition
-        return
-    end
-
-    local slideTween = TweenService:Create(text, OPEN_TWEEN_INFO, {
-        Position = originalPosition,
-    })
-    table.insert(self._activeTweens, slideTween)
-    slideTween.Completed:Connect(function()
-        if self._animationSerial ~= serial then
-            return
-        end
-        local index = table.find(self._activeTweens, slideTween)
-        if index then
-            table.remove(self._activeTweens, index)
-        end
-    end)
-    slideTween:Play()
 end
 
-function LeaveTipsController:_hide(immediate)
-    if not self._root then
-        return
+function LeaveTipsController:_renderRainbow(deltaTime)
+    if not (self._bannersVisible and self._gui and self._gui.Enabled) then return end
+    self._rainbowAccumulated += deltaTime
+    if self._rainbowAccumulated < RAINBOW_INTERVAL then return end
+    self._rainbowAccumulated = 0
+    local phase = (os.clock() * RAINBOW_SCROLL_SPEED) % 1
+    for _, gradient in ipairs(self._gradients) do
+        if gradient.Parent then applyRainbowPhase(gradient, phase) end
     end
-
-    self._animationSerial += 1
-    local serial = self._animationSerial
-    self:_cancelTweens()
-    self._isPressed = false
-    self._isHovered = false
-
-    local root = self._root
-    local text = self._text
-    if not (root and root.Parent and text and text.Parent) then
-        return
-    end
-
-    local originalPosition = self._textOriginalPosition or text.Position
-    if immediate == true or root.Visible ~= true then
-        text.Position = originalPosition
-        if self._textScale then
-            self._textScale.Scale = 1
-        end
-        root.Visible = false
-        return
-    end
-
-    local slideTween = TweenService:Create(text, CLOSE_TWEEN_INFO, {
-        Position = offsetPosition(originalPosition, SLIDE_OFFSET_SCALE),
-    })
-    table.insert(self._activeTweens, slideTween)
-    slideTween.Completed:Connect(function()
-        if self._animationSerial ~= serial then
-            return
-        end
-        if text and text.Parent then
-            text.Position = originalPosition
-        end
-        if self._textScale and self._textScale.Parent then
-            self._textScale.Scale = 1
-        end
-        if root and root.Parent then
-            root.Visible = false
-        end
-        table.clear(self._activeTweens)
-    end)
-    slideTween:Play()
 end
 
-function LeaveTipsController:_closeRobloxMenu()
-    local ok = pcall(function()
-        GuiService:SetMenuIsOpen(false)
-    end)
-    if ok then
-        return
-    end
-
-    pcall(function()
-        GuiService.MenuIsOpen = false
-    end)
-end
-
-function LeaveTipsController:_handleContinue()
-    self:_hide(false)
-    self:_closeRobloxMenu()
+function LeaveTipsController:Destroy()
+    self._pollSerial += 1
+    disconnectAll(self._connections)
+    self:_unbindUi()
 end
 
 function LeaveTipsController:Init(dependencies)
+    self:Destroy()
+    local serial = self._pollSerial
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
-    self._modalUiController = dependencies and dependencies.ModalUiController or nil
-    self._bindRetryAttempts = 0
-    disconnectAll(self._connections)
-    self:_disconnectText()
-    self:_cancelTweens()
-
-    table.insert(self._connections, GuiService.MenuOpened:Connect(function()
-        self:_show(false)
-    end))
-
-    table.insert(self._connections, GuiService.MenuClosed:Connect(function()
-        self:_hide(false)
-    end))
-
-    self:_bindUi(true)
-    if GuiService.MenuIsOpen == true then
-        self:_show(true)
+    self._playerGui = self._localPlayer and (self._localPlayer:FindFirstChild("PlayerGui") or self._localPlayer:WaitForChild("PlayerGui", 5))
+    if not self._playerGui then
+        warn("[LeaveTipsController] Missing PlayerGui.")
+        return
     end
+    self._menuOpen = GuiService.MenuIsOpen == true
+    self._lastPolledMenuOpen = self._menuOpen
+    self._bindAttempts = 0
+    self:_hideLegacyTip()
+    table.insert(self._connections, GuiService.MenuOpened:Connect(function() self:_setMenuOpen(true) end))
+    table.insert(self._connections, GuiService.MenuClosed:Connect(function() self:_setMenuOpen(false) end))
+    table.insert(self._connections, CinematicUiGate:Subscribe(function() self:_applyMenuState() end))
+    table.insert(self._connections, RunService.RenderStepped:Connect(function(deltaTime) self:_renderRainbow(deltaTime) end))
+    table.insert(self._connections, self._playerGui.ChildAdded:Connect(function(child)
+        if child.Name == GUI_NAME or child.Name == "Main" then
+            task.defer(function()
+                if serial ~= self._pollSerial then return end
+                self:_hideLegacyTip()
+                self:_bindUi(true)
+            end)
+        end
+    end))
+    local rootScript = dependencies and dependencies.RootScript or script
+    table.insert(self._connections, rootScript.Destroying:Connect(function() self:Destroy() end))
+    self:_bindUi(true)
+    task.spawn(function()
+        while serial == self._pollSerial do
+            task.wait(MENU_POLL_SECONDS)
+            if serial ~= self._pollSerial then return end
+            self:_pollMenu()
+        end
+    end)
 end
 
 return LeaveTipsController

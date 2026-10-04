@@ -12,6 +12,7 @@ local UserInputService = game:GetService("UserInputService")
 local GuiService = game:GetService("GuiService")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -290,7 +291,7 @@ function NewWeaponUnlockController:_releasePresentation()
 end
 
 function NewWeaponUnlockController:_canInteract()
-    return self._isOpen and not self._isClosing and not self._isClaiming
+    return not CinematicUiGate:IsBlocked() and self._isOpen and not self._isClosing and not self._isClaiming
         and not GuiService.MenuIsOpen
         and self._panel and self._panel.Parent and self._panel.Visible
         and self._mainGui and self._mainGui.Enabled
@@ -408,6 +409,9 @@ function NewWeaponUnlockController:_applyPayload(payload)
 end
 
 function NewWeaponUnlockController:_playOpen(payload)
+    if CinematicUiGate:IsBlocked() then
+        return false
+    end
     local activeTierIndex = normalizeTierIndex(payload and payload.tierIndex)
     if not (self._panel and self._panel.Parent and activeTierIndex and activeTierIndex > 1) then
         return false
@@ -519,6 +523,10 @@ function NewWeaponUnlockController:_finishResolvedClaim()
     local resolution = self._claimResolution
     self._claimResolution = nil
     if resolution == "retry" then
+        -- Keep the same reward pending; an in-flight request still resolves during a cinematic.
+        if CinematicUiGate:IsBlocked() then
+            return
+        end
         if self._activePayload then
             if not (self._panel and self._panel.Parent) then
                 self:_bindUi(true)
@@ -539,7 +547,7 @@ function NewWeaponUnlockController:_finishResolvedClaim()
 end
 
 function NewWeaponUnlockController:_showNextQueued()
-    if self._isOpen or self._isClosing or self._isClaiming or self._activePayload then
+    if CinematicUiGate:IsBlocked() or self._isOpen or self._isClosing or self._isClaiming or self._activePayload then
         return
     end
 
@@ -559,6 +567,36 @@ function NewWeaponUnlockController:_showNextQueued()
             self:_queueBindRetry()
         end
     end
+end
+
+function NewWeaponUnlockController:_resumeAfterCinematic()
+    if CinematicUiGate:IsBlocked() or self._isClaiming or self._isClosing then
+        return
+    end
+    if self._claimResolution then
+        self:_finishResolvedClaim()
+    end
+    if self._isOpen then
+        return
+    end
+    if self._activePayload then
+        local tierKey = tostring(normalizeTierIndex(self._activePayload.tierIndex))
+        if self._acknowledgedTierIndexes[tierKey] then
+            self._activePayload = nil
+            self._activeTierKey = nil
+        elseif not (self._panel and self._panel.Parent) then
+            self:_queueBindRetry()
+            return
+        else
+            self:_playOpen(self._activePayload)
+            return
+        end
+    end
+    self:_showNextQueued()
+end
+
+function NewWeaponUnlockController:HasPendingRewardPresentation()
+    return self._activePayload ~= nil or self._isClaiming or #self._pendingPayloads > 0
 end
 
 function NewWeaponUnlockController:_handlePrompt(payload)
@@ -733,10 +771,9 @@ function NewWeaponUnlockController:_bindUi(silent)
             end
         end))
     end
-    if self._claimResolution and not self._isClaiming then
-        self:_finishResolvedClaim()
-    elseif self._activePayload and not self._isClaiming then
-        self:_playOpen(self._activePayload)
+    -- A caller draining the pending queue owns its dequeue; do not drain it recursively here.
+    if self._activePayload or self._claimResolution then
+        self:_resumeAfterCinematic()
     end
     return true
 end
@@ -814,6 +851,18 @@ function NewWeaponUnlockController:Init(dependencies)
     table.insert(self._connections, feedbackEvent.OnClientEvent:Connect(function(payload)
         self:_handleFeedback(payload)
     end))
+
+    table.insert(self._connections, CinematicUiGate:Subscribe(function(blocked)
+        if blocked then
+            -- Presentation only: preserve the active payload and pending claim/timeout.
+            self:_releasePresentation()
+        else
+            self:_resumeAfterCinematic()
+        end
+    end))
+    if CinematicUiGate:IsBlocked() then
+        self:_releasePresentation()
+    end
 
     local playerGui = self._localPlayer and (self._localPlayer:FindFirstChild("PlayerGui") or self._localPlayer:WaitForChild("PlayerGui", 10))
     if playerGui then

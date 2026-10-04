@@ -1,4 +1,4 @@
--- V6.13: real controller clones and detached formal UI, without Init or live remotes.
+-- V6.13 hide/restore switches: real controller clones and detached formal UI, without Init or live remotes.
 -- The only source substitution routes GameConfig to a fresh private clone so the
 -- fallback and re-enable cases cannot mutate Studio's already-cached live config.
 local HttpService = game:GetService("HttpService")
@@ -37,10 +37,14 @@ local ok, failure = pcall(function()
     privateConfig.Name = "__PrivateGameConfig"
     privateConfig.Parent = temporaryModules
     local config = require(privateConfig)
-    assert(config.UI_ENTRY_VISIBILITY.Tasks == false and config.UI_ENTRY_VISIBILITY.Chests == false,
-        "Deployed GameConfig must hide Tasks and Chests")
+    assert(type(config.UI_ENTRY_VISIBILITY) == "table"
+        and type(config.UI_ENTRY_VISIBILITY.Tasks) == "boolean"
+        and type(config.UI_ENTRY_VISIBILITY.Chests) == "boolean",
+        "Deployed GameConfig must define boolean Tasks and Chests visibility switches")
+    local deployedTasksVisible = config.UI_ENTRY_VISIBILITY.Tasks
+    local deployedChestsVisible = config.UI_ENTRY_VISIBILITY.Chests
 
-    for _, name in ipairs({ "TaskController", "ChestController", "SkinController", "ModalUiController", "TouchRegionGate" }) do
+    for _, name in ipairs({ "CinematicUiGate", "TaskController", "ChestController", "SkinController", "ModalUiController", "TouchRegionGate" }) do
         local cloned = sources[name]:Clone()
         if name == "TaskController" or name == "ChestController" or name == "SkinController" then
             local changed
@@ -68,12 +72,17 @@ local ok, failure = pcall(function()
     taskController._localPlayer = fakePlayer
     chestController._localPlayer = fakePlayer
 
-    check("Task and chest controllers still bind their complete UI", function()
+    check("Task and chest controllers bind their UI with the deployed visibility switches", function()
         assert(taskController:_bindUi(true))
         assert(chestController:_bindUi(true))
-        assert(not taskController._entryRoot.Visible)
-        assert(not chestController._leftEntry.Visible)
+        assert(taskController._entryRoot.Visible == deployedTasksVisible)
+        assert(chestController._leftEntry.Visible == deployedChestsVisible)
     end)
+
+    -- Exercise hiding on the private config even when the deployed entries are restored.
+    config.UI_ENTRY_VISIBILITY = { Tasks = false, Chests = false }
+    taskController:_renderEntryState()
+    chestController:_updateUi()
 
     check("Incoming completed tasks remain stored while the entry and red dot stay hidden", function()
         taskController:_applyStatePayload({

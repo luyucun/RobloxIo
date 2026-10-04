@@ -895,7 +895,16 @@ function WeaponService:_createWeaponState(actor, desiredWeapon, weaponIndex, tot
 
     local baseTemplate = self._templateFolder and findWeaponTemplate(self._templateFolder, tierConfig.TemplateName)
     local equippedSkin = ActorUtils.IsPlayer(actor) and self._playerStateService and self._playerStateService.GetEquippedSkinConfig and self._playerStateService:GetEquippedSkinConfig(actor) or nil
-    local visualTemplateName = equippedSkin and equippedSkin.TemplateName or tierConfig.TemplateName
+    -- V6.27: special skins win; otherwise a manually selected level look (with auto rules)
+    -- replaces only the visual template per slot. Hit shape/damage stay on the real tier.
+    local levelVisualConfig = not equippedSkin
+        and ActorUtils.IsPlayer(actor)
+        and self._playerStateService
+        and self._playerStateService.GetLevelWeaponVisualConfig
+        and self._playerStateService:GetLevelWeaponVisualConfig(actor, tierConfig)
+        or nil
+    local visualTemplateName = equippedSkin and equippedSkin.TemplateName
+        or (levelVisualConfig and levelVisualConfig.TemplateName or tierConfig.TemplateName)
     local visualTemplate = self._templateFolder and findWeaponTemplate(self._templateFolder, visualTemplateName)
     local template = visualTemplate or baseTemplate
     if not template then
@@ -941,7 +950,8 @@ function WeaponService:_createWeaponState(actor, desiredWeapon, weaponIndex, tot
     weaponState.IconImage = tierConfig.IconImage or WeaponTierConfig.GetIconImageForTier(tier)
     weaponState.VisualSkinId = equippedSkin and equippedSkin.Id or nil
     weaponState.VisualTemplateName = visualTemplateName
-    weaponState.VisualIconImage = equippedSkin and equippedSkin.IconImage or weaponState.IconImage
+    weaponState.VisualIconImage = equippedSkin and equippedSkin.IconImage
+        or (levelVisualConfig and levelVisualConfig.IconImage or weaponState.IconImage)
     weaponState.OrbitSpeed = self:_getFinalOrbitSpeed(actor)
     weaponState.OrbitDistance = self:_getFinalOrbitDistance(actor)
     weaponState.WeaponScale = self:_getFinalWeaponScale(actor)

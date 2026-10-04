@@ -34,6 +34,7 @@ end
 
 local RemoteNames = requireSharedModule("RemoteNames")
 local GameConfig = requireSharedModule("GameConfig")
+local CinematicUiGate = require((script.Parent:FindFirstChild("Controllers") or script.Parent):WaitForChild("CinematicUiGate"))
 
 local ClientEventController = {}
 
@@ -868,6 +869,12 @@ function ClientEventController:_spawnLevelUpEffect()
 end
 
 function ClientEventController:_playLevelUpFeedback()
+    if CinematicUiGate:IsBlocked() then
+        CinematicUiGate:Defer("LevelUp", function()
+            self:_playLevelUpFeedback()
+        end)
+        return
+    end
     local now = os.clock()
     if now < self._nextLevelUpFeedbackClock then
         return
@@ -879,6 +886,7 @@ function ClientEventController:_playLevelUpFeedback()
 end
 
 function ClientEventController:Init(dependencies)
+    CinematicUiGate:CancelDeferred("LevelUp")
     self._localPlayer = dependencies and dependencies.LocalPlayer or nil
     self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
     disconnectAll(self._connections)

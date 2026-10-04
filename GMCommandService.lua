@@ -432,6 +432,19 @@ function GMCommandService:_handleChatCommand(player, message)
             .. (enabled and " (display only; pass purchases disabled)" or " (actual ownership restored)"))
         return true, enabled
     end
+    if commandName == "levelskin" then
+        local argument = string.lower(tostring(message or ""):match("^%s*/%S+%s*(.-)%s*$") or "")
+        if argument ~= "" and argument ~= "on" and argument ~= "off" then
+            warn("[GMCommandService] Usage: /levelskin [on|off]")
+            return false, "InvalidArgument"
+        end
+        local attribute = RemoteNames.StudioAttributes.LevelSkinUiPreview
+        local enabled = argument == "on" or (argument == "" and player:GetAttribute(attribute) ~= true)
+        player:SetAttribute(attribute, enabled)
+        print("[GMCommandService] " .. player.Name .. " LevelWeaponSkins window " .. (enabled and "OPEN" or "CLOSE")
+            .. " (GM entry only; HUD entry stays hidden)")
+        return true, enabled
+    end
     if commandName == "diamond" or commandName == "addgems" or commandName == "kill" then
         if not self._playerStateService then
             warn("[GMCommandService] PlayerStateService is unavailable")

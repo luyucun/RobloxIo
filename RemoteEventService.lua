@@ -161,10 +161,16 @@ function RemoteEventService:Init()
         { Key = "RequestTaskStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestTaskStateSync },
         { Key = "RequestTaskClaim", Parent = systemEvents, Name = RemoteNames.System.RequestTaskClaim },
         { Key = "RequestInviteTaskProgress", Parent = systemEvents, Name = RemoteNames.System.RequestInviteTaskProgress },
+        -- V6.22: existing state event also carries optional openRejectedReason=NoChest; no new event.
         { Key = "ChestStateSync", Parent = systemEvents, Name = RemoteNames.System.ChestStateSync },
         { Key = "RequestChestStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestChestStateSync },
         { Key = "RequestChestOpen", Parent = systemEvents, Name = RemoteNames.System.RequestChestOpen },
         { Key = "RequestChestRewardClaim", Parent = systemEvents, Name = RemoteNames.System.RequestChestRewardClaim },
+        -- V6.27 level weapon skins: state sync + equip intent + feedback; appearance is server-resolved.
+        { Key = "LevelWeaponSkinStateSync", Parent = systemEvents, Name = RemoteNames.System.LevelWeaponSkinStateSync },
+        { Key = "RequestLevelWeaponSkinStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestLevelWeaponSkinStateSync },
+        { Key = "RequestLevelWeaponSkinEquip", Parent = systemEvents, Name = RemoteNames.System.RequestLevelWeaponSkinEquip },
+        { Key = "LevelWeaponSkinFeedback", Parent = systemEvents, Name = RemoteNames.System.LevelWeaponSkinFeedback },
 
         { Key = "PickupFeedback", Parent = battleEvents, Name = RemoteNames.Battle.PickupFeedback },
         { Key = "ExperienceFeedback", Parent = battleEvents, Name = RemoteNames.Battle.ExperienceFeedback },
@@ -179,6 +185,8 @@ function RemoteEventService:Init()
         -- Payload: global/self/timestamp. The removed custom local board used server rows.
         { Key = "LeaderboardSync", Parent = battleEvents, Name = RemoteNames.Battle.LeaderboardSync },
         { Key = "ArenaProgressSync", Parent = battleEvents, Name = RemoteNames.Battle.ArenaProgressSync },
+        -- Server -> clients: optional serverStartTime (Workspace:GetServerTimeNow),
+        -- preserving serverStartClock and the existing payload. No client settlement request.
         { Key = "NukeCinematic", Parent = battleEvents, Name = RemoteNames.Battle.NukeCinematic },
         { Key = "RevengeCinematic", Parent = battleEvents, Name = RemoteNames.Battle.RevengeCinematic },
         { Key = "NukeLocalMonsterSweep", Parent = battleEvents, Name = RemoteNames.Battle.NukeLocalMonsterSweep },
@@ -193,4 +201,5 @@ function RemoteEventService:GetEvent(eventKey)
     return self._events[eventKey]
 end
 
+-- V6.17 badges add no Remote. Boss/achievement facts can only be recorded by server gameplay.
 return RemoteEventService

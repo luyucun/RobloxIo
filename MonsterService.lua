@@ -760,6 +760,12 @@ function MonsterService:_awardMonsterRewards(monsterState, sourceActor, deathPos
         resolvedSourceActor = sourceActor or monsterState.LastDamageSourceActor
     end
 
+    if monsterState.IsBoss and not (options and options.isNukeSweep == true)
+        and ActorUtils.IsPlayer(resolvedSourceActor)
+        and self._playerStateService and self._playerStateService.RecordBossDefeated then
+        self._playerStateService:RecordBossDefeated(resolvedSourceActor)
+    end
+
     if resolvedSourceActor and self._playerStateService then
         local scoreReward = monsterState.KillScoreReward
             or (monsterState.IsBoss and GameConfig.BOSS.KillScoreReward)
@@ -833,6 +839,7 @@ function MonsterService:SweepForNuke(sourceActor, originPosition, compressedOrbC
     for _, entry in ipairs(bossRewardEntries) do
         self:_awardMonsterRewards(entry.MonsterState, sourceActor, entry.DeathPosition or dropPosition, {
             forceSourceActor = sourceActor,
+            isNukeSweep = true,
             authorizedExperienceReward = true,
         })
     end

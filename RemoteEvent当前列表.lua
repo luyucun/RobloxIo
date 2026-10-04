@@ -40,6 +40,10 @@ ReplicatedStorage
     - RequestChestStateSync
     - RequestChestOpen
     - RequestChestRewardClaim
+    - LevelWeaponSkinStateSync
+    - RequestLevelWeaponSkinStateSync
+    - RequestLevelWeaponSkinEquip
+    - LevelWeaponSkinFeedback
     - PromptFavoritePlace
     - FavoritePlacePromptStarted
     - FavoritePlacePromptResult
@@ -261,6 +265,42 @@ SkinStateSync / PlayerStateSync 尾迹扩展（V5.9）
 - 未拥有且 `isBoxOnly=true` 的尾迹隐藏钻石/Robux 购买按钮，显示 `TrailRowTemplate.BoxOpen`，点击打开 `Main.ChestRewards`。
 - `RewardType = "Chest"` 可被任务、兑换码、在线奖励、七日登录奖励等通用奖励入口复用，字段为 `ChestId`、`Amount`、`Icon`、`Label`。
 
+三-补6、独立等级武器外观 RemoteEvent（V6.27）
+
+LevelWeaponSkinStateSync（S -> C）
+发送方：`LevelWeaponSkinService:PushState`
+接收方：`LevelWeaponSkinController`
+用途：同步服务端权威的等级武器外观状态；进服加载完成后、每次装备/复原/自动开关变更后推送，拒绝路径也回推权威状态。外观目录（40 档名称/图标/解锁等级）不随事件下发，客户端直接读 `ReplicatedStorage/Shared/WeaponTierConfig`。
+字段：
+- selectedTierIndex：nil（默认等级外观）或 1-40 的手选基础外观档序号。
+- autoUpgrade：boolean，缺省 true；显式 false 必须保留。
+- highestLevelReached：服务端历史最高等级，解锁目录由此派生，不接受客户端自报。
+- timestamp
+
+RequestLevelWeaponSkinStateSync（C -> S）
+发送方：`LevelWeaponSkinController`
+接收方：`LevelWeaponSkinService`
+用途：客户端初始化或打开 `Main.LevelWeaponSkins` 窗口（当前经 Studio GM `/levelskin` 入口）时请求状态刷新。
+字段：无。
+
+RequestLevelWeaponSkinEquip（C -> S）
+发送方：`LevelWeaponSkinController`
+接收方：`LevelWeaponSkinService`
+用途：卡片 Equip、Use Level Look 复原与自动开关三类意图。服务端校验数据已加载、限频（默认 0.2 秒/玩家/请求类型）、档序号为 1-40 整数且按 highestLevelReached 已解锁、autoUpgrade 严格 boolean；拒绝时回 `LevelWeaponSkinFeedback(Failed, reason)` 并回推权威状态，不发外观、不改存档。
+字段（三种互斥形态）：
+- tierIndex：number，装备该档为手选基础外观；同时清除特殊皮肤装备状态（不清拥有）。
+- action = "UseLevelLook"：清除手选基础外观并恢复自动开启，同时清除特殊皮肤装备状态。
+- action = "AutoUpgrade", enabled：boolean，切换自动升级；enabled=false 且无手选时服务端把当前已解锁最高档设为基础外观。
+说明：
+- 等级外观的视觉模板由服务端 `WeaponService._createWeaponState` 在 EquippedSkinId（特殊皮肤优先）之后解析，经既有 `WeaponStateSync.visualTemplateName` 广播，其他客户端无需新事件。
+- 伤害、数量、CombatRank、Aura 判定继续来自实际档位模板（copyAuraShape 用实际档模板），外观不影响判定范围。
+
+LevelWeaponSkinFeedback（S -> C）
+发送方：`LevelWeaponSkinService`
+接收方：`LevelWeaponSkinController`
+用途：装备/复原/自动开关结果反馈；payload.eventType = Equipped / Reset / AutoUpdated / Failed，reason = DataLoading / Debounced / InvalidArgument / Locked / Error，state 与 LevelWeaponSkinStateSync 相同。
+
+
 三补、收藏游戏系统 Prompt RemoteEvent（V5.7）
 PromptFavoritePlace（S -> C）
 发送方：`FavoritePlacePromptService`
@@ -294,7 +334,7 @@ FavoritePlacePromptResult（C -> S）
 PromptActivityRsvp（S -> C）
 发送方：`ActivityRsvpPromptService`
 接收方：`ActivityRsvpPromptController`
-用途：玩家进服一段时间后请求客户端调起 Roblox 官方 Experience Event RSVP 系统弹窗。当前活动 ID 为 `1761422313611461386`，客户端会先查询 RSVP 状态，已 `Going` 时不再弹出取消预约弹窗。
+用途：玩家进服一段时间后请求客户端调起 Roblox 官方 Experience Event RSVP 系统弹窗。当前活动 ID 为 `2372830586537640594`（2026-10-04 更新），客户端会先查询 RSVP 状态，已 `Going` 时不再弹出取消预约弹窗。
 字段：
 - requestId
 - eventId
@@ -620,8 +660,9 @@ players 行字段：
 - 用途：仅用于 Studio 测试，通知当前客户端直接调用 Roblox 官方加群系统弹窗，不发奖励、不改领取状态。
 
 11. NukeCinematic：
-- 发送方：`NukeService:_fireCinematic`
+- 发送方：`NukeService:_buildCinematicPayload` / `_runQueue`
 - 用途：核弹购买成功后广播客户端播放核弹表现。
+- V6.18 新增可选 serverStartTime:number（Workspace:GetServerTimeNow），客户端据此换算阶段时间轴。原 sessionId/ownerUserId/ownerName/ownerDisplayName/battleCenter、时长、动画/灯光字段和 serverStartClock 保留；旧包缺字段时从收到包计时。无新增客户端请求，不改变服务端爆点/清怪/致死结算。
 
 12. NukeLocalMonsterSweep：
 - 接收方：`NukeService:_handleLocalMonsterSweep`
@@ -648,4 +689,13 @@ V6.7.2 混音调整不改变任何事件或字段。
 V6.8：RequestRebirth/RebirthFeedback 沿用现有协议，免费成功反馈保留后的 rebirthScore 与更新后的 nextRebirthScore；保存期间拒绝重复请求。legacyBladeRecoveryCap 只在服务端存档，不进入任何 Remote。
 WheelSpinResult.reward 保留 slot/id/rewardType/giftName/targetRotation 指向原抽中格，新增可选 duplicateCompensation:boolean、awardedRewardType:string、awardedAmount:number、awardedGiftName:string、duplicateDiamonds:number；重复皮肤时分别为 true/Diamonds/5000/Gift5/5000，实际数额来自数值表。客户端按 awarded* 展示实际奖品，绝不据此向服务端请求发奖。首次发皮肤仍沿用原字段，已交付奖励 pending=false。无新增 Remote 名称。
 V6.11 Studio GM 展示状态（非 RemoteEvent）：既有 GMCommandService 服务端聊天 /passui [on|off] 校验 RunService:IsStudio 后仅设置调用玩家的 boolean Attribute StudioPassUiPreview；缺省 false，退出测试失效，不落持久化。名称登记于 RemoteNames.StudioAttributes.PassUiPreview。ShopController/SkinController 监听本玩家此属性，并再次检查 Studio；仅重算 UI 显示，不改 ShopStateSync/SkinStateSync 字段，不创建同名 Remote。
+V6.17 官方成就徽章：无新增 Remote 或客户端字段。
+FirstBossDefeated/firstBossDefeated 为服务端状态/存档布尔值，totalPlayerKills 加入服务端全局存档，与原击杀榜读档合并取最大值；不新增 PlayerStateSync 字段。BadgeAwardService 只读成功加载的服务端进度，不注册客户端发奖/上报达成请求。普通 Boss 击杀结算记录事实；核弹清场显式排除。旧欢迎/订阅徽章不再发放，仅 8 个新官方 ID。
+V6.22：TaskStateSync 的既有 taskType / taskTypeId 新增 EnemyWeaponsBroken / 1005（任务107），碎刃进度完全由服务端 CombatService 实际成功结果记录，无客户端上报事件。
+ChestStateSync 增加可选 openRejectedReason:string，仅实际开箱因无库存被拒绝时为 NoChest。客户端仅在等待自己的开箱请求且 Box 仍为当前页面时进入任务页；成功消费后的 chests=0 不触发导航。RequestChestOpen 参数、发奖与 claimId 协议不变。任务奖励宝箱预览点击仅本地页面导航和原状态刷新，不开箱、不发奖。
+V6.23：无协议或事件变化。既有SkinStateSync.trails目录增加1011 Boneflame，现有字段isBoxOnly/experienceBonus/sortOrder和1010购买元数据按用户尾迹表导出；ChestStateSync.chestConfigs中的池1尾迹奖励trailId从1010改为1011。拥有、装备、购买、宝箱消费与领取仍由原服务端链路校验，不接收客户端奖励或概率数值。
+V6.24/V6.24.1：无协议或事件变化。ChestController仅依据既有ChestStateSync库存驱动入口红点，依据既有掉落rewardType驱动尾迹奖励图标动效；V6.24.1已取消原彩虹渐变。客户端不推算或上报奖励、概率和库存变化。
+V6.25：ESC上下黑帘与文字渐变仅由本地GuiService菜单状态驱动，无新事件或协议字段。文案沿用Your level has been saved，不增加保存请求或服务端结算；核弹仅复用既有本地CinematicUiGate。
+V6.26：本轮仅独立等级武器外观策划、Figma交互白图及静态LevelWeaponSkins模板，没有新增Remote或修改现有SkinStateSync/WeaponStateSync。未来通过独立等级外观服务/控制器接入基础外观选择、自动更换布尔值与装备意图，不将新请求混入旧皮肤/尾迹/称号UI；届时再登记协议并同步四处代码。
+V6.27：新增 4 个 SystemEvents Remote：LevelWeaponSkinStateSync / RequestLevelWeaponSkinStateSync / RequestLevelWeaponSkinEquip / LevelWeaponSkinFeedback（详见三-补6）。外观解析仍在服务端：WeaponService._createWeaponState 在 EquippedSkinId 特殊皮肤之后按"手选基础外观+自动开关"解析每槽视觉模板，结果沿用既有 WeaponStateSync.visualTemplateName/visualIconImage 广播，其他客户端零改动。PlayerStateSync 新增只读字段 selectedLevelWeaponTierIndex、levelWeaponSkinAutoUpgrade。存档新增 selectedLevelWeaponTierIndex（nil/1-40，读取时按最高等级校验已解锁）、autoUpgradeLevelWeaponSkin（缺省 true，显式 false 必须保留）。Studio GM /levelskin [on|off] 仅设置玩家 Attribute StudioLevelSkinUiPreview（登记于 RemoteNames.StudioAttributes.LevelSkinUiPreview），客户端据此打开/关闭窗口；HUD 常驻入口 LevelWeaponSkinsButton 保持隐藏，后续开放时走正常按钮绑定。
 ]]

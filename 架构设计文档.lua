@@ -42,7 +42,7 @@
 3.`RemoteNames`
 - 集中声明 RemoteEvent 文件夹和事件名。
 3.1.`GameConfig.ACTIVITY_RSVP_PROMPT`
-- 配置 Roblox Experience Event 活动预约系统弹窗，当前 `EventId = "1761422313611461386"`，玩家进服 90 秒后由服务端请求客户端调起官方 RSVP Prompt；客户端会先查询 RSVP 状态，已 `Going` 的玩家不再弹出取消预约弹窗。
+- 配置 Roblox Experience Event 活动预约系统弹窗，当前 `EventId = "2372830586537640594"`（2026-10-04 更新），玩家进服 180 秒后由服务端请求客户端调起官方 RSVP Prompt；客户端会先查询 RSVP 状态，已 `Going` 的玩家不再弹出取消预约弹窗。
 4.`OnlineRewardConfig`
 - 由 `IO_BaseBalanceDraft.xlsx / 在线奖励` 同步在线奖励定义，包含奖励类型、数量、图标和本轮所需在线秒数；当前通过 `tools/SyncCodeConfigFromWorkbook.py` 与兑换码配置一起刷新。
 4.1.`SevenDayLoginRewardConfig`
@@ -243,6 +243,10 @@
 - RequestChestStateSync
 - RequestChestOpen
 - RequestChestRewardClaim
+- LevelWeaponSkinStateSync
+- RequestLevelWeaponSkinStateSync
+- RequestLevelWeaponSkinEquip
+- LevelWeaponSkinFeedback
 - PromptActivityRsvp
 - ActivityRsvpPromptStarted
 - ActivityRsvpPromptResult
@@ -368,4 +372,124 @@ V6.16 任务界面样式与动效：
 3. 动效分两类：一次性 motion（条目弹入、进度填充、详情回弹、角标/印章弹出、行闪白）按目标实例单 Tween 管理，关闭或重绑时取消并直接落到终态；循环 ambient（可领取 Claim 光晕/扫光、进度条扫光、奖励光芒旋转、Ready! 脉冲）以就绪目标集合为签名，签名不变的状态同步不重启，面板关闭、Claiming 等待或选中非可领取任务即停止并复位。仅面板打开时播放，关闭状态下同步直接写入终值。
 4. 领取反馈：_applyStatePayload 对比前后状态，仅在面板打开时对 progress/ready -> ready/claimed 的前进变化排队；延迟 0.2 秒且面板可见才播放。ShopRewardFeedback 触发的 ClaimSuccessful 经 ModalUiController 临时隐藏任务面板时继续排队，面板 Visible 恢复后播放；关闭面板清空队列。服务端 TaskService 先 PushState 再发 ShopRewardFeedback 的顺序不变。
 5. 不变项：非模态 HUD 窗口行为、未完成 Claim 文本与无效点击、Claiming 1.2 秒等待、RequestTaskClaim 仅携带 taskId、服务端幂等领取与发奖、任务配置/奖励/刷新周期、Remote 协议与存档；不新增 Remote。
+V6.17 官方成就徽章：
+1. BadgeConfig 从 IO_BaseBalanceDraft.xlsx 的“徽章”工作表导出 8 枚名称、说明、条件、目标、官方新 ID；UniverseId 固定当前游戏 10133052560。GetEligibleBadgeKeys 为纯条件计算；旧欢迎/订阅配置和订阅发奖入口移除。
+2. BadgeAwardService 绑定 PlayerStateService/RebirthService，仅成功读档的真实 Player 可检查进度；官方拥有缓存只记录 API 返回 true，异步入队去重、有限退避，并在每次 yield 后验证玩家实例与会话有效性。GetBadgeInfoAsync 检查 IsEnabled；游戏归属在后台核验，运行时核对 game.GameId。
+3. PlayerStateService 在最高等级、养成重生、真人累计击杀变化后触发 CheckProgress；RebirthService 完成读档后触发补发。FirstBossDefeated 为服务端持久事实，对应存档 firstBossDefeated；MonsterService 仅普通 Boss 击杀结算记事实，SweepForNuke 不触发。TotalPlayerKills 增加全局存档 totalPlayerKills，与现有击杀榜读档取最大值，避免不同加载顺序覆盖。
+4. 新字段不进入 PlayerStateSync，徽章无客户端请求或新增 Remote。服务端不接受客户端上报达成事实/徽章 ID。RemoteNames/RemoteEventService 仅登记协议边界不变。
+5. API 失败不回滚达成事实，读档失败不发、不写；旧档 Boss 标记默认为 false。Welcome 内部键保留 NewPlayerWelcome、使用新 ID，所有成功加载玩家均检查补发；旧 ID 不再发放。无效 ID=0 明确跳过。
+V6.18 核弹表现：
+1. NukeService._buildCinematicPayload 新增可选 serverStartTime:number，来源 Workspace:GetServerTimeNow。保留原 serverStartClock 和所有时长、付费/结算流程；客户端一次换算 os.clock 起点，后续用绝对阶段界限采样，缺 GUI/资源不能跳过 7.25 秒计划爆点。
+2. NukeCinematicController 用单一 session 对象管理 camera snapshot、GUI 原态、临时模型/后处理/音效及连接；每次等待/帧回调核对 owner。cancel/Init/异常 finally 幂等清理；只当前会话恢复相机，旧回调不可恢复新镜头或提交 sweep。当前角色变化后优先绑定新 Humanoid，不还原失效主体。
+3. 客户端 presentation 常量只控制镜头/FOV/震动/粒子预算/缩放，不是战斗经济数值，不修改数值表或 GameConfig.NUKE 的服务端时间配置。中心效果一次静态有界缩放，burst 分阶段发射；单独地面波展示地图覆盖。世界 ClockTime 仍归服务器，客户端只创建并销毁本会话后处理。
+4. 正式 StarterGui.NukeCinematicEffects（ScreenGui，ResetOnSpawn=false，IgnoreGuiInset=true）包含 TopBar/BottomBar/ImpactFlash，默认不可见、不拦截输入；部署工具 tools/EnsureNukePresentation.luau 仅 Edit 幂等创建，不覆盖已部署手调。此为被动剧情遮罩，不是功能面板，不使用 ModalUi/Blur。
+5. NukeCinematic 无其他字段/权威更改，NukeLocalMonsterSweep 仍只提交服务端签发的 sessionId/tokens；客户端表现不决定伤害、范围、货币或奖励。旧徽章/任务入口未提交改动保持。
+V6.19 核弹可见性与自动弹框协调 / 2026-10-03
+客户端 Controllers/CinematicUiGate 单例：Acquire(owner)->token、Release(token)、IsBlocked()、
+Subscribe(callback)->Disconnect连接、Defer(key,callback)。只协调表现，不持有奖励权威或延迟状态同步。
+每核弹 token 先于旧会话取消取得，保留到其爆炸、镜头和尾音/烟清理全部完成；引用计数保护连发。
+Shop 的完整奖励呈现 FIFO 与 WeaponUnlock 原按 tier 队列在 gate 关闭时保留数据，开放后逐项显示；
+已有弹框暂停，不代替玩家 claim 宝箱。独立自动弹框同样等待，Modal 在 gate 关闭时压住 Blur/dim/面板。
+有效素材原 Enabled/Rate 控制参与 burst，EmitCount=0 不能抹掉原持续发射贡献。
+爆炸视觉使用准备完成后的本地起点保证完整2s，计划爆点/token授权仍用既有服务端时间轴；清怪异常不终止表现。
+无网络协议/数值表变化。
+V6.20 落地帧性能 / 2026-10-04
+NukeCinematicController 在预告阶段准备不在 Workspace 的已禁用爆炸实例和地面波；
+落地时激活并启动视觉局部时钟，不在该帧遍历缩放完整素材。必要纹理/声音异步预载，不阻塞时间轴。
+LocalMonsterController 的核弹路径逻辑清场与物理销毁分离：先快照 token 和旧对象、
+移出旧怪目录并切换空目录及状态，立即发送原 sweep 意图，后续帧有界销毁旧快照。
+清理只处理已移交对象，不经现行怪物映射或全局池计数，重绑/连续扫荡/复刷不会被旧清理任务污染。
+普通清怪路径保持；没有 Remote 参数、结算、奖励或玩法数值变化。
+V6.21 Flash 输入绑定 / 2026-10-04
+FlashController 始终观察 PlayerGui 内正式 Main.Flash.Info.TextButton 的到达/替换，
+合并 deferred 重绑、同节点幂等，移除旧按钮连接并恢复剩余冷却遮罩。
+RequestFlash 阶段不 SuspendForFlash；收到 Started 才停止自动 MoveTo 并播放已批准的突进。
+拒绝/超时不主动停止自动寻路。鼠标/触屏 Activated 与 Q/X 保持同一请求守卫。
+没有 Remote、服务端方向规则、数值表或存档变化。
+V6.22 Blade Breaker / 2026-10-04
+TaskConfig 增加 Daily/EnemyWeaponsBroken（类型1005），任务107、目标30、宝箱101 x2；
+数值表任务系统数据表添加一条类型定义和一条任务，通过 task-only 导出，原14任务不变。
+CombatService 持有 TaskService 依赖，四个真实碎刃成功分支按已解析的双方 Actor 记录；
+不能在碎刃后反查攻击武器：同阶第一把已销毁，仍必须为第二次实际碎刃正确归属。
+TaskService.RecordEnemyWeaponBroken 校验真人来源、敌方身份/存活/场内及数据已加载，
+沿用 RecordProgress、TaskState、周期刷新、状态推送和幂等宝箱领取；记录异常隔离，不改变武器对拼结果。
+无新增客户端上报或 Remote，现有 TaskStateSync.taskType 新增合法配置值 EnemyWeaponsBroken。
+MainServer 在 CombatService:Init 注入 TaskService；Tasks/Chests=true，正式入口可交互、面板默认关闭。
+TaskChestNavigationController 仅管理 Tasks/Chests 的当前页面与返回记录，由 MainClient 创建依赖注入；
+两个业务控制器的 Open/Close 统一经过导航，内部 _setNavigationOpen 不递归调用公开接口。
+导航保存 Task 页签、两页签各自选中任务、CanvasPosition，过渡先立即隐藏来源，再打开目标；
+关闭目标时只弹出最近一次来源并恢复，嵌套往返逐层返回；同一跳转连点按当前页面守卫去重，HUD 新开清理历史。
+Task 奖励行仅 Chest 绑定点击，缓存签名纳入 rewardType/chestId，并独立清理奖励按钮连接。
+Chest 初次库存同步前禁用开箱，库存为 0 后保持 Open 可点击用于导航；请求冷却防连点。
+成功消费到 0 只刷新数量；仅实际开箱请求被服务端 NoChest 拒绝时发送可选拒绝原因触发导航。
+ChestStateSync 可选 openRejectedReason=NoChest，不新增 Remote、不改变消耗与发奖权威。
+V6.23 尾迹/宝箱配置同步 / 2026-10-04
+用户数值表是本轮目录真源：trail-only导出11条，chest-only导出2箱/12条掉落。
+新增1011 Boneflame -> ReplicatedStorage/Model/Trail/Trail011，IsBoxOnly=true、ExperienceBonus=0.4、SortOrder=1。
+掉落池1将TrailId=1010改为1011，Weight=7、IsLimited=true；池2及其余奖项按表保留。
+1010 Butter为IsBoxOnly=false，DiamondPrice=59900、RobuxPrice=599、原ProductId保留、SortOrder=11；1001排序2。
+SkinService/SkinController按TrailConfig动态构建目录和BoxOpen/购买/装备按钮，无固定10条限制；
+ChestService发奖和已拥有排除均按具体TrailId，旧1010拥有不视为新1011拥有。
+PlayerStateService的OwnedTrails/EquippedTrailId继续沿用原动态ID映射与经验加成读取，无存档迁移。
+TrailFxController按TemplatePath克隆现有Trail011并焊接角色，仅使用原客户端表现链路。
+Remote名字、参数和结构不变，仅现有SkinStateSync/ChestStateSync目录包含新的配置值。
+V6.24 宝箱视觉提醒 / 2026-10-04
+ChestController绑定Main.Left.Box.RedPoint及正式UIScale，已同步的宝箱101库存>0时显示；
+持续轻摇/呼吸Tween只在祖先Visible、ScreenGui.Enabled且CinematicUiGate未阻挡时播放。
+V6.24.1取消尾迹行彩虹与白底覆盖，保留正式模板原来的静态Gradient和背景。
+按实际rewardType=Trail绑定奖励ImageLabel及UIScale，循环放大至1.14倍、左右轻抖后复位停顿；
+仅可见图标播放，非尾迹不播放，关闭/祖先隐藏/动画门停止并复位，重绑/销毁回收Tween/任务及监听。
+库存/奖励状态同步不重置正在播放的Tween；状态权威、任务返回栈、概率与Remote不变。
+V6.25 ESC 横幅 / 2026-10-04
+LeaveTipsController保留现有MainClient初始化入口，改绑定StarterGui.LeaveTipsGui：
+ScreenGui DisplayOrder=999、IgnoreGuiInset=true、ResetOnSpawn=false、Global层序、静态Enabled=false；
+TopBanner/BottomBanner黑色Frame各高10%，锚点分别(0,0)/(0,1)，Text使用当前Your level has been saved。
+基于加1陀螺OfflineBannerController的实际源码与正式GUI，只读参考其滑动、锚点几何和色相渐变算法：
+0.35s Sine Out滑入、0.3s Sine In滑出；7关键点首尾同色，0.12色相周期/秒、30Hz刷新。
+GuiService.MenuOpened/MenuClosed即时响应；0.2s轮询只观察MenuIsOpen变化沿，不用滞后属性覆盖事件。
+独立GUI不归ModalUi所有权；CinematicUiGate隐藏并复位横幅，结束用已记录菜单意图恢复。
+玩家GUI到达/替换时重绑，串号取消旧定时回调；关闭停渐变，销毁/Init回收连接和Tween。
+旧Main.LeaveTips保留隐藏，停止旧文字点击/缩放入口，系统菜单继续由Roblox原生交互控制。
+Remote、数值表、状态保存权威与其他项目均不变。
+V6.26 等级武器皮肤 / 策划与静态UI
+独立功能：正式Main.LevelWeaponSkins窗口和Main.Left.LevelWeaponSkinsButton入口，默认隐藏；
+不在Skin里添加页签，不合并原Skin/Trails/Titles，不改现有控制器、武器服务或存档。
+先完成Figma独立交互白图，再建立静态模板。复用Skin窗口、WeaponSkinsHeader、EquipTemplate/EquipButton及Option.Music样式；
+页面包含ProgressSummary/SelectedSkinSummary/AutoUpgradeRow.CheckboxButton.Checkmark/
+ScrollingFrame.LevelWeaponTemplate与40条LevelWeapon_Tn演示卡片，演示最高等级55、选中T6、默认勾选。
+新窗口的Content与独立HUD入口均为待接线静态节点，预览只在Edit用隔离GUI副本展示。
+销毁预览不改正式页面Visible状态；未来窗口注册独立ModalUi所有权LevelWeaponSkins。
+后续实现规划（本轮不落地）：从HighestLevelReached与WeaponTierConfig.Order派生永久解锁，
+持久化SelectedLevelWeaponTierIndex与AutoUpgradeLevelWeaponSkin（缺省true，显式false保留）。
+外观源Default/LevelWeapon/SpecialSkin互斥；等级自动模式按每个槽位max(手选档,实际可见档)解析，
+固定模式按手选档解析，特殊皮肤仍沿用现有EquippedSkinId；实际伤害/数量/CombatRank/Aura不变。
+未来新增独立LevelWeaponSkinService/LevelWeaponSkinController，接PlayerStateService/RebirthService/WeaponService；
+等级外观的目录、请求和UI不复用旧SkinController页面或旧皮肤装备请求。实际外观源互斥由共享武器解析层处理。
+协议另行四处登记。
+详细规则、旧存档迁移、状态文案和接线节点见等级武器皮肤策划文档.lua。本轮无数值表或Remote变化。
+V6.27 等级武器皮肤正式接线 / GM入口 / 2026-10-04
+PlayerStateService新增持久化字段：SelectedLevelWeaponTierIndex（nil或1-40，读取归一化时按
+HighestLevelReached校验已解锁，越界/未解锁回nil）与AutoUpgradeLevelWeaponSkin（缺省true，仅显式false为false）；
+PlayerStateSync新增只读selectedLevelWeaponTierIndex/levelWeaponSkinAutoUpgrade字段。
+装备互斥：EquipLevelWeaponSkin清除EquippedSkinId（不清拥有）；EquipSkin清除SelectedLevelWeaponTierIndex；
+UseLevelWeaponLook清除手选+恢复自动+清除特殊皮肤装备；SetLevelWeaponAutoUpgrade(false)且无手选时
+服务端把当前已解锁最高档设为基础外观。四个接口均MarkDirty+PushState+RebuildWeaponsForActor即时重算。
+外观解析：WeaponService._createWeaponState在EquippedSkinId特殊皮肤优先之后，调用
+PlayerStateService:GetLevelWeaponVisualConfig(actor, tierConfig)逐槽解析——自动开启时槽位实际档高于手选档
+则用实际档模板（保持逐把换刃节奏），否则用手选档模板；自动关闭恒用手选档；无手选返回nil走默认档位模板。
+VisualSkinId仅特殊皮肤设置；VisualTemplateName/VisualIconImage随等级外观换档；命中判定、伤害、数量、
+CombatRank、Aura继续来自实际档位模板（copyAuraShape用baseTemplate），外观不扩大判定范围。
+持久化：RebirthService存档payload新增selectedLevelWeaponTierIndex/autoUpgradeLevelWeaponSkin两键，
+读档normalizeSavedData归一化后经SetRebirthData回填；无迁移，旧档默认无手选+自动true。
+新增LevelWeaponSkinService（ServerScriptService/Services）：四个Remote（State/Sync请求/Equip意图/Feedback），
+校验数据已加载、按玩家+请求类型0.2s限频、档序号1-40整数且按服务端HighestLevelReached已解锁、
+autoUpgrade严格boolean；拒绝路径Feedback(Failed,reason)+回推权威状态；进服加载完成后推送状态。
+新增LevelWeaponSkinController（StarterPlayerScripts/Controllers）：绑定既有Main.LevelWeaponSkins静态窗口，
+重新启用模板阶段禁用的Close/Equip/UseLevelLook/Checkbox按钮，按服务端状态渲染40卡片三态、进度/已选文案
+与自动勾选；目录名称/图标/解锁等级直接读ReplicatedStorage.Shared.WeaponTierConfig，不随事件下发。
+窗口开关走ModalUiController所有权LevelWeaponSkins（压制同级+Blur+动效，核弹门自动挂起）。
+入口（暂时）：Studio-only GM聊天/levelskin [on|off]设置玩家Attribute StudioLevelSkinUiPreview
+（RemoteNames.StudioAttributes.LevelSkinUiPreview），控制器监听本玩家该属性开/关窗口；
+Main.Left.LevelWeaponSkinsButton常驻HUD入口保持隐藏，后续开放再走正式按钮绑定。
+远程契约详见RemoteEvent当前列表.lua三-补6；数值表无变化。
 ]]

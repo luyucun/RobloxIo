@@ -214,6 +214,8 @@ local function normalizeSavedData(data)
             totalDeaths = 0,
             totalDiamondsEarned = 0,
             totalOnlineSeconds = 0,
+            totalPlayerKills = 0,
+            firstBossDefeated = false,
             hasUnseenTitleUnlock = false,
         }
     end
@@ -462,8 +464,7 @@ local function normalizeSavedData(data)
     end
 
     local combatSnapshot = nil
-    local savedCombatSnapshot = type(data.combatSnapshot) == "table" and data.combatSnapshot or data.CombatSnapshot
-    if type(savedCombatSnapshot) == "table" then
+    local savedCombatSnapshot = type(data.combatSnapshot) == "table" and data.combatSnapshot or data.CombatSnapshot    if type(savedCombatSnapshot) == "table" then
         local restoreEligible = savedCombatSnapshot.restoreEligible == true
         local savedAt = math.floor(tonumber(savedCombatSnapshot.savedAt) or 0)
         local level = math.floor(tonumber(savedCombatSnapshot.level) or 0)
@@ -483,6 +484,13 @@ local function normalizeSavedData(data)
         end
     end
 
+    -- V6.27: compute before the return table; a chained `cond and false or nil` would
+    -- collapse an explicit false to nil.
+    local savedAutoUpgradeLevelWeaponSkin = nil
+    if data.autoUpgradeLevelWeaponSkin == false or data.AutoUpgradeLevelWeaponSkin == false then
+        savedAutoUpgradeLevelWeaponSkin = false
+    end
+
     return rebirth, rebirthScore, highestLevelReached, {
         diamonds = math.max(0, math.floor(tonumber(data.diamonds) or tonumber(data.Diamonds) or 0)),
         wheelSpins = math.max(0, math.floor(tonumber(data.wheelSpins) or tonumber(data.WheelSpins) or 0)),
@@ -498,6 +506,10 @@ local function normalizeSavedData(data)
         sevenDayLoginRewardState = sevenDayLoginRewardState,
         ownedSkins = ownedSkins,
         equippedSkinId = equippedSkinId,
+        -- V6.27 level weapon skins: raw pass-through; unlock validation and the
+        -- explicit-false rule live in PlayerStateService.SetRebirthData.
+        selectedLevelWeaponTierIndex = tonumber(data.selectedLevelWeaponTierIndex or data.SelectedLevelWeaponTierIndex) or nil,
+        autoUpgradeLevelWeaponSkin = savedAutoUpgradeLevelWeaponSkin,
         ownedTrails = ownedTrails,
         equippedTrailId = equippedTrailId,
         chests = chests,
@@ -508,6 +520,8 @@ local function normalizeSavedData(data)
         totalDeaths = asNonNegativeInteger(data.totalDeaths or data.TotalDeaths),
         totalDiamondsEarned = asNonNegativeInteger(data.totalDiamondsEarned or data.TotalDiamondsEarned),
         totalOnlineSeconds = asNonNegativeInteger(data.totalOnlineSeconds or data.TotalOnlineSeconds),
+        totalPlayerKills = asNonNegativeInteger(data.totalPlayerKills or data.TotalPlayerKills),
+        firstBossDefeated = data.firstBossDefeated == true or data.FirstBossDefeated == true,
         hasUnseenTitleUnlock = data.hasUnseenTitleUnlock == true or data.HasUnseenTitleUnlock == true,
         weaponUnlockRewards = normalizeWeaponUnlockRewards(data.weaponUnlockRewards or data.WeaponUnlockRewards),
         combatSnapshot = combatSnapshot,
@@ -573,9 +587,12 @@ function RebirthService:CanWritePersistentProgress(player)
     return self._loadStateByUserId[userId] == "Loaded"
 end
 
-function RebirthService:_awardNewPlayerBadge(player)
-    if self._badgeAwardService and self._badgeAwardService.AwardBadgeAsync then
-        self._badgeAwardService:AwardBadgeAsync(player, "NewPlayerWelcome", "NewPlayer")
+function RebirthService:_checkAchievementBadgesAfterLoad(player)
+    if self._badgeAwardService and self._badgeAwardService.CheckProgress then
+        local success, message = pcall(self._badgeAwardService.CheckProgress, self._badgeAwardService, player, "ProgressLoaded")
+        if not success then
+            warn("[RebirthService] Achievement check after load failed: " .. tostring(message))
+        end
     end
 end
 
@@ -600,7 +617,6 @@ function RebirthService:_loadPlayer(player)
     if not self._dataStore then
         local rebirth, rebirthScore, highestLevelReached, savedProgress = normalizeSavedData(nil)
         self._playerStateService:SetRebirthData(player, rebirth, rebirthScore, highestLevelReached, savedProgress)
-        self:_awardNewPlayerBadge(player)
         self._loadStateByUserId[userId] = "Loaded"
         self._loadRetryClockByUserId[userId] = nil
         self:_syncSkinStateAfterLoad(player)
@@ -613,12 +629,16 @@ function RebirthService:_loadPlayer(player)
                 source = "data",
             })
         end
+        self:_checkAchievementBadgesAfterLoad(player)
         return
     end
 
     local success, data = pcall(function()
         return self._dataStore:GetAsync(getDataKey(player))
     end)
+    if not player.Parent or Players:GetPlayerByUserId(userId) ~= player then
+        return
+    end
     if not success then
         warn("[RebirthService] 读取 Rebirth 数据失败: " .. tostring(player.Name))
         self._loadedByUserId[userId] = nil
@@ -637,9 +657,6 @@ function RebirthService:_loadPlayer(player)
     if self._sevenDayLoginRewardService and self._sevenDayLoginRewardService.OnPlayerAdded then
         self._sevenDayLoginRewardService:OnPlayerAdded(player)
     end
-    if data == nil then
-        self:_awardNewPlayerBadge(player)
-    end
     self._loadStateByUserId[userId] = "Loaded"
     self._loadRetryClockByUserId[userId] = nil
     self:_syncSkinStateAfterLoad(player)
@@ -653,6 +670,12 @@ function RebirthService:_loadPlayer(player)
     else
         self._dirtyByUserId[userId] = nil
     end
+    -- Migrate a kill total loaded earlier from the independent ordered leaderboard.
+    local loadedState = self._playerStateService:GetState(player)
+    if loadedState and (tonumber(loadedState.TotalPlayerKills) or 0) > (tonumber(savedProgress.totalPlayerKills) or 0) then
+        self._dirtyByUserId[userId] = true
+    end
+    self:_checkAchievementBadgesAfterLoad(player)
 end
 
 function RebirthService:_buildSavePayload(player, options)
@@ -702,6 +725,9 @@ function RebirthService:_buildSavePayload(player, options)
         favoritePromptState = self._playerStateService.GetFavoritePromptState and self._playerStateService:GetFavoritePromptState(player) or state.FavoritePromptState or {},
         ownedSkins = state.OwnedSkins or {},
         equippedSkinId = state.EquippedSkinId,
+        -- V6.27 level weapon skins: nil means default level look; auto keeps an explicit false.
+        selectedLevelWeaponTierIndex = state.SelectedLevelWeaponTierIndex,
+        autoUpgradeLevelWeaponSkin = state.AutoUpgradeLevelWeaponSkin ~= false,
         ownedTrails = state.OwnedTrails or {},
         equippedTrailId = state.EquippedTrailId,
         chests = state.Chests or {},
@@ -712,6 +738,8 @@ function RebirthService:_buildSavePayload(player, options)
         totalDeaths = math.max(0, math.floor(tonumber(state.TotalDeaths) or 0)),
         totalDiamondsEarned = math.max(0, math.floor(tonumber(state.TotalDiamondsEarned) or 0)),
         totalOnlineSeconds = math.max(0, math.floor(tonumber(state.TotalOnlineSeconds) or 0)),
+        totalPlayerKills = math.max(0, math.floor(tonumber(state.TotalPlayerKills) or 0)),
+        firstBossDefeated = state.FirstBossDefeated == true,
         hasUnseenTitleUnlock = state.HasUnseenTitleUnlock == true,
         weaponUnlockRewards = state.WeaponUnlockRewards or {},
         combatSnapshot = combatSnapshot,
@@ -761,6 +789,8 @@ function RebirthService:_savePlayer(player, options)
                 totalDeaths = payload.totalDeaths,
                 totalDiamondsEarned = payload.totalDiamondsEarned,
                 totalOnlineSeconds = payload.totalOnlineSeconds,
+                totalPlayerKills = payload.totalPlayerKills,
+                firstBossDefeated = payload.firstBossDefeated,
                 hasUnseenTitleUnlock = payload.hasUnseenTitleUnlock,
                 weaponUnlockRewards = payload.weaponUnlockRewards,
                 combatSnapshot = payload.combatSnapshot,
@@ -792,6 +822,8 @@ function RebirthService:GetSavedProgressSnapshot(playerOrUserId)
             totalDeaths = state.TotalDeaths,
             totalDiamondsEarned = state.TotalDiamondsEarned,
             totalOnlineSeconds = state.TotalOnlineSeconds,
+            totalPlayerKills = state.TotalPlayerKills,
+            firstBossDefeated = state.FirstBossDefeated == true,
             hasUnseenTitleUnlock = state.HasUnseenTitleUnlock == true,
         })
     end

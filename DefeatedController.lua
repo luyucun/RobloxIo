@@ -11,6 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -53,6 +54,9 @@ DefeatedController._bindRetryQueued = false
 DefeatedController._panelTweens = {}
 DefeatedController._panelAnimationSerial = 0
 DefeatedController._freeRespawnLevelDefaultText = nil
+DefeatedController._isDead = false
+DefeatedController._openRequestSerial = 0
+DefeatedController._rewardControllers = {}
 
 local HOVER_SCALE = 1.04
 local PRESS_SCALE = 0.92
@@ -240,6 +244,16 @@ function DefeatedController:_resumeCountdownAfterRevivePurchaseCancel()
 end
 
 function DefeatedController:_setOpen(isOpen, immediate)
+    self._openRequestSerial += 1
+    if isOpen == true then
+        if not self._isDead then
+            return
+        end
+        if CinematicUiGate:IsBlocked() or self:_hasPendingRewardPresentation() then
+            self:_deferDefeatedOpen(self._openRequestSerial, immediate)
+            return
+        end
+    end
     if not self._defeatedRoot then
         self._isOpen = false
         ModalUiController:PlayPanelClose(DEFEATED_MODAL_OWNER, nil, { Immediate = true })
@@ -261,6 +275,32 @@ function DefeatedController:_setOpen(isOpen, immediate)
     ModalUiController:PlayPanelClose(DEFEATED_MODAL_OWNER, self._defeatedRoot, {
         Immediate = immediate == true,
     })
+end
+
+function DefeatedController:_hasPendingRewardPresentation()
+    for _, controller in ipairs(self._rewardControllers) do
+        if controller.HasPendingRewardPresentation and controller:HasPendingRewardPresentation() then
+            return true
+        end
+    end
+    return false
+end
+
+function DefeatedController:_deferDefeatedOpen(serial, immediate)
+    CinematicUiGate:Defer("DefeatedPanel", function()
+        if self._openRequestSerial ~= serial or not self._isDead then
+            return
+        end
+        if self:_hasPendingRewardPresentation() then
+            task.delay(0.25, function()
+                if self._openRequestSerial == serial and self._isDead then
+                    self:_deferDefeatedOpen(serial, immediate)
+                end
+            end)
+            return
+        end
+        self:_setOpen(true, immediate)
+    end)
 end
 
 function DefeatedController:_closeAndRequest(action)
@@ -551,6 +591,7 @@ function DefeatedController:_onDeathFeedback(payload)
     if not (payload and payload.killer and payload.killer.userId) then
         return
     end
+    self._isDead = true
     if not self._defeatedRoot and not self:_bindUi(true) then
         self:_queueBindRetry()
         return
@@ -565,8 +606,25 @@ function DefeatedController:_onDeathFeedback(payload)
 end
 
 function DefeatedController:Init(dependencies)
+    self._openRequestSerial += 1
+    self._isDead = false
+    self._rewardControllers = {}
+    for _, name in ipairs({ "ShopController", "NewWeaponUnlockController", "SkinController", "WheelController" }) do
+        local controller = dependencies and dependencies[name]
+        if controller then
+            table.insert(self._rewardControllers, controller)
+        end
+    end
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     disconnectAll(self._connections)
+    table.insert(self._connections, CinematicUiGate:Subscribe(function(blocked)
+        if blocked and self._isOpen and self._isDead then
+            -- Keep death state/countdown; replay only the presentation after rewards.
+            self._isOpen = false
+            ModalUiController:PlayPanelClose(DEFEATED_MODAL_OWNER, self._defeatedRoot, { Immediate = true })
+            self:_setOpen(true)
+        end
+    end))
     self:_disconnectButtonBindings()
     self:_stopCountdown()
 
@@ -586,16 +644,27 @@ function DefeatedController:Init(dependencies)
 
     local transitionEvent = systemEventsFolder:WaitForChild(RemoteNames.System.ArenaTransitionFeedback)
     table.insert(self._connections, transitionEvent.OnClientEvent:Connect(function(payload)
+        if type(payload) == "table" and payload.status == "ReturnHome" then
+            self._isDead = false
+            self:_setOpen(false, CinematicUiGate:IsBlocked())
+            return
+        end
         if type(payload) == "table" and payload.status == "Blocked" and payload.spawnMode == "LobbyReviveFailed" then
             -- 服务端仍保留同一次死亡记录，允许再次点击，不再次扣减等级。
+            self._isDead = true
             self:_setOpen(true)
             self:_setCountdownVisible(false)
         end
     end))
 
     table.insert(self._connections, playerStateSyncEvent.OnClientEvent:Connect(function(payload)
-        if self._isOpen and payload and payload.alive == true and payload.isInArena == true then
-            self:_setOpen(false)
+        if type(payload) == "table" then
+            if payload.alive == false then
+                self._isDead = true
+            elseif payload.alive == true then
+                self._isDead = false
+                self:_setOpen(false, CinematicUiGate:IsBlocked())
+            end
         end
     end))
 

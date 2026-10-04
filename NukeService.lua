@@ -378,6 +378,7 @@ function NukeService:_buildCinematicPayload(ownerPlayer, sessionId, center, surf
         warningFadeOutSeconds = GameConfig.NUKE.WarningFadeOutSeconds,
         warningGapSeconds = GameConfig.NUKE.WarningGapSeconds,
         serverStartClock = os.clock(),
+        serverStartTime = Workspace:GetServerTimeNow(),
     }
 end
 

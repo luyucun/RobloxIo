@@ -37,7 +37,6 @@ local SubscriptionService = {}
 
 SubscriptionService._playerStateService = nil
 SubscriptionService._rebirthService = nil
-SubscriptionService._badgeAwardService = nil
 SubscriptionService._subscriptionStateSyncEvent = nil
 SubscriptionService._requestSubscriptionStateSyncEvent = nil
 SubscriptionService._requestSubscriptionClaimEvent = nil
@@ -205,9 +204,6 @@ function SubscriptionService:_refreshPaymentState(player, force)
                     checkedAt = os.time(),
                 }
                 self._lastPaymentRefreshClockByUserId[userId] = nowClock
-                if self._badgeAwardService and self._badgeAwardService.AwardBadgeAsync then
-                    self._badgeAwardService:AwardBadgeAsync(player, "FirstSubscription", "SubscriptionPaid")
-                end
                 return true, "Paid"
             end
         end
@@ -438,13 +434,11 @@ end
 function SubscriptionService:BindSystems(dependencies)
     self._playerStateService = dependencies and dependencies.PlayerStateService or self._playerStateService
     self._rebirthService = dependencies and dependencies.RebirthService or self._rebirthService
-    self._badgeAwardService = dependencies and dependencies.BadgeAwardService or self._badgeAwardService
 end
 
 function SubscriptionService:Init(dependencies)
     self._playerStateService = dependencies and dependencies.PlayerStateService or nil
     self._rebirthService = dependencies and dependencies.RebirthService or nil
-    self._badgeAwardService = dependencies and dependencies.BadgeAwardService or nil
     self._statusByUserId = {}
     self._lastRefreshClockByUserId = {}
     self._paymentStateByUserId = {}

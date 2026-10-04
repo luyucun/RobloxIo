@@ -9,8 +9,8 @@ local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local ContentProvider = game:GetService("ContentProvider")
 
 local function requireSharedModule(moduleName)
     local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -34,6 +34,8 @@ end
 
 local GameConfig = requireSharedModule("GameConfig")
 local RemoteNames = requireSharedModule("RemoteNames")
+local controllersFolder = script.Parent:FindFirstChild("Controllers") or script.Parent
+local CinematicUiGate = require(controllersFolder:WaitForChild("CinematicUiGate"))
 
 local DEFAULT_NUKE_CONFIG = {
     AssetFolderName = "NukeAssets",
@@ -82,7 +84,9 @@ NukeCinematicController._localMonsterController = nil
 NukeCinematicController._audioSettings = nil
 NukeCinematicController._connections = {}
 NukeCinematicController._activeSessionId = 0
-NukeCinematicController._cameraState = nil
+NukeCinematicController._session = nil
+NukeCinematicController._tails = {}
+NukeCinematicController._preloadStarted = false
 
 local function disconnectAll(connections)
     for _, connection in ipairs(connections) do
@@ -122,16 +126,6 @@ local function setNonInteractive(model)
     end
 end
 
-local function makeArchivable(root)
-    if not root then
-        return
-    end
-    root.Archivable = true
-    for _, descendant in ipairs(root:GetDescendants()) do
-        descendant.Archivable = true
-    end
-end
-
 local function ensureAnimator(model)
     if not model then
         return nil
@@ -156,7 +150,7 @@ local function getCharacterHumanoid(player)
 end
 
 local function getMainGui(localPlayer)
-    local playerGui = localPlayer and (localPlayer:FindFirstChild("PlayerGui") or localPlayer:WaitForChild("PlayerGui", 5))
+    local playerGui = localPlayer and localPlayer:FindFirstChild("PlayerGui")
     if not playerGui then
         return nil
     end
@@ -251,42 +245,6 @@ local function setGuiZIndex(root, state, zIndex)
             instance.ZIndex = math.max(instance.ZIndex, zIndex)
         end
     end
-end
-
-local function tweenGuiAlpha(state, alpha, duration)
-    local tweenInfo = TweenInfo.new(math.max(0.01, duration), Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-    local tweens = {}
-    for instance, original in pairs(state) do
-        if instance and instance.Parent then
-            local goals = {}
-            if instance:IsA("GuiObject") then
-                if original.BackgroundTransparency ~= nil then
-                    goals.BackgroundTransparency = original.BackgroundTransparency + ((1 - original.BackgroundTransparency) * alpha)
-                end
-                if original.TextTransparency ~= nil then
-                    goals.TextTransparency = original.TextTransparency + ((1 - original.TextTransparency) * alpha)
-                end
-                if original.TextStrokeTransparency ~= nil then
-                    goals.TextStrokeTransparency = original.TextStrokeTransparency + ((1 - original.TextStrokeTransparency) * alpha)
-                end
-                if original.ImageTransparency ~= nil then
-                    goals.ImageTransparency = original.ImageTransparency + ((1 - original.ImageTransparency) * alpha)
-                end
-            elseif instance:IsA("UIStroke") and original.Transparency ~= nil then
-                goals.Transparency = original.Transparency + ((1 - original.Transparency) * alpha)
-            end
-            if next(goals) then
-                local tween = TweenService:Create(instance, tweenInfo, goals)
-                table.insert(tweens, tween)
-                tween:Play()
-            end
-        end
-    end
-    task.wait(math.max(0, duration))
-    for _, tween in ipairs(tweens) do
-        tween:Cancel()
-    end
-    applyGuiAlpha(state, alpha)
 end
 
 local function parseBattleCenter(payload)
@@ -441,51 +399,6 @@ local function translateEffect(effect, targetPosition)
     end
 end
 
-local function getEffectBoundsSize(effect)
-    local minCorner = nil
-    local maxCorner = nil
-
-    local function includePoint(point)
-        if not minCorner then
-            minCorner = point
-            maxCorner = point
-            return
-        end
-        minCorner = Vector3.new(
-            math.min(minCorner.X, point.X),
-            math.min(minCorner.Y, point.Y),
-            math.min(minCorner.Z, point.Z)
-        )
-        maxCorner = Vector3.new(
-            math.max(maxCorner.X, point.X),
-            math.max(maxCorner.Y, point.Y),
-            math.max(maxCorner.Z, point.Z)
-        )
-    end
-
-    local function includePart(part)
-        local halfSize = part.Size * 0.5
-        for _, x in ipairs({ -1, 1 }) do
-            for _, y in ipairs({ -1, 1 }) do
-                for _, z in ipairs({ -1, 1 }) do
-                    includePoint(part.CFrame:PointToWorldSpace(Vector3.new(halfSize.X * x, halfSize.Y * y, halfSize.Z * z)))
-                end
-            end
-        end
-    end
-
-    if effect:IsA("BasePart") then
-        includePart(effect)
-    end
-    for _, descendant in ipairs(effect:GetDescendants()) do
-        if descendant:IsA("BasePart") then
-            includePart(descendant)
-        end
-    end
-
-    return minCorner and (maxCorner - minCorner) or Vector3.one
-end
-
 local function scaleNumberSequence(sequence, scale)
     local keypoints = {}
     for _, keypoint in ipairs(sequence.Keypoints) do
@@ -622,148 +535,70 @@ local function applyEffectScale(state, scale)
     end
 end
 
-local function getExplosionTargetScale(effect)
-    local boundsSize = getEffectBoundsSize(effect)
-    local baseDiameter = math.max(boundsSize.X, boundsSize.Z, 1)
-    local fallbackRadius = tonumber(GameConfig.NUKE.ExplosionCoverageRadius) or 320
-    local battlePart = getBattlePart()
-    local coverageRadius = fallbackRadius
-    if battlePart then
-        local size = battlePart.Size
-        local halfDiagonal = math.sqrt((size.X * size.X) + (size.Z * size.Z)) * 0.5
-        coverageRadius = math.max(fallbackRadius, halfDiagonal + 35)
+-- Presentation-only limits. Gameplay timings/rewards remain in GameConfig.NUKE.
+local PRESENTATION = {
+    CoreScale = 2.2,
+    ParticleBudget = 960,
+    ParticleSizeLimit = 360,
+    ParticleSpeedLimit = 140,
+    BeamLimit = 24,
+    WaveSegments = 32,
+    TailSeconds = 3.1,
+    ReturnSeconds = 0.32,
+}
+
+local function finiteNumber(value, fallback)
+    local number = tonumber(value)
+    if number and number == number and math.abs(number) < math.huge then
+        return number
     end
-    return math.max(1, (coverageRadius * 2) / baseDiameter)
+    return fallback
 end
 
-local function startExplosionExpansion(effect, durationSeconds)
-    if not (effect and effect.root and effect.scaleState) then
-        return
+local function duration(payload, key, configKey, fallback)
+    return math.max(0, finiteNumber(payload[key], finiteNumber(GameConfig.NUKE[configKey], fallback)))
+end
+
+local function smoothstep(alpha)
+    alpha = math.clamp(alpha, 0, 1)
+    return alpha * alpha * (3 - 2 * alpha)
+end
+
+local function boundedSequence(sequence, scale, limit)
+    local maximum = 0
+    for _, keypoint in ipairs(sequence.Keypoints) do
+        maximum = math.max(maximum, keypoint.Value + keypoint.Envelope)
     end
-
-    local root = effect.root
-    local targetScale = effect.targetScale or 1
-    local duration = math.max(0.05, tonumber(durationSeconds) or GameConfig.NUKE.ExplosionSeconds or 2.5)
-    local power = math.max(1, tonumber(GameConfig.NUKE.ExplosionExpandPower) or 2.35)
-
-    applyEffectScale(effect.scaleState, 1)
-    task.spawn(function()
-        local startClock = os.clock()
-        while root.Parent do
-            local alpha = math.clamp((os.clock() - startClock) / duration, 0, 1)
-            local easedAlpha = math.pow(alpha, power)
-            local scale = 1 + ((targetScale - 1) * easedAlpha)
-            applyEffectScale(effect.scaleState, scale)
-            if alpha >= 1 then
-                break
-            end
-            RunService.RenderStepped:Wait()
-        end
-    end)
+    return scaleNumberSequence(sequence, math.min(scale, limit / math.max(maximum, 0.001)))
 end
 
 local function prepareEffectInstance(effect)
-    if effect:IsA("BasePart") then
-        effect.Anchored = true
-        effect.CanCollide = false
-        effect.CanTouch = false
-        effect.CanQuery = false
+    local function prepare(instance)
+        if instance:IsA("BasePart") then
+            instance.Anchored = true
+            instance.CanCollide = false
+            instance.CanTouch = false
+            instance.CanQuery = false
+            instance.Massless = true
+        elseif instance:IsA("ParticleEmitter") or instance:IsA("Beam") or instance:IsA("Trail") then
+            instance.Enabled = false
+        elseif instance:IsA("Light") then
+            instance.Enabled = false
+        end
     end
+    prepare(effect)
     for _, descendant in ipairs(effect:GetDescendants()) do
-        if descendant:IsA("BasePart") then
-            descendant.Anchored = true
-            descendant.CanCollide = false
-            descendant.CanTouch = false
-            descendant.CanQuery = false
-            descendant.Massless = true
-        end
+        prepare(descendant)
     end
 end
 
-local function createExplosionVfx(position, durationSeconds, audioSettings)
-    local template = getBombEffectTemplate()
-    if not template then
-        warn("[NukeCinematicController] Missing ReplicatedStorage/Effect/Bomb explosion effect")
-        return nil
-    end
-
-    makeArchivable(template)
-    local effect = template:Clone()
-    effect.Name = "NukeBombEffect"
-    prepareEffectInstance(effect)
-    translateEffect(effect, position)
-    effect.Parent = Workspace
-    local scaleState = captureEffectScaleState(effect)
-    local targetScale = getExplosionTargetScale(effect)
-
-    for _, descendant in ipairs(effect:GetDescendants()) do
-        if descendant:IsA("ParticleEmitter") then
-            local emitCount = tonumber(descendant:GetAttribute("EmitCount"))
-            local emitDelay = tonumber(descendant:GetAttribute("EmitDelay")) or 0
-            if emitCount and emitCount > 0 then
-                task.delay(emitDelay, function()
-                    if descendant.Parent then
-                        descendant:Emit(emitCount)
-                    end
-                end)
-            end
-        elseif descendant:IsA("Sound") then
-            if audioSettings and audioSettings.PlaySfx then
-                audioSettings:PlaySfx(descendant, false)
-            else
-                descendant:Play()
-            end
-        end
-    end
-
-    local vfx = {
-        root = effect,
-        scaleState = scaleState,
-        targetScale = targetScale,
-    }
-    startExplosionExpansion(vfx, durationSeconds)
-    return vfx
+function NukeCinematicController:_isCurrent(session)
+    return self._session == session and not session.cancelled
 end
 
-local function playAudioSound(soundName, soundId, audioSettings)
-    local audioConfig = GameConfig.AUDIO or {}
-    local audioFolder = game:GetService("SoundService"):FindFirstChild(audioConfig.FolderName or "Audio")
-    local sound = audioFolder and audioFolder:FindFirstChild(soundName)
-    if sound and sound:IsA("Sound") then
-        if soundId and soundId ~= "" then
-            sound.SoundId = soundId
-        end
-        if audioSettings and audioSettings.PlaySfx then
-            audioSettings:PlaySfx(sound, true)
-            return
-        end
-        sound:Stop()
-        sound.TimePosition = 0
-        sound:Play()
-    end
-end
-
-local function stopExplosionVfx(effect)
-    if not (effect and effect.root) then
-        return
-    end
-
-    local root = effect.root
-    for _, descendant in ipairs(root:GetDescendants()) do
-        if descendant:IsA("ParticleEmitter") or descendant:IsA("Beam") or descendant:IsA("Trail") then
-            descendant.Enabled = false
-        elseif descendant:IsA("PointLight") or descendant:IsA("SpotLight") or descendant:IsA("SurfaceLight") then
-            descendant.Enabled = false
-        elseif descendant:IsA("Sound") then
-            descendant:Stop()
-        end
-    end
-end
-
-local function destroyExplosionVfx(effect)
-    if effect and effect.root then
-        effect.root:Destroy()
-    end
+function NukeCinematicController:_own(session, instance)
+    table.insert(session.resources, instance)
+    return instance
 end
 
 function NukeCinematicController:_captureCameraState()
@@ -771,7 +606,8 @@ function NukeCinematicController:_captureCameraState()
     if not camera then
         return nil
     end
-
+    local root = self._localPlayer and self._localPlayer.Character
+        and self._localPlayer.Character:FindFirstChild("HumanoidRootPart")
     return {
         camera = camera,
         cameraType = camera.CameraType,
@@ -779,230 +615,265 @@ function NukeCinematicController:_captureCameraState()
         cframe = camera.CFrame,
         focus = camera.Focus,
         fieldOfView = camera.FieldOfView,
-        lightingClockTime = Lighting.ClockTime,
+        rootPosition = root and root.Position,
     }
 end
 
-function NukeCinematicController:_restoreCameraOnly()
-    local state = self._cameraState
-    local camera = (state and state.camera) or Workspace.CurrentCamera
-    if not camera then
+function NukeCinematicController:_returnCameraFrame(state)
+    local root = self._localPlayer and self._localPlayer.Character
+        and self._localPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local offset = root and state.rootPosition and (root.Position - state.rootPosition) or Vector3.zero
+    return state.cframe + offset, state.focus + offset
+end
+
+function NukeCinematicController:_restoreCamera(session)
+    local state = session.cameraState
+    if not state then
         return
     end
-
-    camera.CameraType = state and state.cameraType or Enum.CameraType.Custom
-    camera.CameraSubject = (state and state.cameraSubject) or getCharacterHumanoid(self._localPlayer)
-    if state and state.cframe then
-        camera.CFrame = state.cframe
-    end
-    if state and state.focus then
-        camera.Focus = state.focus
-    end
-    if state and state.fieldOfView then
+    -- A replacement camera belongs to the respawn/camera controller, not this cinematic.
+    local camera = state.camera
+    if camera.Parent and Workspace.CurrentCamera == camera then
+        local humanoid = getCharacterHumanoid(self._localPlayer)
+        if humanoid and humanoid.Health <= 0 then
+            humanoid = nil
+        end
+        local oldSubject = state.cameraSubject
+        if oldSubject and not oldSubject.Parent then
+            oldSubject = nil
+        elseif oldSubject and oldSubject:IsA("Humanoid") and oldSubject.Health <= 0 then
+            oldSubject = nil
+        end
+        local subject = oldSubject
+        if (not subject or subject:IsA("Humanoid")) and humanoid then
+            subject = humanoid
+        end
+        camera.CameraSubject = subject
+        camera.CFrame, camera.Focus = self:_returnCameraFrame(state)
         camera.FieldOfView = state.fieldOfView
-    end
-end
-
-function NukeCinematicController:_restoreLightingOnly()
-    local state = self._cameraState
-    Lighting.ClockTime = (state and state.lightingClockTime) or GameConfig.NUKE.RestoreClockTime or 14.5
-    self._cameraState = nil
-end
-
-function NukeCinematicController:_restoreAll()
-    self:_restoreCameraOnly()
-    self:_restoreLightingOnly()
-end
-
-function NukeCinematicController:_waitForSession(sessionId, durationSeconds)
-    local endClock = os.clock() + math.max(0, tonumber(durationSeconds) or 0)
-    while os.clock() < endClock do
-        if sessionId ~= self._activeSessionId then
-            return false
+        camera.CameraType = state.cameraType
+        if not subject and camera.CameraType ~= Enum.CameraType.Scriptable then
+            camera.CameraType = Enum.CameraType.Custom
         end
-        task.wait(math.min(0.05, math.max(0, endClock - os.clock())))
     end
-    return sessionId == self._activeSessionId
+    session.cameraState = nil
 end
 
-local function getNukeCallerName(payload)
-    local name = payload and (payload.ownerDisplayName or payload.ownerName)
-    if type(name) ~= "string" or name == "" then
-        return "Someone"
-    end
-    return name
-end
-
-function NukeCinematicController:_showNukeBanner(root, durationSeconds, sessionId, payload)
+function NukeCinematicController:_rememberGui(session, root)
     if not (root and root:IsA("GuiObject")) then
-        return true
+        return nil
     end
-
-    local textLabel = root:FindFirstChild("Text")
-    if textLabel and (textLabel:IsA("TextLabel") or textLabel:IsA("TextButton") or textLabel:IsA("TextBox")) then
-        textLabel.Text = string.format("%s called in a nuke.", getNukeCallerName(payload))
-    end
-
-    local wasVisible = root.Visible
-    local state = collectGuiTransparencyState(root)
-    setGuiZIndex(root, state, math.max(1, math.floor(tonumber(GameConfig.NUKE.PreludeZIndex) or 100)))
-    root.Visible = true
-    applyGuiAlpha(state, 0)
-
-    local completed = self:_waitForSession(sessionId, durationSeconds)
-    restoreGuiState(state)
-    root.Visible = wasVisible
-    return completed
+    local state = {root = root, visible = root.Visible, transparency = collectGuiTransparencyState(root)}
+    table.insert(session.guis, state)
+    setGuiZIndex(root, state.transparency, GameConfig.NUKE.PreludeZIndex or 100)
+    return state
 end
 
-function NukeCinematicController:_flashWarning(root, sessionId, flashCount, fadeInSeconds, holdSeconds, fadeOutSeconds, gapSeconds)
-    if not (root and root:IsA("GuiObject")) then
-        return true
-    end
-
-    local wasVisible = root.Visible
-    local state = collectGuiTransparencyState(root)
-    setGuiZIndex(root, state, math.max(1, math.floor(tonumber(GameConfig.NUKE.PreludeZIndex) or 100)))
-    root.Visible = true
-    applyGuiAlpha(state, 1)
-
-    local completed = true
-    local normalizedFlashCount = math.max(0, math.floor(tonumber(flashCount) or 0))
-    for index = 1, normalizedFlashCount do
-        if sessionId ~= self._activeSessionId then
-            completed = false
-            break
-        end
-        tweenGuiAlpha(state, 0, fadeInSeconds)
-        if not self:_waitForSession(sessionId, holdSeconds) then
-            completed = false
-            break
-        end
-        tweenGuiAlpha(state, 1, fadeOutSeconds)
-        if index < normalizedFlashCount and not self:_waitForSession(sessionId, gapSeconds) then
-            completed = false
-            break
-        end
-    end
-
-    restoreGuiState(state)
-    root.Visible = wasVisible
-    return completed
-end
-
-function NukeCinematicController:_playPrelude(payload, sessionId)
-    local mainGui = getMainGui(self._localPlayer)
-    if not mainGui then
-        return true
-    end
-
-    local nukeBanner = mainGui:FindFirstChild("Nuke")
-    local warning = mainGui:FindFirstChild("Warning")
-    local bannerSeconds = math.max(0, tonumber(payload and payload.nukeBannerSeconds) or GameConfig.NUKE.NukeBannerSeconds or 2)
-    local flashCount = math.max(0, math.floor(tonumber(payload and payload.warningFlashCount) or GameConfig.NUKE.WarningFlashCount or 3))
-    local fadeInSeconds = math.max(0, tonumber(payload and payload.warningFadeInSeconds) or GameConfig.NUKE.WarningFadeInSeconds or 0.25)
-    local holdSeconds = math.max(0, tonumber(payload and payload.warningHoldSeconds) or GameConfig.NUKE.WarningHoldSeconds or 0.35)
-    local fadeOutSeconds = math.max(0, tonumber(payload and payload.warningFadeOutSeconds) or GameConfig.NUKE.WarningFadeOutSeconds or 0.25)
-    local gapSeconds = math.max(0, tonumber(payload and payload.warningGapSeconds) or GameConfig.NUKE.WarningGapSeconds or 0.1)
-
-    if bannerSeconds > 0 and not self:_showNukeBanner(nukeBanner, bannerSeconds, sessionId, payload) then
-        return false
-    end
-    return self:_flashWarning(warning, sessionId, flashCount, fadeInSeconds, holdSeconds, fadeOutSeconds, gapSeconds)
-end
-
-function NukeCinematicController:_sweepLocalMonstersForNuke(payload)
-    if not (payload and tonumber(payload.ownerUserId) == self._localPlayer.UserId) then
+function NukeCinematicController:_finishPresentation(session)
+    if session.presentationFinished then
         return
     end
-    if self._localMonsterController and self._localMonsterController.SweepForNuke then
-        self._localMonsterController:SweepForNuke(payload.sessionId)
+    session.presentationFinished = true
+    -- Old tasks can dispose their own instances, but cannot restore shared GUI/camera.
+    if self._session == session then
+        self:_restoreCamera(session)
+        for _, state in ipairs(session.guis) do
+            restoreGuiState(state.transparency)
+            if state.root.Parent then
+                state.root.Visible = state.visible
+            end
+        end
+    end
+    for _, effect in ipairs(session.postEffects or {}) do
+        effect:Destroy()
+    end
+end
+
+function NukeCinematicController:_cancelSession(session)
+    session = session or self._session
+    if not session or session.cleaned then
+        return
+    end
+    session.cancelled = true
+    self:_finishPresentation(session)
+    session.cleaned = true
+    for _, track in ipairs(session.tracks) do
+        pcall(function()
+            track:Stop(0)
+            track:Destroy()
+        end)
+    end
+    for index = #session.resources, 1, -1 do
+        pcall(function()
+            session.resources[index]:Destroy()
+        end)
+    end
+    if self._session == session then
+        self._session = nil
+    end
+    self._tails[session] = nil
+    if session.gateToken then
+        CinematicUiGate:Release(session.gateToken)
+        session.gateToken = nil
+    end
+end
+
+function NukeCinematicController:_renderUntil(session, deadline, render, allowTail)
+    local function ownsResources()
+        return self:_isCurrent(session) or (allowTail and self._tails[session] and not session.cancelled)
+    end
+    while ownsResources() and os.clock() < deadline do
+        if render then
+            render(os.clock())
+        end
+        RunService.RenderStepped:Wait()
+    end
+    return ownsResources() == true
+end
+
+function NukeCinematicController:_buildTimeline(payload)
+    local start = os.clock()
+    local serverStart = finiteNumber(payload.serverStartTime, nil)
+    if serverStart then
+        local ok, serverNow = pcall(function()
+            return Workspace:GetServerTimeNow()
+        end)
+        serverNow = ok and finiteNumber(serverNow, nil) or nil
+        if serverNow then
+            start -= math.max(0, serverNow - serverStart)
+        end
+    end
+    local lead = duration(payload, "startDelaySeconds", "StartLeadSeconds", 1)
+    local banner = duration(payload, "nukeBannerSeconds", "NukeBannerSeconds", 2)
+    local count = math.clamp(math.floor(duration(payload, "warningFlashCount", "WarningFlashCount", 3)), 0, 20)
+    local fadeIn = duration(payload, "warningFadeInSeconds", "WarningFadeInSeconds", 0.25)
+    local hold = duration(payload, "warningHoldSeconds", "WarningHoldSeconds", 0.35)
+    local fadeOut = duration(payload, "warningFadeOutSeconds", "WarningFadeOutSeconds", 0.25)
+    local gap = duration(payload, "warningGapSeconds", "WarningGapSeconds", 0.1)
+    local fall = math.max(0.1, duration(payload, "fallSeconds", "FallSeconds", 1.5))
+    local explosion = math.max(0.1, duration(payload, "explosionSeconds", "ExplosionSeconds", 2))
+    local bannerStart = start + lead
+    local warningStart = bannerStart + banner
+    local fallStart = warningStart + count * (fadeIn + hold + fadeOut) + math.max(0, count - 1) * gap
+    return {
+        start = start, bannerStart = bannerStart, warningStart = warningStart,
+        fallStart = fallStart, impact = fallStart + fall, finish = fallStart + fall + explosion,
+        -- Match NukeService's existing authorization window (registered before lead).
+        sweepExpires = fallStart + fall + explosion - lead + math.max(1, finiteNumber(GameConfig.NUKE.LocalMonsterSweepExpireSeconds, 8)),
+        fadeIn = fadeIn, hold = hold, fadeOut = fadeOut, gap = gap, count = count,
+    }
+end
+
+function NukeCinematicController:_playPrelude(session)
+    local timeline = session.timeline
+    local main = getMainGui(self._localPlayer)
+    local banner = self:_rememberGui(session, main and main:FindFirstChild("Nuke"))
+    local warning = self:_rememberGui(session, main and main:FindFirstChild("Warning"))
+    local caller = session.payload.ownerDisplayName or session.payload.ownerName
+    local text = banner and banner.root:FindFirstChild("Text")
+    if text and (text:IsA("TextLabel") or text:IsA("TextButton")) then
+        text.Text = string.format("%s called in a nuke.", type(caller) == "string" and caller ~= "" and caller or "Someone")
+    end
+    return self:_renderUntil(session, timeline.fallStart, function(now)
+        if banner and banner.root.Parent then
+            banner.root.Visible = now >= timeline.bannerStart and now < timeline.warningStart
+            applyGuiAlpha(banner.transparency, 0)
+        end
+        if warning and warning.root.Parent then
+            local elapsed = now - timeline.warningStart
+            local cycle = timeline.fadeIn + timeline.hold + timeline.fadeOut + timeline.gap
+            local index = cycle > 0 and math.floor(math.max(0, elapsed) / cycle) or timeline.count
+            local phase = cycle > 0 and elapsed - index * cycle or 0
+            local visible = elapsed >= 0 and index < timeline.count and phase < cycle - timeline.gap
+            warning.root.Visible = visible
+            local alpha = 1
+            if visible then
+                if phase < timeline.fadeIn then
+                    alpha = 1 - smoothstep(phase / math.max(timeline.fadeIn, 0.001))
+                elseif phase < timeline.fadeIn + timeline.hold then
+                    alpha = 0
+                else
+                    alpha = smoothstep((phase - timeline.fadeIn - timeline.hold) / math.max(timeline.fadeOut, 0.001))
+                end
+            end
+            applyGuiAlpha(warning.transparency, alpha)
+        end
+    end)
+end
+
+function NukeCinematicController:_bindPresentationGui(session)
+    local playerGui = self._localPlayer and self._localPlayer:FindFirstChild("PlayerGui")
+    local gui = playerGui and playerGui:FindFirstChild("NukeCinematicEffects")
+    session.bars = {}
+    for _, name in ipairs({"TopBar", "BottomBar"}) do
+        local state = self:_rememberGui(session, gui and gui:FindFirstChild(name))
+        if state then
+            table.insert(session.bars, state.root)
+        end
+    end
+    local flash = self:_rememberGui(session, gui and gui:FindFirstChild("ImpactFlash"))
+    session.flash = flash and flash.root
+    if session.flash then
+        session.flash.ZIndex = math.max(session.flash.ZIndex, (GameConfig.NUKE.PreludeZIndex or 100) + 1)
     end
 end
 
 function NukeCinematicController:_buildCameraTrack()
-    local function isCameraTrack(track)
-        local cameraItem = track and track:FindFirstChild("2")
-        local cframeFolder = cameraItem and cameraItem:FindFirstChild("CFrame")
-        return cframeFolder ~= nil
-    end
-
+    -- Never wait for optional presentation assets on the authoritative timeline.
     local assets = ReplicatedStorage:FindFirstChild(GameConfig.NUKE.AssetFolderName)
-        or ReplicatedStorage:WaitForChild(GameConfig.NUKE.AssetFolderName, 3)
-    local cameraFolder = assets and (
-        assets:FindFirstChild(GameConfig.NUKE.CameraAnimatorFolderName)
-        or assets:WaitForChild(GameConfig.NUKE.CameraAnimatorFolderName, 3)
-    )
-    if cameraFolder then
-        local track = cameraFolder:FindFirstChild(GameConfig.NUKE.CameraTrackName)
-            or cameraFolder:WaitForChild(GameConfig.NUKE.CameraTrackName, 3)
-        if isCameraTrack(track) then
+    local source = ReplicatedStorage:FindFirstChild(GameConfig.NUKE.SourceModelName)
+    local folders = {
+        assets and assets:FindFirstChild(GameConfig.NUKE.CameraAnimatorFolderName),
+        ReplicatedStorage:FindFirstChild(GameConfig.NUKE.CameraAnimatorFolderName),
+        source and source:FindFirstChild(GameConfig.NUKE.CameraAnimatorFolderName, true),
+    }
+    -- pairs handles absent optional folders without terminating at the first nil.
+    for _, folder in pairs(folders) do
+        local track = folder:FindFirstChild(GameConfig.NUKE.CameraTrackName)
+        if readCameraKeyframes(track) then
             return track
         end
     end
-
-    local replicatedCameraFolder = ReplicatedStorage:FindFirstChild(GameConfig.NUKE.CameraAnimatorFolderName)
-    local replicatedTrack = replicatedCameraFolder and replicatedCameraFolder:FindFirstChild(GameConfig.NUKE.CameraTrackName)
-    if isCameraTrack(replicatedTrack) then
-        return replicatedTrack
-    end
-
-    local sourceModel = ReplicatedStorage:FindFirstChild(GameConfig.NUKE.SourceModelName)
-    local sourceCameraFolder = sourceModel and sourceModel:FindFirstChild(GameConfig.NUKE.CameraAnimatorFolderName, true)
-    local sourceTrack = sourceCameraFolder and sourceCameraFolder:FindFirstChild(GameConfig.NUKE.CameraTrackName)
-    if isCameraTrack(sourceTrack) then
-        return sourceTrack
-    end
-
-    warn("[NukeCinematicController] Missing valid MoonAnimator2 camera track for nuke fall")
     return nil
 end
 
-function NukeCinematicController:_buildLittleBoy(initialCFrame)
+function NukeCinematicController:_buildLittleBoy(session, initialCFrame)
     local template = ReplicatedStorage:FindFirstChild(GameConfig.NUKE.SourceModelName)
     if not (template and template:IsA("Model")) then
         local assets = ReplicatedStorage:FindFirstChild(GameConfig.NUKE.AssetFolderName)
-            or ReplicatedStorage:WaitForChild(GameConfig.NUKE.AssetFolderName, 1.5)
-        template = assets and (
-            assets:FindFirstChild(GameConfig.NUKE.LittleBoyTemplateName)
-            or assets:WaitForChild(GameConfig.NUKE.LittleBoyTemplateName, 1.5)
-        )
+        template = assets and assets:FindFirstChild(GameConfig.NUKE.LittleBoyTemplateName)
     end
     if not (template and template:IsA("Model")) then
         return nil
     end
-
-    makeArchivable(template)
     local clone = template:Clone()
-    local rootPart = getRootPart(clone)
-    if rootPart then
-        clone.PrimaryPart = rootPart
+    if not clone then
+        return nil
     end
+    self:_own(session, clone)
+    local pivot = clone:GetPivot()
+    clone:SetAttribute("NukeOriginalPivotPosition", pivot.Position)
+    clone:SetAttribute("NukeOriginalRotation", pivot - pivot.Position)
+    clone.PrimaryPart = getRootPart(clone)
     setNonInteractive(clone)
-    clone:SetAttribute("NukeOriginalPivotPosition", clone:GetPivot().Position)
-    if initialCFrame then
-        clone:PivotTo(initialCFrame)
-    end
+    clone:PivotTo(initialCFrame * (pivot - pivot.Position))
     clone.Parent = Workspace
     return clone
 end
 
-function NukeCinematicController:_playLittleBoyAnimation(littleBoy, animationId)
+function NukeCinematicController:_playLittleBoyAnimation(session, littleBoy)
     local animator = ensureAnimator(littleBoy)
     if not animator then
         return nil
     end
-
     local animation = Instance.new("Animation")
-    animation.AnimationId = tostring(animationId or GameConfig.NUKE.IdleAnimationId)
-
-    local track = nil
-    local ok = pcall(function()
-        track = animator:LoadAnimation(animation)
+    animation.AnimationId = tostring(session.payload.idleAnimationId or GameConfig.NUKE.IdleAnimationId)
+    local ok, track = pcall(function()
+        return animator:LoadAnimation(animation)
     end)
     animation:Destroy()
-
     if ok and track then
+        table.insert(session.tracks, track)
         track.Looped = true
         track.Priority = Enum.AnimationPriority.Action
         track:Play(0.1)
@@ -1011,161 +882,483 @@ function NukeCinematicController:_playLittleBoyAnimation(littleBoy, animationId)
     return nil
 end
 
-function NukeCinematicController:_startFallbackSpin(littleBoy, sessionId)
-    local rootPart = getRootPart(littleBoy)
-    local spinMotor = rootPart and rootPart:FindFirstChild("Union1")
-    if not (spinMotor and spinMotor:IsA("Motor6D")) then
-        return nil
-    end
-
-    local startClock = os.clock()
-    local connection
-    connection = RunService.RenderStepped:Connect(function()
-        if sessionId ~= self._activeSessionId or not (littleBoy and littleBoy.Parent) then
-            if connection then
-                connection:Disconnect()
-            end
-            return
-        end
-        local elapsed = os.clock() - startClock
-        spinMotor.Transform = CFrame.Angles(0, elapsed * math.pi * 2.6, 0)
-    end)
-    return connection
+function NukeCinematicController:_cameraAvailable(session)
+    local state = session.cameraState
+    return state and state.camera.Parent and Workspace.CurrentCamera == state.camera
 end
 
-function NukeCinematicController:_runFall(camera, littleBoy, battleCenter, fallHeight, durationSeconds)
-    local startPosition = battleCenter + Vector3.new(0, fallHeight, 0)
-    local recordedPivotPosition = littleBoy and littleBoy:GetAttribute("NukeOriginalPivotPosition") or nil
-    if typeof(recordedPivotPosition) ~= "Vector3" then
-        recordedPivotPosition = littleBoy and littleBoy:GetPivot().Position or startPosition
+function NukeCinematicController:_runFall(session, littleBoy, center, height)
+    local timeline = session.timeline
+    local startPosition = center + Vector3.new(0, height, 0)
+    local keyframes = readCameraKeyframes(self:_buildCameraTrack())
+    -- Fall2 ends in a one-frame editorial cut. Use the preceding continuous shot.
+    if keyframes and #keyframes > 1 then
+        local last, previous = keyframes[#keyframes], keyframes[#keyframes - 1]
+        if last.frame - previous.frame <= 1 and (last.cframe.Position - previous.cframe.Position).Magnitude > 40 then
+            table.remove(keyframes)
+        end
     end
-    local cameraShift = CFrame.new(startPosition - recordedPivotPosition)
-    local keyframes = littleBoy and readCameraKeyframes(self:_buildCameraTrack()) or nil
-    local lastCameraCFrame = nil
-
-    if littleBoy then
-        littleBoy:PivotTo(CFrame.new(startPosition))
-    end
-
-    local startClock = os.clock()
-    while os.clock() - startClock < durationSeconds do
-        local alpha = math.clamp((os.clock() - startClock) / durationSeconds, 0, 1)
-        local nukePosition = startPosition:Lerp(battleCenter, alpha)
-
+    local recordedPosition = littleBoy and littleBoy:GetAttribute("NukeOriginalPivotPosition") or startPosition
+    local rotation = littleBoy and littleBoy:GetAttribute("NukeOriginalRotation") or CFrame.new()
+    local cameraShift = CFrame.new(startPosition - recordedPosition)
+    local motor = littleBoy and getRootPart(littleBoy) and getRootPart(littleBoy):FindFirstChild("Union1")
+    local lastClock = os.clock()
+    return self:_renderUntil(session, timeline.impact, function(now)
+        local alpha = math.clamp((now - timeline.fallStart) / (timeline.impact - timeline.fallStart), 0, 1)
+        local progress = 0.12 * alpha + 0.88 * alpha * alpha
+        local position = startPosition:Lerp(center, progress)
         if littleBoy and littleBoy.Parent then
-            littleBoy:PivotTo(CFrame.new(nukePosition))
+            littleBoy:PivotTo(CFrame.new(position) * rotation)
+            if not session.bombTrack and motor and motor:IsA("Motor6D") then
+                motor.Transform = CFrame.Angles(0, (now - timeline.fallStart) * math.pi * 2.6, 0)
+            end
         end
-
-        camera.CameraType = Enum.CameraType.Scriptable
-        local sampledCamera = sampleCameraKeyframes(keyframes, alpha)
-        if sampledCamera then
-            camera.CFrame = cameraShift * sampledCamera
-        else
-            camera.CFrame = CFrame.lookAt(nukePosition + Vector3.new(0, 20, 45), nukePosition)
+        if self:_cameraAvailable(session) then
+            local camera = session.cameraState.camera
+            local sample = sampleCameraKeyframes(keyframes, progress)
+            local target = sample and cameraShift * sample or CFrame.lookAt(position + Vector3.new(28, 16, 48), position)
+            local dt = math.clamp(now - lastClock, 1 / 240, 0.1)
+            camera.CameraType = Enum.CameraType.Scriptable
+            camera.CFrame = camera.CFrame:Lerp(target, 1 - math.exp(-dt * 16))
+            camera.Focus = CFrame.new(position)
+            camera.FieldOfView = session.cameraState.fieldOfView + 4 * progress
         end
-        lastCameraCFrame = camera.CFrame
-        camera.Focus = CFrame.new(nukePosition)
-
-        RunService.RenderStepped:Wait()
-    end
-
-    if littleBoy and littleBoy.Parent then
-        littleBoy:PivotTo(CFrame.new(battleCenter))
-    end
-    return lastCameraCFrame or CFrame.lookAt(battleCenter + Vector3.new(0, 20, 45), battleCenter)
+        for _, bar in ipairs(session.bars) do
+            if bar.Parent then
+                bar.Visible = true
+                bar.BackgroundTransparency = 1 - 0.85 * smoothstep(alpha / 0.25)
+            end
+        end
+        lastClock = now
+    end)
 end
 
-function NukeCinematicController:_holdExplosionCamera(camera, battleCenter, cameraCFrame, durationSeconds, sessionId)
-    local cameraPosition = cameraCFrame and cameraCFrame.Position or (battleCenter + Vector3.new(0, 24, 54))
-    local startClock = os.clock()
-    while os.clock() - startClock < durationSeconds do
-        if sessionId ~= self._activeSessionId then
-            break
+function NukeCinematicController:_coverageRadius()
+    local battle = getBattlePart()
+    return math.clamp(battle and Vector2.new(battle.Size.X, battle.Size.Z).Magnitude * 0.5 + 35
+        or finiteNumber(GameConfig.NUKE.ExplosionCoverageRadius, 320), 160, 600)
+end
+
+function NukeCinematicController:_prepareExplosionVfx(session, center)
+    local vfx = {bursts = {}, beams = {}, lights = {}, ring = {}, radius = self:_coverageRadius()}
+    local template = getBombEffectTemplate()
+    if template then
+        local effect = template:Clone()
+        if effect then
+            self:_own(session, effect)
+            local authoredEmission = {}
+            for _, descendant in ipairs(effect:GetDescendants()) do
+                if descendant:IsA("ParticleEmitter") then
+                    authoredEmission[descendant] = {enabled = descendant.Enabled, rate = descendant.Rate}
+                end
+            end
+            prepareEffectInstance(effect)
+            translateEffect(effect, center)
+            applyEffectScale(captureEffectScaleState(effect), PRESENTATION.CoreScale)
+            local floorLayer = effect:FindFirstChild("FloorOn")
+            local floorPart = floorLayer and floorLayer:FindFirstChild("Floor", true)
+            local battle = getBattlePart()
+            local groundY = battle and (battle.Position.Y + battle.Size.Y * 0.5) or center.Y
+            if floorPart and floorPart:IsA("BasePart") then
+                local pivot = getEffectPlacementPivot(effect)
+                translateEffect(effect, pivot.Position + Vector3.new(0, groundY + 0.8 - floorPart.Position.Y, 0))
+            end
+            local budget = PRESENTATION.ParticleBudget
+            local beamIndex = 0
+            for _, descendant in ipairs(effect:GetDescendants()) do
+                if descendant:IsA("ParticleEmitter") then
+                    local path = descendant:GetFullName():lower()
+                    local smoke = path:find("smoke", 1, true) or path:find("dust", 1, true) or path:find("ash", 1, true)
+                    local floor = path:find("flooron", 1, true)
+                    local wind = path:find("windbig", 1, true)
+                    local delay = smoke and 0.22 or (floor and 0.07 or (wind and 0.12 or 0))
+                    local limit = wind and 260 or PRESENTATION.ParticleSizeLimit
+                    descendant.Size = boundedSequence(descendant.Size, 1, limit)
+                    local speedScale = math.min(1, PRESENTATION.ParticleSpeedLimit / math.max(descendant.Speed.Max, 0.001))
+                    descendant.Speed = scaleNumberRange(descendant.Speed, speedScale)
+                    if descendant.Acceleration.Magnitude > 100 then
+                        descendant.Acceleration = descendant.Acceleration.Unit * 100
+                    end
+                    descendant.Lifetime = NumberRange.new(math.min(descendant.Lifetime.Min, 2.4), math.min(descendant.Lifetime.Max, 2.4))
+                    local authoredCount = finiteNumber(descendant:GetAttribute("EmitCount"), nil)
+                    local original = authoredEmission[descendant]
+                    -- EmitCount=0 means no *extra* burst, not that an enabled continuous layer is silent.
+                    local continuousCount = original.enabled and original.rate > 0 and original.rate * 0.3 or 0
+                    local rawCount = math.max(authoredCount or 0, continuousCount)
+                    local count = rawCount > 0 and math.clamp(math.ceil(rawCount), 4, 48) or 0
+                    count = math.min(count, budget)
+                    budget -= count
+                    table.insert(vfx.bursts, {emitter = descendant, count = count, delay = delay, emitted = false})
+                elseif descendant:IsA("Beam") then
+                    beamIndex += 1
+                    if (beamIndex - 1) % 3 == 0 and #vfx.beams < PRESENTATION.BeamLimit then
+                        descendant.Width0 = math.min(descendant.Width0, 8)
+                        descendant.Width1 = math.min(descendant.Width1, 8)
+                        table.insert(vfx.beams, descendant)
+                    end
+                elseif descendant:IsA("Light") then
+                    descendant.Range = math.min(descendant.Range, 100)
+                    descendant.Brightness = math.min(descendant.Brightness, 5)
+                    table.insert(vfx.lights, {light = descendant, brightness = descendant.Brightness})
+                end
+            end
+            vfx.root = effect
         end
-        camera.CameraType = Enum.CameraType.Scriptable
-        camera.CFrame = CFrame.lookAt(cameraPosition, battleCenter + Vector3.new(0, 12, 0))
-        camera.Focus = CFrame.new(battleCenter)
-        RunService.RenderStepped:Wait()
     end
+    -- A separate ground wave carries map coverage; it never scales the fire/smoke.
+    local ring = self:_own(session, Instance.new("Folder"))
+    ring.Name = "NukeGroundWave"
+    vfx.ringRoot = ring
+    local battle = getBattlePart()
+    vfx.groundCenter = Vector3.new(center.X, battle and (battle.Position.Y + battle.Size.Y * 0.5 + 0.8) or center.Y + 0.8, center.Z)
+    for index = 1, PRESENTATION.WaveSegments do
+        local part = Instance.new("Part")
+        part.Name = "Wave"
+        part.Anchored = true
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.CastShadow = false
+        part.Material = Enum.Material.Neon
+        part.Color = Color3.fromRGB(255, 205, 115)
+        part.Transparency = 1
+        part.Size = Vector3.new(1, 0.3, 1)
+        part.Parent = ring
+        table.insert(vfx.ring, part)
+    end
+    -- Keep prepared resources detached and disabled throughout the warning/fall.
+    return vfx
+end
+
+function NukeCinematicController:_activateExplosionVfx(vfx)
+    if vfx.startedAt then
+        return vfx
+    end
+    if vfx.root then
+        vfx.root.Parent = Workspace
+    end
+    vfx.ringRoot.Parent = Workspace
+    -- Start visible time on activation, never while the warning is still playing.
+    vfx.startedAt = os.clock()
+    self:_updateExplosionVfx(vfx, 0)
+    return vfx
+end
+
+function NukeCinematicController:_createExplosionVfx(session, center)
+    return self:_activateExplosionVfx(self:_prepareExplosionVfx(session, center))
+end
+
+function NukeCinematicController:_updateExplosionVfx(vfx, elapsed)
+    if not vfx.burstsFinished then
+        local finished = true
+        for _, burst in ipairs(vfx.bursts) do
+            if not burst.emitted and elapsed >= burst.delay then
+                burst.emitted = true
+                if burst.count > 0 and burst.emitter.Parent then
+                    burst.emitter:Emit(burst.count)
+                end
+            end
+            finished = finished and burst.emitted
+        end
+        vfx.burstsFinished = finished
+    end
+    if not vfx.beamsFinished then
+        for _, beam in ipairs(vfx.beams) do
+            if beam.Parent then
+                beam.Enabled = elapsed < 0.22
+            end
+        end
+        vfx.beamsFinished = elapsed >= 0.22
+    end
+    if not vfx.lightsFinished then
+        for _, item in ipairs(vfx.lights) do
+            if item.light.Parent then
+                item.light.Enabled = elapsed < 0.45
+                item.light.Brightness = item.brightness * math.max(0, 1 - elapsed / 0.45)
+            end
+        end
+        vfx.lightsFinished = elapsed >= 0.45
+    end
+    if vfx.waveFinished then
+        return
+    end
+    local alpha = math.clamp((elapsed - 0.05) / 0.95, 0, 1)
+    local radius = 8 + (vfx.radius - 8) * (1 - (1 - alpha) ^ 2)
+    for index, part in ipairs(vfx.ring) do
+        if part.Parent then
+            local angle = (index - 1) * 2 * math.pi / #vfx.ring
+            local position = vfx.groundCenter + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+            part.CFrame = CFrame.lookAt(position, vfx.groundCenter)
+            part.Size = Vector3.new(2 * radius * math.tan(math.pi / #vfx.ring) + 0.3, 0.3, 2.5)
+            part.Transparency = elapsed < 0.05 and 1 or math.clamp(0.25 + alpha ^ 2 * 0.75, 0, 1)
+        end
+    end
+    vfx.waveFinished = elapsed >= 1
+end
+
+function NukeCinematicController:_prepareBoom(session)
+    if session.sound then
+        return session.sound
+    end
+    local config = GameConfig.AUDIO or {}
+    local folder = game:GetService("SoundService"):FindFirstChild(config.FolderName or "Audio")
+    local original = folder and folder:FindFirstChild(config.BoomSoundName or "Boom")
+    if not (original and original:IsA("Sound")) then
+        return
+    end
+    local sound = self:_own(session, original:Clone())
+    sound.Name = "NukeBoom"
+    sound.Looped = false
+    sound:Stop()
+    sound.Parent = folder
+    session.sound = sound
+    return sound
+end
+
+function NukeCinematicController:_playBoom(session, elapsed)
+    local sound = session.sound or self:_prepareBoom(session)
+    if not sound then
+        return
+    end
+    sound.TimePosition = 0
+    if self._audioSettings and self._audioSettings.PlaySfx then
+        self._audioSettings:PlaySfx(sound, true)
+    else
+        sound:Play()
+    end
+end
+
+function NukeCinematicController:_preparePostEffects(session)
+    local color = self:_own(session, Instance.new("ColorCorrectionEffect"))
+    color.Name = "NukeImpactColor"
+    color.Enabled = false
+    local bloom = self:_own(session, Instance.new("BloomEffect"))
+    bloom.Name = "NukeImpactBloom"
+    bloom.Intensity = 0
+    bloom.Size = 24
+    bloom.Threshold = 1.4
+    bloom.Enabled = false
+    session.postEffects = {color, bloom}
+    return color, bloom
+end
+
+function NukeCinematicController:_createPostEffects(session)
+    local color, bloom
+    if session.postEffects then
+        color, bloom = table.unpack(session.postEffects)
+    else
+        color, bloom = self:_preparePostEffects(session)
+    end
+    color.Parent, bloom.Parent = Lighting, Lighting
+    color.Enabled, bloom.Enabled = true, true
+    return color, bloom
+end
+
+function NukeCinematicController:_preloadPresentationAssets()
+    if self._preloadStarted then
+        return
+    end
+    local resources = {}
+    local effect = getBombEffectTemplate()
+    if effect then
+        table.insert(resources, effect)
+    end
+    local bomb = ReplicatedStorage:FindFirstChild(GameConfig.NUKE.SourceModelName)
+    if not (bomb and bomb:IsA("Model")) then
+        local assets = ReplicatedStorage:FindFirstChild(GameConfig.NUKE.AssetFolderName)
+        bomb = assets and assets:FindFirstChild(GameConfig.NUKE.LittleBoyTemplateName)
+    end
+    if bomb then
+        table.insert(resources, bomb)
+    end
+    local config = GameConfig.AUDIO or {}
+    local folder = game:GetService("SoundService"):FindFirstChild(config.FolderName or "Audio")
+    local sound = folder and folder:FindFirstChild(config.BoomSoundName or "Boom")
+    if sound then
+        table.insert(resources, sound)
+    end
+    if #resources == 0 then
+        return
+    end
+    self._preloadStarted = true
+    -- Downloads are optional background work; the cinematic never awaits this task.
+    task.spawn(function()
+        local ok, message = pcall(function()
+            ContentProvider:PreloadAsync(resources)
+        end)
+        if not ok then
+            self._preloadStarted = false
+            warn("[NukeCinematicController] Asset preloading failed: " .. tostring(message))
+        end
+    end)
+end
+
+function NukeCinematicController:_sweepLocalMonstersForNuke(payload, expiresAt)
+    if expiresAt and os.clock() >= expiresAt then
+        return
+    end
+    if not (self._localPlayer and tonumber(payload.ownerUserId) == self._localPlayer.UserId) then
+        return
+    end
+    if self._localMonsterController and self._localMonsterController.SweepForNuke then
+        local ok, message = pcall(function()
+            self._localMonsterController:SweepForNuke(payload.sessionId)
+        end)
+        if not ok then
+            warn("[NukeCinematicController] Local sweep failed: " .. tostring(message))
+        end
+    end
+end
+
+function NukeCinematicController:_holdExplosionCamera(session, center, vfx)
+    local state = session.cameraState
+    local opening = state and state.camera.CFrame or CFrame.lookAt(center + Vector3.new(28, 24, 54), center)
+    local direction = Vector3.new(opening.Position.X - center.X, 0, opening.Position.Z - center.Z)
+    direction = direction.Magnitude > 1 and direction.Unit or Vector3.new(0, 0, 1)
+    local distance = math.clamp(vfx.radius * 0.48, 150, 300)
+    local wide = CFrame.lookAt(center + direction * distance + Vector3.new(0, distance * 0.52, 0), center + Vector3.new(0, 25, 0))
+    local color, bloom = self:_createPostEffects(session)
+    local timeline = session.timeline
+    session.visualFinish = vfx.startedAt + (timeline.finish - timeline.impact)
+    return self:_renderUntil(session, session.visualFinish, function(now)
+        local elapsed = math.max(0, now - vfx.startedAt)
+        self:_updateExplosionVfx(vfx, elapsed)
+        local shock = math.exp(-elapsed * 9)
+        color.Brightness = 0.12 * shock
+        color.Contrast = 0.1 * shock
+        color.TintColor = Color3.new(1, 1 - 0.1 * shock, 1 - 0.22 * shock)
+        bloom.Intensity = 0.55 * shock
+        if session.flash and session.flash.Parent then
+            session.flash.Visible = elapsed < 0.22
+            session.flash.BackgroundTransparency = 1 - 0.72 * math.max(0, 1 - elapsed / 0.22) ^ 2
+        end
+        local returnAlpha = smoothstep((now - (session.visualFinish - PRESENTATION.ReturnSeconds)) / PRESENTATION.ReturnSeconds)
+        for _, bar in ipairs(session.bars) do
+            if bar.Parent then
+                bar.BackgroundTransparency = 0.15 + 0.85 * returnAlpha
+            end
+        end
+        if self:_cameraAvailable(session) then
+            local camera = state.camera
+            camera.CameraType = Enum.CameraType.Scriptable
+            local base = opening:Lerp(wide, smoothstep(elapsed / 0.8))
+            local returnFrame = self:_returnCameraFrame(state)
+            base = base:Lerp(returnFrame, returnAlpha)
+            local shake = math.exp(-elapsed * 7) * (1 - returnAlpha)
+            camera.CFrame = base * CFrame.new(math.sin(elapsed * 73) * shake, math.cos(elapsed * 91) * 0.7 * shake, 0)
+                * CFrame.Angles(math.sin(elapsed * 67) * 0.006 * shake, 0, math.cos(elapsed * 59) * 0.004 * shake)
+            camera.Focus = CFrame.new(center):Lerp(select(2, self:_returnCameraFrame(state)), returnAlpha)
+            camera.FieldOfView = state.fieldOfView + (7 * math.exp(-elapsed * 5) + 3 * (1 - math.exp(-elapsed * 4))) * (1 - returnAlpha)
+        end
+    end)
 end
 
 function NukeCinematicController:_playCinematic(payload)
-    local sessionId = tonumber(payload and payload.sessionId) or (self._activeSessionId + 1)
-    self._activeSessionId = sessionId
-
+    if type(payload) ~= "table" then
+        return
+    end
+    local gateToken = CinematicUiGate:Acquire("Nuke")
+    self:_cancelSession()
+    local session = {
+        payload = payload, timeline = self:_buildTimeline(payload), resources = {}, tracks = {}, guis = {},
+        cancelled = false, presentationFinished = false,
+        gateToken = gateToken,
+    }
+    self._session = session
+    self._activeSessionId = tonumber(payload.sessionId) or (self._activeSessionId + 1)
     task.spawn(function()
-        local startDelaySeconds = math.max(0, tonumber(payload and payload.startDelaySeconds) or 0)
-        if startDelaySeconds > 0 then
-            task.wait(startDelaySeconds)
+        local ok, message = xpcall(function()
+            -- Expired deliveries should not seize the player's camera or repeat an old blast.
+            if os.clock() >= session.timeline.finish then
+                -- The server's token window outlives the visual. Preserve a late buyer's sweep.
+                self:_sweepLocalMonstersForNuke(payload, session.timeline.sweepExpires)
+                return
+            end
+            self:_preloadPresentationAssets()
+            local center = parseBattleCenter(payload)
+            local bombPoint = getBombPoint()
+            if bombPoint then
+                center = bombPoint.Position
+            end
+            local vfx = self:_prepareExplosionVfx(session, center)
+            self:_prepareBoom(session)
+            self:_preparePostEffects(session)
+            if not self:_playPrelude(session) then
+                return
+            end
+            for _, gui in ipairs(session.guis) do
+                if gui.root.Parent then
+                    gui.root.Visible = false
+                end
+            end
+            session.cameraState = self:_captureCameraState()
+            self:_bindPresentationGui(session)
+            local height = math.max(10, finiteNumber(payload.fallHeight, GameConfig.NUKE.FallHeight or 120))
+            local bomb
+            if os.clock() < session.timeline.impact then
+                bomb = self:_buildLittleBoy(session, CFrame.new(center + Vector3.new(0, height, 0)))
+                if bomb then
+                    session.bombTrack = self:_playLittleBoyAnimation(session, bomb)
+                end
+                if not self:_runFall(session, bomb, center, height) then
+                    return
+                end
+            end
+            if not self:_isCurrent(session) then
+                return
+            end
+            if session.bombTrack then
+                session.bombTrack:Stop(0)
+            end
+            if bomb then
+                bomb:Destroy()
+            end
+            self:_sweepLocalMonstersForNuke(payload, session.timeline.sweepExpires)
+            if not self:_isCurrent(session) then
+                return
+            end
+            self:_activateExplosionVfx(vfx)
+            self:_playBoom(session, 0)
+            if not self:_holdExplosionCamera(session, center, vfx) then
+                return
+            end
+            self:_finishPresentation(session)
+            if self._session == session then
+                self._session = nil
+                self._tails[session] = true
+            end
+            -- Audio and finite smoke finish after the camera has already been returned.
+            local sound = session.sound
+            local soundSeconds = sound and sound.TimeLength / math.max(sound.PlaybackSpeed, 0.1) + 0.12 or 0
+            local tailDeadline = vfx.startedAt + math.max(PRESENTATION.TailSeconds, soundSeconds, session.timeline.finish - session.timeline.impact)
+            self:_renderUntil(session, tailDeadline, function(now)
+                self:_updateExplosionVfx(vfx, now - vfx.startedAt)
+            end, true)
+        end, debug.traceback)
+        self:_cancelSession(session)
+        if not ok then
+            warn("[NukeCinematicController] Cinematic cleaned up after error: " .. tostring(message))
         end
-        if sessionId ~= self._activeSessionId then
-            return
-        end
-        if not self:_playPrelude(payload, sessionId) then
-            return
-        end
-
-        self._cameraState = self:_captureCameraState()
-        local camera = Workspace.CurrentCamera
-        if not camera then
-            return
-        end
-
-        local battleCenter = parseBattleCenter(payload)
-        local bombPoint = getBombPoint()
-        if bombPoint then
-            battleCenter = bombPoint.Position
-        end
-        local fallHeight = math.max(10, tonumber(payload and payload.fallHeight) or GameConfig.NUKE.FallHeight or 120)
-        local fallSeconds = math.max(0.1, tonumber(payload and payload.fallSeconds) or GameConfig.NUKE.FallSeconds or 2.5)
-        local explosionSeconds = math.max(0.1, tonumber(payload and payload.explosionSeconds) or GameConfig.NUKE.ExplosionSeconds or 3)
-
-        local littleBoy = self:_buildLittleBoy(CFrame.new(battleCenter + Vector3.new(0, fallHeight, 0)))
-        local animationTrack = littleBoy and self:_playLittleBoyAnimation(littleBoy, payload and payload.idleAnimationId) or nil
-        local spinConnection = nil
-        if littleBoy and not animationTrack then
-            spinConnection = self:_startFallbackSpin(littleBoy, sessionId)
-        end
-
-        local explosionCameraCFrame = self:_runFall(camera, littleBoy, battleCenter, fallHeight, fallSeconds)
-
-        if spinConnection then
-            spinConnection:Disconnect()
-        end
-        if animationTrack then
-            pcall(function()
-                animationTrack:Stop(0.1)
-                animationTrack:Destroy()
-            end)
-        end
-        if littleBoy and littleBoy.Parent then
-            littleBoy:Destroy()
-        end
-
-        Lighting.ClockTime = tonumber(payload and payload.lightingClockTime) or GameConfig.NUKE.LightingClockTime or 4
-        self:_sweepLocalMonstersForNuke(payload)
-        local effect = createExplosionVfx(battleCenter, explosionSeconds, self._audioSettings)
-        local audioConfig = GameConfig.AUDIO or {}
-        playAudioSound(audioConfig.BoomSoundName or "Boom", audioConfig.BoomSoundId or "rbxassetid://77970762255205", self._audioSettings)
-        self:_holdExplosionCamera(camera, battleCenter, explosionCameraCFrame, explosionSeconds, sessionId)
-        stopExplosionVfx(effect)
-        task.wait(0.9)
-        destroyExplosionVfx(effect)
-        self:_restoreCameraOnly()
-        self:_restoreLightingOnly()
     end)
 end
 
 function NukeCinematicController:Init(dependencies)
+    self:_cancelSession()
+    local tails = {}
+    for session in pairs(self._tails) do
+        table.insert(tails, session)
+    end
+    for _, session in ipairs(tails) do
+        self:_cancelSession(session)
+    end
+    disconnectAll(self._connections)
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._localMonsterController = dependencies and dependencies.LocalMonsterController or nil
     self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
-    disconnectAll(self._connections)
-
+    self:_preloadPresentationAssets()
     local eventsRoot = ReplicatedStorage:WaitForChild(RemoteNames.RootFolder)
     local battleEvents = eventsRoot:WaitForChild(RemoteNames.BattleEventsFolder)
     local nukeEvent = battleEvents:WaitForChild(RemoteNames.Battle.NukeCinematic)
-
     table.insert(self._connections, nukeEvent.OnClientEvent:Connect(function(payload)
         self:_playCinematic(payload)
     end))

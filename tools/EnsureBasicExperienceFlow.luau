@@ -36,6 +36,7 @@ local onlineWasVisible = onlineEntry.Visible
 
 taskEntry.Visible = showTasks
 chestEntry.Visible = showChests
+boxOpen.Visible = showChests
 taskPanel.Visible = false
 chestPanel.Visible = false
 if not showTasks then
@@ -47,7 +48,6 @@ if not showChests then
         local badge = chestEntry:FindFirstChild(name, true)
         if badge and badge:IsA("GuiObject") then badge.Visible = false end
     end
-    boxOpen.Visible = false
 end
 
 if not backdrop then

@@ -15,6 +15,7 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 local TouchRegionGate = require(script.Parent:WaitForChild("TouchRegionGate"))
 
 local function requireSharedModule(moduleName)
@@ -74,6 +75,10 @@ SkinController._titleUnlockCanClose = false
 SkinController._titleUnlockSerial = 0
 SkinController._titleUnlockInputConnection = nil
 SkinController._titleUnlockImageGuardConnection = nil
+SkinController._titleUnlockQueue = {}
+SkinController._activeTitleUnlockPayload = nil
+SkinController._titleUnlockTween = nil
+SkinController._presentationGeneration = 0
 SkinController._requestStateEvent = nil
 SkinController._stateSyncEvent = nil
 SkinController._requestPurchaseEvent = nil
@@ -1051,6 +1056,9 @@ function SkinController:_connectSkinRegion()
 end
 
 function SkinController:_closeTitleUnlockPopup()
+    if CinematicUiGate:IsBlocked() then
+        return
+    end
     if not (self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject")) then
         return
     end
@@ -1062,21 +1070,84 @@ function SkinController:_closeTitleUnlockPopup()
     self:_disconnectTitleUnlockImageGuard()
     self._titleUnlockCanClose = false
     self._titleUnlockSerial += 1
+    if self._titleUnlockTween then
+        self._titleUnlockTween:Cancel()
+        self._titleUnlockTween = nil
+    end
+    self._activeTitleUnlockPayload = nil
+    ModalUiController:SetRestoredVisible(self._titleUnlockPopup, false)
     self._titleUnlockPopup.Visible = false
     if self._titleUnlockOriginalPosition then
         self._titleUnlockPopup.Position = self._titleUnlockOriginalPosition
     end
     ModalUiController:Release("TitleUnlock")
+    self:_scheduleTitleUnlockQueue()
 end
 
 function SkinController:_playTitleUnlockPopup(payload)
+    table.insert(self._titleUnlockQueue, payload)
+    if CinematicUiGate:IsBlocked() then
+        self:_scheduleTitleUnlockQueue()
+    else
+        self:_drainTitleUnlockQueue()
+    end
+end
+
+function SkinController:_scheduleTitleUnlockQueue()
+    local generation = self._presentationGeneration
+    CinematicUiGate:Defer("TitleUnlockQueue", function()
+        if self._presentationGeneration == generation then
+            self:_drainTitleUnlockQueue()
+        end
+    end)
+end
+
+function SkinController:HasPendingRewardPresentation()
+    return self._activeTitleUnlockPayload ~= nil or #self._titleUnlockQueue > 0
+end
+
+function SkinController:_suspendTitleUnlockPopup()
+    if not self._activeTitleUnlockPayload then
+        return
+    end
+    table.insert(self._titleUnlockQueue, 1, self._activeTitleUnlockPayload)
+    self._activeTitleUnlockPayload = nil
+    self._titleUnlockSerial += 1
+    self._titleUnlockCanClose = false
+    self:_disconnectTitleUnlockInput()
+    self:_disconnectTitleUnlockImageGuard()
+    if self._titleUnlockTween then
+        self._titleUnlockTween:Cancel()
+        self._titleUnlockTween = nil
+    end
+    if self._titleUnlockPopup and self._titleUnlockPopup.Parent then
+        ModalUiController:SetRestoredVisible(self._titleUnlockPopup, false)
+        self._titleUnlockPopup.Visible = false
+        if self._titleUnlockOriginalPosition then
+            self._titleUnlockPopup.Position = self._titleUnlockOriginalPosition
+        end
+    end
+    ModalUiController:Release("TitleUnlock")
+    self:_scheduleTitleUnlockQueue()
+end
+
+function SkinController:_drainTitleUnlockQueue()
+    if CinematicUiGate:IsBlocked() or self._activeTitleUnlockPayload or #self._titleUnlockQueue == 0 then
+        return
+    end
     if not (self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject")) then
         self:_bindUi(true)
     end
     if not (self._titleUnlockPopup and self._titleUnlockPopup:IsA("GuiObject")) then
-        self:_notify("Title unlocked.")
+        self:_queueBindRetry()
         return
     end
+    local payload = table.remove(self._titleUnlockQueue, 1)
+    self._activeTitleUnlockPayload = payload
+    self:_presentTitleUnlockPopup(payload)
+end
+
+function SkinController:_presentTitleUnlockPopup(payload)
 
     self:_disconnectTitleUnlockInput()
     self:_disconnectTitleUnlockImageGuard()
@@ -1094,6 +1165,7 @@ function SkinController:_playTitleUnlockPopup(payload)
         originalPosition.Y.Offset
     )
     ModalUiController:Acquire("TitleUnlock", self._titleUnlockPopup)
+    ModalUiController:SetRestoredVisible(self._titleUnlockPopup, true)
     self._titleUnlockPopup.Visible = true
     if ModalUiController.DeactivateDormantRoot then
         ModalUiController:DeactivateDormantRoot(self._titleUnlockPopup)
@@ -1134,12 +1206,13 @@ function SkinController:_playTitleUnlockPopup(payload)
             end
         end)
     end
-    TweenService:Create(self._titleUnlockPopup, TweenInfo.new(TITLE_UNLOCK_OPEN_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+    self._titleUnlockTween = TweenService:Create(self._titleUnlockPopup, TweenInfo.new(TITLE_UNLOCK_OPEN_DURATION, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
         Position = originalPosition,
-    }):Play()
+    })
+    self._titleUnlockTween:Play()
 
     task.delay(TITLE_UNLOCK_CLOSE_DELAY, function()
-        if self._titleUnlockSerial ~= serial or not (self._titleUnlockPopup and self._titleUnlockPopup.Parent) then
+        if self._titleUnlockSerial ~= serial or CinematicUiGate:IsBlocked() or not (self._titleUnlockPopup and self._titleUnlockPopup.Parent) then
             return
         end
         self._titleUnlockCanClose = true
@@ -2093,6 +2166,7 @@ function SkinController:_bindUi(silent)
         return false
     end
 
+    self:_suspendTitleUnlockPopup()
     self:_disconnectButtonBindings()
     self:_clearItems()
     self._leftEntry = leftEntry
@@ -2139,6 +2213,9 @@ function SkinController:_bindUi(silent)
 
     self:_bindCustomizationTabs(panel)
     self:_renderListIfVisible()
+    if self._titleUnlockPopup and #self._titleUnlockQueue > 0 then
+        self:_scheduleTitleUnlockQueue()
+    end
     return true
 end
 
@@ -2152,6 +2229,9 @@ function SkinController:_queueBindRetry()
         repeat
             if self:_bindUi(true) then
                 self._bindRetryQueued = false
+                if self._titleUnlockPopup then
+                    self:_scheduleTitleUnlockQueue()
+                end
                 return
             end
             task.wait(0.5)
@@ -2197,6 +2277,7 @@ function SkinController:_connectRemotes()
 end
 
 function SkinController:Init(dependencies)
+    self:_suspendTitleUnlockPopup()
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._wheelController = dependencies and dependencies.WheelController or nil
     self._sevenDayLoginRewardController = dependencies and dependencies.SevenDayLoginRewardController or nil
@@ -2210,9 +2291,24 @@ function SkinController:Init(dependencies)
     self._pendingTrailEquipRequest = nil
     self._pendingTitleEquipRequest = nil
     self._titleUnlockCanClose = false
-    self._titleUnlockSerial = 0
+    self._presentationGeneration += 1
+    self._titleUnlockSerial += 1
+    table.clear(self._titleUnlockQueue)
+    self._activeTitleUnlockPayload = nil
+    if self._titleUnlockTween then
+        self._titleUnlockTween:Cancel()
+        self._titleUnlockTween = nil
+    end
     self:_disconnectTitleUnlockInput()
+    self:_disconnectTitleUnlockImageGuard()
     disconnectAll(self._connections)
+    table.insert(self._connections, CinematicUiGate:Subscribe(function(blocked)
+        if blocked then
+            self:_suspendTitleUnlockPopup()
+        else
+            self:_scheduleTitleUnlockQueue()
+        end
+    end))
     self:_disconnectButtonBindings()
     self:_disconnectItemButtonBindings()
     self:_disconnectSkinRegion()

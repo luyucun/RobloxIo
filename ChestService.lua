@@ -159,11 +159,13 @@ function ChestService:BuildStatePayload(player)
     }
 end
 
-function ChestService:PushState(player)
+function ChestService:PushState(player, openRejectedReason)
     if not (self._stateSyncEvent and ActorUtils.IsPlayer(player) and player.Parent) then
         return
     end
-    self._stateSyncEvent:FireClient(player, self:BuildStatePayload(player))
+    local payload = self:BuildStatePayload(player)
+    payload.openRejectedReason = openRejectedReason
+    self._stateSyncEvent:FireClient(player, payload)
 end
 
 function ChestService:_isLimitedRewardAlreadyOwned(player, reward)
@@ -341,7 +343,7 @@ function ChestService:OpenChest(player, chestId, mode)
 
     local count = self._playerStateService:GetChestCount(player, chest.Id)
     if count <= 0 then
-        self:PushState(player)
+        self:PushState(player, "NoChest")
         return false, "NoChest"
     end
 

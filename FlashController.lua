@@ -49,6 +49,7 @@ FlashController._flashRenderConnection = nil
 FlashController._activeFlashRequestId = ""
 FlashController._latestState = nil
 FlashController._requestPending = false
+FlashController._uiBindQueued = false
 FlashController._initialized = false
 
 local ACTION_NAME = "IOFlash"
@@ -223,11 +224,27 @@ function FlashController:_startCooldown(seconds)
 end
 
 function FlashController:_bindUi()
-    disconnectAll(self._uiConnections)
-    self._mainGui = getMainGui(self._localPlayer)
-    local flash = self._mainGui and self._mainGui:FindFirstChild("Flash")
+    local mainGui = getMainGui(self._localPlayer)
+    local flash = mainGui and mainGui:FindFirstChild("Flash")
     local info = flash and flash:FindFirstChild("Info")
     local button = info and info:FindFirstChild("TextButton")
+    if button and button == self._button and info == self._info and mainGui == self._mainGui
+        and info:FindFirstChild("CooldownMask") == self._mask
+        and info:FindFirstChild("Icon") == self._icon
+        and info:FindFirstChild("Icon02") == self._icon02
+        and info:FindFirstChild("TextLabel") == self._hintLabel then
+        return true
+    end
+
+    disconnectAll(self._uiConnections)
+    self:_cancelCooldownTween()
+    self._mainGui = mainGui
+    self._info = nil
+    self._button = nil
+    self._mask = nil
+    self._icon = nil
+    self._icon02 = nil
+    self._hintLabel = nil
     if not (button and button:IsA("GuiButton")) then
         return false
     end
@@ -251,8 +268,47 @@ function FlashController:_bindUi()
     table.insert(self._uiConnections, button.Activated:Connect(function()
         self:_requestFlash()
     end))
+    table.insert(self._uiConnections, button.AncestryChanged:Connect(function()
+        self:_queueUiBind()
+    end))
+    -- Keep the authoritative cooldown when the HUD is replaced mid-cooldown.
+    local requestPending = self._requestPending
+    self:_startCooldown(math.max(0, self._cooldownEndsAt - os.clock()))
+    self._requestPending = requestPending
     self:_updateVisualState()
     return true
+end
+
+function FlashController:_queueUiBind()
+    if self._uiBindQueued then
+        return
+    end
+    self._uiBindQueued = true
+    task.defer(function()
+        self._uiBindQueued = false
+        self:_bindUi()
+    end)
+end
+
+function FlashController:_watchUi()
+    local playerGui = self._localPlayer and (self._localPlayer:FindFirstChild("PlayerGui")
+        or self._localPlayer:WaitForChild("PlayerGui", 5))
+    if not playerGui then
+        return
+    end
+
+    -- Main may replicate before its Flash descendants. A Main-only ChildAdded
+    -- retry permanently misses that case, even though the Q action is bound.
+    table.insert(self._connections, playerGui.DescendantAdded:Connect(function(node)
+        local parent = node.Parent
+        if (node.Name == "Main" and parent == playerGui)
+            or (node.Name == "Flash" and parent and parent.Name == "Main" and parent.Parent == playerGui)
+            or (node.Name == "Info" and parent and parent.Name == "Flash" and parent.Parent == self._mainGui)
+            or (parent and parent.Name == "Info"
+                and parent.Parent and parent.Parent.Name == "Flash" and parent.Parent.Parent == self._mainGui) then
+            self:_queueUiBind()
+        end
+    end))
 end
 
 function FlashController:_requestFlash()
@@ -261,10 +317,6 @@ function FlashController:_requestFlash()
     end
 
     self._requestPending = true
-    if self._autoBattleController and self._autoBattleController.SuspendForFlash then
-        local config = getFlashConfig()
-        self._autoBattleController:SuspendForFlash(config.DurationSeconds + 0.05)
-    end
     self._requestFlashEvent:FireServer()
     task.delay(0.75, function()
         if self._requestPending then
@@ -281,6 +333,11 @@ function FlashController:_handleFeedback(payload)
 
     local eventType = tostring(payload.eventType or "")
     if eventType == "Started" then
+        if self._autoBattleController and self._autoBattleController.SuspendForFlash then
+            local config = getFlashConfig()
+            local duration = math.max(0, tonumber(payload.durationSeconds) or config.DurationSeconds)
+            self._autoBattleController:SuspendForFlash(duration + 0.05)
+        end
         self:_startCooldown(payload.cooldownSeconds)
         self._activeFlashRequestId = tostring(payload.requestId or "")
         self:_playPredictedFlash(payload.targetPosition, payload.durationSeconds, self._activeFlashRequestId)
@@ -376,18 +433,8 @@ function FlashController:Init(dependencies)
         Enum.KeyCode.ButtonX
     )
 
-    if not self:_bindUi() then
-        local playerGui = self._localPlayer and self._localPlayer:FindFirstChild("PlayerGui")
-        if playerGui then
-            table.insert(self._connections, playerGui.ChildAdded:Connect(function(child)
-                if child.Name == "Main" then
-                    task.defer(function()
-                        self:_bindUi()
-                    end)
-                end
-            end))
-        end
-    end
+    self:_watchUi()
+    self:_bindUi()
 
     local eventsRoot = ReplicatedStorage:FindFirstChild(RemoteNames.RootFolder)
     local systemEvents = eventsRoot and eventsRoot:FindFirstChild(RemoteNames.SystemEventsFolder)

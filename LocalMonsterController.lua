@@ -90,11 +90,15 @@ LocalMonsterController._impactCreated = 0
 LocalMonsterController._impactWindowClock = 0
 LocalMonsterController._impactWindowCount = 0
 LocalMonsterController._healthBarTemplateWarningShown = false
+LocalMonsterController._retiredNukeResourceBatches = {}
+LocalMonsterController._retiredNukeCleanupScheduled = false
 local IMPACT_POOL_SIZE = 12
 local IMPACT_HIT_SLOTS = 8
 local IMPACTS_PER_SECOND = 24
 local HIT_IMPACTS_PER_SECOND = 16
 local IMPACT_LIFETIME = 0.3
+local NUKE_CLEANUP_MAX_RESOURCES_PER_FRAME = 24
+local NUKE_CLEANUP_TIME_BUDGET_SECONDS = 0.0015
 
 local LOOP_FADE_SECONDS = 0.12
 local ATTACK_FADE_SECONDS = 0.04
@@ -1270,6 +1274,174 @@ function LocalMonsterController:_resetLocalMonsterPopulation()
     self._safeZoneRespawnDebt = 0
 end
 
+function LocalMonsterController:_retireNukePopulation()
+    local oldMonsters = self._monstersById
+    self._monstersById = {}
+    local oldFolder = self._monsterFolder
+    local runtimeRoot = oldFolder and oldFolder.Parent or Workspace:FindFirstChild("Runtime")
+    if oldFolder then
+        oldFolder.Parent = nil
+    end
+    runtimeRoot = runtimeRoot or findOrCreateFolder(Workspace, "Runtime")
+    local folder = Instance.new("Folder")
+    folder.Name = oldFolder and oldFolder.Name or GameConfig.MONSTER.LocalRuntimeFolderName or "Monsters_ClientLocal"
+    folder.Parent = runtimeRoot
+    self._monsterFolder = folder
+
+    local resources, seen = {}, {}
+    local function retire(object, isTrack, detach)
+        if not object or seen[object] then
+            return
+        end
+        seen[object] = true
+        -- Folder descendants leave the scene together. Standalone effects and
+        -- fallback models must also disappear immediately, before the next frame.
+        if detach and object.Parent and not (oldFolder and object:IsDescendantOf(oldFolder)) then
+            object.Parent = nil
+        end
+        table.insert(resources, { Object = object, IsTrack = isTrack == true })
+    end
+    local function retireTracks(owner)
+        for _, track in pairs(owner and owner.Tracks or {}) do
+            retire(track, true, false)
+        end
+    end
+
+    for _, monsterState in pairs(oldMonsters) do
+        monsterState.Alive = false
+        monsterState.DamageBucket = nil
+        monsterState.HitFlash = nil
+        monsterState.HitFlashEndClock = 0
+        monsterState.IsMaterialized = false
+        retireTracks(monsterState)
+        retire(monsterState.HealthBar, false, true)
+        retire(monsterState.Instance, false, true)
+        monsterState.HealthBar = nil
+        monsterState.Instance = nil
+        monsterState.Tracks = {}
+        monsterState.TracksLoadAttempted = false
+        monsterState.TracksLoadFailed = false
+    end
+    for _, pool in pairs(self._monsterModelPoolByKey or {}) do
+        for _, entry in ipairs(pool) do
+            retireTracks(entry)
+            retire(entry.Instance, false, true)
+        end
+    end
+    for visual in pairs(self._activeDamageNumberVisuals or {}) do
+        retire(visual.Anchor, false, true)
+    end
+    for _, visual in ipairs(self._damageNumberPool or {}) do
+        retire(visual.Anchor, false, true)
+    end
+    for _, visual in ipairs(self._activeImpacts or {}) do
+        retire(visual.Part, false, true)
+    end
+    for _, visual in ipairs(self._impactPool or {}) do
+        retire(visual.Part, false, true)
+    end
+    if oldFolder then
+        for _, child in ipairs(oldFolder:GetChildren()) do
+            retire(child, false, false)
+        end
+    end
+    -- Last: destroying a populated folder first would bypass the frame budget.
+    retire(oldFolder, false, false)
+
+    table.clear(self._pendingKillsByRequestId)
+    self._pendingKillReportFlushClock = 0
+    self._safeZoneRespawnDebt = 0
+    self._materializedMonsterCount = 0
+    self._monsterModelPoolByKey = {}
+    self._monsterModelPoolCount = 0
+    self._damageNumberPool = {}
+    self._activeDamageNumberVisuals = {}
+    self._damageNumberPoolCreated = 0
+    self._activeDamageNumberCount = 0
+    self._damageNumberWindowClock = 0
+    self._damageNumberWindowCount = 0
+    self._impactPool = {}
+    self._activeImpacts = {}
+    self._impactCreated = 0
+    self._impactWindowClock = 0
+    self._impactWindowCount = 0
+    return resources
+end
+
+function LocalMonsterController:_drainRetiredNukeResourcesFrame()
+    local startedAt, processed = os.clock(), 0
+    while processed < NUKE_CLEANUP_MAX_RESOURCES_PER_FRAME do
+        if processed > 0 and os.clock() - startedAt >= NUKE_CLEANUP_TIME_BUDGET_SECONDS then
+            break
+        end
+        local batch = self._retiredNukeResourceBatches[1]
+        if not batch then
+            break
+        end
+        if not batch.Ready then
+            break
+        end
+        if batch.NextIndex > batch.Count then
+            table.remove(self._retiredNukeResourceBatches, 1)
+            continue
+        end
+        local resource = batch.Resources[batch.NextIndex]
+        batch.Resources[batch.NextIndex] = nil
+        batch.NextIndex += 1
+        processed += 1
+        if resource and resource.Object then
+            local object = resource.Object
+            if resource.IsTrack then
+                pcall(function()
+                    object:Stop(0)
+                end)
+            end
+            local ok, message = pcall(function()
+                object:Destroy()
+            end)
+            if not ok then
+                warn("[LocalMonsterController] Retired nuke resource cleanup failed: " .. tostring(message))
+            end
+            resource.Object = nil
+        end
+    end
+    local batch = self._retiredNukeResourceBatches[1]
+    if batch and batch.NextIndex > batch.Count then
+        table.remove(self._retiredNukeResourceBatches, 1)
+    end
+    return processed, #self._retiredNukeResourceBatches > 0
+end
+
+function LocalMonsterController:_queueRetiredNukeResources(resources)
+    if #resources == 0 then
+        return
+    end
+    local batch = {
+        Resources = resources,
+        NextIndex = 1,
+        Count = #resources,
+        Ready = false,
+    }
+    table.insert(self._retiredNukeResourceBatches, batch)
+    task.spawn(function()
+        RunService.RenderStepped:Wait()
+        batch.Ready = true
+    end)
+    if self._retiredNukeCleanupScheduled then
+        return
+    end
+    self._retiredNukeCleanupScheduled = true
+    task.spawn(function()
+        -- Remain independent of Init and the active population: every retired
+        -- snapshot must finish even if another nuke or character rebind occurs.
+        while #self._retiredNukeResourceBatches > 0 do
+            RunService.Heartbeat:Wait()
+            self:_drainRetiredNukeResourcesFrame()
+        end
+        self._retiredNukeCleanupScheduled = false
+    end)
+end
+
 function LocalMonsterController:SweepForNuke(sessionId)
     local tokens = {}
     for _, monsterState in pairs(self._monstersById) do
@@ -1278,10 +1450,9 @@ function LocalMonsterController:SweepForNuke(sessionId)
         end
     end
 
-    self:_clearMonsters({
-        preserveTokens = true,
-    })
+    local retiredResources = self:_retireNukePopulation()
     self._nextSpawnClock = os.clock() + math.max(0, tonumber(GameConfig.NUKE.MonsterRespawnPauseSeconds) or 2.5)
+    self:_queueRetiredNukeResources(retiredResources)
 
     if self._nukeLocalMonsterSweepEvent and #tokens > 0 then
         self._nukeLocalMonsterSweepEvent:FireServer({

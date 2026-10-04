@@ -13,6 +13,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local ModalUiController = require(script.Parent:WaitForChild("ModalUiController"))
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 local TouchRegionGate = require(script.Parent:WaitForChild("TouchRegionGate"))
 
 local function requireSharedModule(moduleName)
@@ -87,6 +88,10 @@ WheelController._spinSegmentSoundLastRelativeRotation = 0
 WheelController._spinSegmentSoundNextThreshold = nil
 WheelController._wheelClaimPopupSerial = 0
 WheelController._wheelClaimTweens = {}
+WheelController._wheelClaimQueue = {}
+WheelController._activeWheelClaimReward = nil
+WheelController._pendingSpinReward = nil
+WheelController._presentationGeneration = 0
 
 local HOVER_SCALE = 1.06
 local PRESS_SCALE = 0.92
@@ -488,16 +493,22 @@ function WheelController:_clearWheelClaimItem()
     self._wheelClaimGeneratedItem = nil
 end
 
-function WheelController:_hideWheelClaim()
+function WheelController:_hideWheelClaim(advanceQueue)
+    self._wheelClaimPopupSerial += 1
+    self._activeWheelClaimReward = nil
     self:_cancelWheelClaimTweens()
     self:_clearWheelClaimItem()
     if self._wheelClaim and self._wheelClaim.Parent then
+        ModalUiController:SetRestoredVisible(self._wheelClaim, false)
         self._wheelClaim.Visible = false
     end
     if self._wheelClaimResultNotice then
         self._wheelClaimResultNotice.Visible = false
     end
     ModalUiController:Release(WHEEL_CLAIM_MODAL_OWNER)
+    if advanceQueue ~= false then
+        self:_scheduleWheelClaimQueue()
+    end
 end
 
 function WheelController:_findWheelClaimGiftSourceRoot()
@@ -525,20 +536,69 @@ function WheelController:_resolveRewardGiftName(reward)
 end
 
 function WheelController:_showWheelClaim(reward)
-    if self._isDead then
+    if type(reward) ~= "table" then
         return
     end
+    table.insert(self._wheelClaimQueue, reward)
+    if CinematicUiGate:IsBlocked() then
+        self:_scheduleWheelClaimQueue()
+    else
+        self:_drainWheelClaimQueue()
+    end
+end
 
-    if not (self._wheelClaim and self._wheelClaim:IsA("GuiObject")) then
+function WheelController:_scheduleWheelClaimQueue()
+    local generation = self._presentationGeneration
+    CinematicUiGate:Defer("WheelClaimQueue", function()
+        if self._presentationGeneration == generation then
+            self:_drainWheelClaimQueue()
+        end
+    end)
+end
+
+function WheelController:HasPendingRewardPresentation()
+    return self._activeWheelClaimReward ~= nil or self._pendingSpinReward ~= nil or #self._wheelClaimQueue > 0
+end
+
+function WheelController:_suspendWheelClaim()
+    if self._activeWheelClaimReward then
+        table.insert(self._wheelClaimQueue, 1, self._activeWheelClaimReward)
+        self:_hideWheelClaim(false)
+    end
+    self:_scheduleWheelClaimQueue()
+end
+
+function WheelController:_drainWheelClaimQueue()
+    if CinematicUiGate:IsBlocked() or self._activeWheelClaimReward or #self._wheelClaimQueue == 0 then
+        return
+    end
+    if not (self._wheelClaim and self._wheelClaim.Parent) then
         self:_bindUi(true)
     end
-    if not (self._wheelClaim and self._wheelClaim:IsA("GuiObject")) then
+    if not (self._wheelClaim and self._wheelClaim.Parent) then
+        self:_queueBindRetry()
         return
+    end
+    local reward = self._wheelClaimQueue[1]
+    self._activeWheelClaimReward = reward
+    if self:_presentWheelClaim(reward) then
+        table.remove(self._wheelClaimQueue, 1)
+    else
+        self._activeWheelClaimReward = nil
+        -- Keep the reward for a later template rebind; do not spin a retry loop
+        -- when the UI exists but its reward asset is missing.
+        warn("[WheelController] WheelClaim reward template is unavailable; presentation retained.")
+    end
+end
+
+function WheelController:_presentWheelClaim(reward)
+    if not (self._wheelClaim and self._wheelClaim:IsA("GuiObject")) then
+        return false
     end
 
     local giftName = self:_resolveRewardGiftName(reward)
     if not giftName then
-        return
+        return false
     end
 
     local sourceRoot = self._wheelClaimGiftSourceRoot
@@ -548,7 +608,7 @@ function WheelController:_showWheelClaim(reward)
     end
     local source = sourceRoot and sourceRoot:FindFirstChild(giftName)
     if not (source and source:IsA("GuiObject")) then
-        return
+        return false
     end
 
     if self._audioSettings and self._audioSettings.PlaySfxByPath then
@@ -589,6 +649,7 @@ function WheelController:_showWheelClaim(reward)
 
     local uiScale = ensureUiScale(self._wheelClaim)
     ModalUiController:Acquire(WHEEL_CLAIM_MODAL_OWNER, self._wheelClaim)
+    ModalUiController:SetRestoredVisible(self._wheelClaim, true)
     self._wheelClaim.Visible = true
     if not uiScale then
         task.delay(WHEEL_CLAIM_VISIBLE_SECONDS, function()
@@ -597,7 +658,7 @@ function WheelController:_showWheelClaim(reward)
             end
             self:_hideWheelClaim()
         end)
-        return
+        return true
     end
 
     uiScale.Scale = WHEEL_CLAIM_FROM_SCALE
@@ -634,6 +695,7 @@ function WheelController:_showWheelClaim(reward)
         end
         self:_hideWheelClaim()
     end)
+    return true
 end
 
 function WheelController:_setOpen(isOpen, immediate)
@@ -749,9 +811,12 @@ end
 function WheelController:_handlePlayerDefeated()
     self._isDead = true
     self._suppressSpinResult = true
-    self._wheelClaimPopupSerial += 1
+    if self._pendingSpinReward then
+        table.insert(self._wheelClaimQueue, self._pendingSpinReward)
+        self._pendingSpinReward = nil
+    end
     self:_cancelSpinTween()
-    self:_hideWheelClaim()
+    self:_suspendWheelClaim()
     self:_setOpen(false, true)
 end
 
@@ -934,6 +999,9 @@ function WheelController:_handleSpinResult(payload)
 
     if self._isDead or self._suppressSpinResult then
         self:_cancelSpinTween()
+        if payload.ok == true then
+            self:_showWheelClaim(payload.reward)
+        end
         return
     end
 
@@ -950,6 +1018,12 @@ function WheelController:_handleSpinResult(payload)
         return
     end
 
+    if CinematicUiGate:IsBlocked() then
+        self:_cancelSpinTween()
+        self:_showWheelClaim(payload.reward)
+        return
+    end
+    self._pendingSpinReward = payload.reward
     local targetRotation = payload.targetRotation
     if not targetRotation and type(payload.reward) == "table" then
         targetRotation = payload.reward.targetRotation
@@ -960,10 +1034,8 @@ function WheelController:_handleSpinResult(payload)
         if self._isDead or self._suppressSpinResult then
             return
         end
+        self._pendingSpinReward = nil
 
-        if payload.state then
-            self:_applyState(payload.state)
-        end
         self:_showWheelClaim(payload.reward)
     end)
 end
@@ -989,6 +1061,7 @@ function WheelController:_bindUi(silent)
     end
 
     self:_disconnectButtonBindings()
+    self:_suspendWheelClaim()
     self._panel = panel
     self._wheelEntry = wheelEntry
     self._wheelEntryClickButton = self:_ensureWheelEntryClickButton()
@@ -1079,6 +1152,9 @@ function WheelController:_queueBindRetry()
         repeat
             if self:_bindUi(true) then
                 self._bindRetryQueued = false
+                if self._wheelClaim and self._wheelClaimGiftSourceRoot then
+                    self:_scheduleWheelClaimQueue()
+                end
                 return
             end
             task.wait(0.5)
@@ -1132,6 +1208,7 @@ function WheelController:_connectRemotes()
                 self:_handlePlayerDefeated()
             elseif payload.alive == true then
                 self._isDead = false
+                self:_scheduleWheelClaimQueue()
             end
         end))
     end
@@ -1164,10 +1241,26 @@ function WheelController:Init(dependencies)
     self._audioSettings = dependencies and (dependencies.AudioSettingsController or dependencies.AudioSettings) or nil
     self._isDead = false
     self._suppressSpinResult = false
+    self._presentationGeneration += 1
+    table.clear(self._wheelClaimQueue)
+    self._pendingSpinReward = nil
     disconnectAll(self._connections)
+    self:_cancelSpinTween()
     self:_disconnectButtonBindings()
     self:_disconnectWheelRegion()
-    self:_hideWheelClaim()
+    self:_hideWheelClaim(false)
+    table.insert(self._connections, CinematicUiGate:Subscribe(function(blocked)
+        if blocked then
+            if self._pendingSpinReward then
+                self:_showWheelClaim(self._pendingSpinReward)
+                self._pendingSpinReward = nil
+                self:_cancelSpinTween()
+            end
+            self:_suspendWheelClaim()
+        else
+            self:_scheduleWheelClaimQueue()
+        end
+    end))
 
     self:_connectRemotes()
     if not self:_bindUi(true) then

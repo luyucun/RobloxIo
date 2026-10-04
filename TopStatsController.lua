@@ -31,6 +31,7 @@ local function requireSharedModule(moduleName)
 end
 
 local RemoteNames = requireSharedModule("RemoteNames")
+local CinematicUiGate = require((script.Parent:FindFirstChild("Controllers") or script.Parent):WaitForChild("CinematicUiGate"))
 
 local TopStatsController = {}
 
@@ -199,6 +200,10 @@ function TopStatsController:_popGemIcon()
 end
 
 function TopStatsController:_spawnGemFlyIcon(startPosition, targetPosition, index)
+    if CinematicUiGate:IsBlocked() then
+        self:_playGemGainAnimation()
+        return
+    end
     local folder = self:_ensureEffectsFolder()
     if not folder then
         return
@@ -240,6 +245,12 @@ function TopStatsController:_spawnGemFlyIcon(startPosition, targetPosition, inde
 end
 
 function TopStatsController:_playGemGainAnimation()
+    if CinematicUiGate:IsBlocked() then
+        CinematicUiGate:Defer("GemGain", function()
+            self:_playGemGainAnimation()
+        end)
+        return
+    end
     local effectsLayer = self:_ensureEffectsFolder()
     local targetPosition = getGuiCenter(self._gemIcon)
     if not (effectsLayer and targetPosition) then
@@ -262,8 +273,8 @@ function TopStatsController:_applyState(payload)
     local hadPreviousState = self._latestDiamonds ~= nil
     local gainedDiamonds = hadPreviousState and diamonds > self._latestDiamonds
 
-    self:_setNumber(self._gemLabel, self._latestDiamonds or diamonds, diamonds, hadPreviousState)
-    self:_setNumber(self._killLabel, self._latestTotalKills or totalKills, totalKills, self._latestTotalKills ~= nil)
+    self:_setNumber(self._gemLabel, self._latestDiamonds or diamonds, diamonds, hadPreviousState and not CinematicUiGate:IsBlocked())
+    self:_setNumber(self._killLabel, self._latestTotalKills or totalKills, totalKills, self._latestTotalKills ~= nil and not CinematicUiGate:IsBlocked())
 
     if gainedDiamonds then
         self:_playGemGainAnimation()
@@ -326,6 +337,7 @@ function TopStatsController:_queueBindRetry()
 end
 
 function TopStatsController:Init(dependencies)
+    CinematicUiGate:CancelDeferred("GemGain")
     self._localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
     self._latestDiamonds = nil
     self._latestTotalKills = nil

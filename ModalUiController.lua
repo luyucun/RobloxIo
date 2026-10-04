@@ -9,6 +9,7 @@ local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local CinematicUiGate = require(script.Parent:WaitForChild("CinematicUiGate"))
 
 local ModalUiController = {}
 
@@ -28,6 +29,9 @@ ModalUiController._panelMotionStatesByPanel = setmetatable({}, { __mode = "k" })
 ModalUiController._buttonMotionCleanupsByButton = setmetatable({}, { __mode = "k" })
 ModalUiController._mainEntryMotionBindingsByButton = setmetatable({}, { __mode = "k" })
 ModalUiController._mainEntryMotionSerial = 0
+ModalUiController._cinematicActive = false
+ModalUiController._cinematicConnection = nil
+ModalUiController._cinematicPlayerGuiConnection = nil
 
 local DEFAULT_PANEL_MOTION = {
     OpenFromScale = 0.9,
@@ -437,7 +441,12 @@ end
 
 function ModalUiController:_rememberOriginalVisible(guiObject)
     if self._hiddenOriginalVisibleByNode[guiObject] == nil then
-        self._hiddenOriginalVisibleByNode[guiObject] = guiObject.Visible == true
+        local motionState = self._panelMotionStatesByPanel[guiObject]
+        if motionState and motionState.RequestedVisible ~= nil then
+            self._hiddenOriginalVisibleByNode[guiObject] = motionState.RequestedVisible == true
+        else
+            self._hiddenOriginalVisibleByNode[guiObject] = guiObject.Visible == true
+        end
     end
 end
 
@@ -447,7 +456,14 @@ function ModalUiController:_ensureHiddenVisibleWatcher(guiObject)
     end
 
     self._hiddenVisibleConnectionsByNode[guiObject] = guiObject:GetPropertyChangedSignal("Visible"):Connect(function()
-        if not self:_hasOwners() or not guiObject.Parent or self:_isActivePanelChild(guiObject) then
+        if not guiObject.Parent then
+            return
+        end
+        if self:_isCinematicBlocked() then
+            if guiObject.Name == "Nuke" or guiObject.Name == "Warning" then
+                return
+            end
+        elseif not self:_hasOwners() or self:_isActivePanelChild(guiObject) then
             return
         end
 
@@ -467,6 +483,10 @@ end
 
 function ModalUiController:_restoreSuppressedGuiObject(guiObject)
     if not (guiObject and guiObject.Parent and guiObject:IsA("GuiObject")) then
+        return
+    end
+    if self:_isCinematicBlocked() and guiObject.Name ~= "Nuke" and guiObject.Name ~= "Warning" then
+        self:_suppressGuiObject(guiObject)
         return
     end
 
@@ -517,7 +537,7 @@ function ModalUiController:_ensureChildWatcher()
     end
 
     self._childAddedConnection = self._mainGui.ChildAdded:Connect(function(child)
-        if not self:_hasOwners() then
+        if not self:_hasOwners() and not self:_isCinematicBlocked() then
             return
         end
         if child and child:IsA("GuiObject") then
@@ -762,6 +782,22 @@ end
 
 function ModalUiController:Init(dependencies)
     local localPlayer = dependencies and dependencies.LocalPlayer or Players.LocalPlayer
+    self._localPlayer = localPlayer
+    disconnectConnection(self._cinematicConnection)
+    disconnectConnection(self._cinematicPlayerGuiConnection)
+    self._cinematicConnection = CinematicUiGate:Subscribe(function(blocked)
+        self:_onCinematicGateChanged(blocked)
+    end)
+    local playerGui = localPlayer and localPlayer:FindFirstChild("PlayerGui")
+    if playerGui then
+        self._cinematicPlayerGuiConnection = playerGui.ChildAdded:Connect(function(child)
+            if child.Name == "Main" and self:_isCinematicBlocked() then
+                self:_clearChildWatcher()
+                self._mainGui = child
+                self:_applyCinematicSuppression()
+            end
+        end)
+    end
     self:BindMainEntryMotions(localPlayer)
     if self:RegisterDefaultDormantRoots(localPlayer) then
         return
@@ -777,7 +813,95 @@ function ModalUiController:Init(dependencies)
     end)
 end
 
+function ModalUiController:_isCinematicBlocked()
+    -- Listener order is unspecified: another controller may resume before ours.
+    return CinematicUiGate:IsBlocked()
+end
+
+function ModalUiController:_applyCinematicSuppression()
+    local localPlayer = self._localPlayer or Players.LocalPlayer
+    local playerGui = localPlayer and localPlayer:FindFirstChild("PlayerGui")
+    self._mainGui = self._mainGui and self._mainGui.Parent and self._mainGui
+        or (playerGui and playerGui:FindFirstChild("Main"))
+    if not self._mainGui then
+        return
+    end
+    if not (self._blurEffect and self._blurEffect.Parent) then
+        self._blurEffect = findBlurEffect()
+        if self._blurEffect then
+            self._blurOriginalEnabled = self._blurEffect.Enabled == true
+        end
+    end
+    if self._blurEffect then
+        self._blurEffect.Enabled = false
+    end
+    if self._dimOverlayTween then
+        self._dimOverlayTween:Cancel()
+        self._dimOverlayTween = nil
+    end
+    if self._dimOverlay and self._dimOverlay.Parent then
+        self._dimOverlay.Visible = false
+    end
+    self:_ensureChildWatcher()
+    for _, child in ipairs(self._mainGui:GetChildren()) do
+        if child:IsA("GuiObject") then
+            if child.Name == "Nuke" or child.Name == "Warning" then
+                self:_restoreSuppressedGuiObject(child)
+            elseif child.Name == DIM_OVERLAY_NAME then
+                child.Visible = false
+            else
+                self:_suppressGuiObject(child)
+            end
+        end
+    end
+end
+
+function ModalUiController:_deferPanelOpen(ownerId, panel, options, state, serial)
+    CinematicUiGate:Defer(state, function()
+        if state.Serial ~= serial or state.RequestedVisible ~= true or not panel.Parent then
+            return
+        end
+        if options.Acquire ~= false then
+            local owner = self._owners[normalizeOwnerId(ownerId)]
+            if not owner or owner.Panel ~= panel then
+                return
+            end
+        end
+        if self:_isCinematicBlocked() then
+            self:_deferPanelOpen(ownerId, panel, options, state, serial)
+            return
+        end
+        self:PlayPanelOpen(ownerId, panel, options)
+    end)
+end
+
+function ModalUiController:_onCinematicGateChanged(blocked)
+    self._cinematicActive = blocked == true
+    if blocked then
+        for panel, state in pairs(self._panelMotionStatesByPanel) do
+            if panel.Parent and state.OpenOptions and state.RequestedVisible == true then
+                local options, ownerId = state.OpenOptions, state.OwnerId
+                local _, serial = self:_preparePanelMotion(panel)
+                self:_deferPanelOpen(ownerId, panel, options, state, serial)
+            elseif panel.Parent and state.CloseOptions then
+                local options = table.clone(state.CloseOptions)
+                options.Immediate = true
+                self:PlayPanelClose(state.OwnerId, panel, options)
+            end
+        end
+        self:_applyCinematicSuppression()
+    elseif self:_hasOwners() then
+        self:_applySuppression()
+    else
+        self:_restoreSuppression()
+    end
+end
+
 function ModalUiController:_applySuppression()
+    if self:_isCinematicBlocked() then
+        self:_applyCinematicSuppression()
+        return
+    end
     if not self._mainGui then
         return
     end
@@ -802,6 +926,10 @@ function ModalUiController:_applySuppression()
 end
 
 function ModalUiController:_restoreSuppression()
+    if self:_isCinematicBlocked() then
+        self:_applyCinematicSuppression()
+        return
+    end
     for guiObject, originalVisible in pairs(self._hiddenOriginalVisibleByNode) do
         if guiObject and guiObject.Parent and guiObject:IsA("GuiObject") then
             guiObject.Visible = originalVisible == true
@@ -871,6 +999,13 @@ function ModalUiController:AcquireExclusive(ownerId, panel, options)
     for _, ownerState in pairs(self._owners) do
         local ownerPanel = ownerState and ownerState.Panel
         if ownerPanel and ownerPanel ~= panel and ownerPanel.Parent and ownerPanel:IsA("GuiObject") then
+            self:SetRestoredVisible(ownerPanel, false)
+            local state = self._panelMotionStatesByPanel[ownerPanel]
+            if state then
+                self:_preparePanelMotion(ownerPanel)
+                state.OpenOptions = nil
+                CinematicUiGate:CancelDeferred(state)
+            end
             ownerPanel.Visible = false
         end
     end
@@ -889,6 +1024,14 @@ end
 
 function ModalUiController:Release(ownerId)
     local ownerKey = normalizeOwnerId(ownerId)
+    local owner = self._owners[ownerKey]
+    local state = owner and self._panelMotionStatesByPanel[owner.Panel]
+    if state and state.OpenOptions then
+        self:_preparePanelMotion(owner.Panel)
+        state.OpenOptions = nil
+        self:SetRestoredVisible(owner.Panel, false)
+        CinematicUiGate:CancelDeferred(state)
+    end
     self._owners[ownerKey] = nil
 
     if self:_hasOwners() then
@@ -907,6 +1050,10 @@ function ModalUiController:PlayPanelOpen(ownerId, panel, options)
     local motionOptions = type(options) == "table" and options or {}
     local state, serial = self:_preparePanelMotion(panel)
     local uiScale = ensureUiScale(panel)
+    state.OwnerId = ownerId
+    state.OpenOptions = motionOptions
+    state.CloseOptions = nil
+    state.RequestedVisible = true
 
     if motionOptions.Acquire ~= false then
         if motionOptions.Exclusive == true then
@@ -916,11 +1063,18 @@ function ModalUiController:PlayPanelOpen(ownerId, panel, options)
         end
     end
 
+    self:SetRestoredVisible(panel, true)
+    if self:_isCinematicBlocked() then
+        self:_suppressGuiObject(panel)
+        self:_deferPanelOpen(ownerId, panel, motionOptions, state, serial)
+        return true
+    end
     panel.Visible = true
     if not uiScale or motionOptions.Immediate == true then
         if uiScale then
             uiScale.Scale = 1
         end
+        state.OpenOptions = nil
         runMotionCallback(motionOptions.OnOpened)
         return true
     end
@@ -959,6 +1113,7 @@ function ModalUiController:PlayPanelOpen(ownerId, panel, options)
             uiScale.Scale = 1
         end
         table.clear(state.Tweens)
+        state.OpenOptions = nil
         runMotionCallback(motionOptions.OnOpened)
     end)
     return true
@@ -975,8 +1130,14 @@ function ModalUiController:PlayPanelClose(ownerId, panel, options)
     end
 
     local state, serial = self:_preparePanelMotion(panel)
+    state.OwnerId = ownerId
+    state.OpenOptions = nil
+    state.CloseOptions = motionOptions
+    state.RequestedVisible = false
+    CinematicUiGate:CancelDeferred(state)
+    self:SetRestoredVisible(panel, false)
     local uiScale = ensureUiScale(panel)
-    if not uiScale or motionOptions.Immediate == true or panel.Visible ~= true then
+    if not uiScale or motionOptions.Immediate == true or panel.Visible ~= true or self:_isCinematicBlocked() then
         if uiScale then
             uiScale.Scale = 1
         end
@@ -984,6 +1145,7 @@ function ModalUiController:PlayPanelClose(ownerId, panel, options)
         if motionOptions.Release ~= false then
             self:Release(ownerId)
         end
+        state.CloseOptions = nil
         runMotionCallback(motionOptions.OnClosed)
         return true
     end
@@ -1034,6 +1196,7 @@ function ModalUiController:PlayPanelClose(ownerId, panel, options)
         end
         panel.Visible = false
         table.clear(state.Tweens)
+        state.CloseOptions = nil
         if motionOptions.Release ~= false then
             self:Release(ownerId)
         end
@@ -1405,9 +1568,24 @@ function ModalUiController:IsAnyOpen()
 end
 
 function ModalUiController:SetRestoredVisible(guiObject, visible)
+    local state = guiObject and self._panelMotionStatesByPanel[guiObject]
+    if state then
+        state.RequestedVisible = visible == true
+    end
     if guiObject and self._hiddenOriginalVisibleByNode[guiObject] ~= nil then
         self._hiddenOriginalVisibleByNode[guiObject] = visible == true
     end
+end
+
+function ModalUiController:IsPanelRequestedVisible(guiObject)
+    if not guiObject then
+        return false
+    end
+    local originalVisible = self._hiddenOriginalVisibleByNode[guiObject]
+    if originalVisible ~= nil then
+        return originalVisible == true
+    end
+    return guiObject.Visible == true
 end
 
 function ModalUiController:ExcludeFromSuppression(ownerId, guiObject)

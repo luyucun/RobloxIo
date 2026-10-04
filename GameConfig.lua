@@ -415,14 +415,14 @@ GameConfig.FAVORITE_PROMPT = {
 
 GameConfig.ACTIVITY_RSVP_PROMPT = {
     Enabled = true,
-    EventId = "1761422313611461386",
+    EventId = "2372830586537640594",
     DelaySeconds = 180,
 }
 
 -- Presentation only: keep task progress, chest inventory and their services intact.
 GameConfig.UI_ENTRY_VISIBILITY = {
-    Tasks = false,
-    Chests = false,
+    Tasks = true,
+    Chests = true,
 }
 
 GameConfig.MONETIZATION = {
