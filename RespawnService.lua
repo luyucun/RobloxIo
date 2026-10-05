@@ -46,6 +46,7 @@ RespawnService._deathSerialByActorId = {}
 RespawnService._defeatRecordsByUserId = {}
 RespawnService._arenaRevivePendingByUserId = {}
 RespawnService._arenaReviveOptionsByUserId = {}
+RespawnService._freeRespawnOperationsByUserId = {}
 RespawnService._offlineRespawnSaveSnapshotByUserId = {}
 
 local function getActorId(actor)
@@ -187,6 +188,7 @@ function RespawnService:_setArenaRevivePending(player, options)
     if userId > 0 then
         self._arenaRevivePendingByUserId[userId] = {
             preserveDefeatRecord = type(options) == "table" and options.preserveDefeatRecord == true or false,
+            freeRespawnOperation = type(options) == "table" and options.freeRespawnOperation or nil,
         }
     end
 end
@@ -207,7 +209,7 @@ function RespawnService:ConsumeArenaReviveRequest(player)
 
     self._arenaReviveOptionsByUserId[userId] = self._arenaRevivePendingByUserId[userId]
     self._arenaRevivePendingByUserId[userId] = nil
-    return true
+    return true, self._arenaReviveOptionsByUserId[userId]
 end
 
 function RespawnService:_fireSkipSpawnCameraLook(player)
@@ -236,6 +238,18 @@ function RespawnService:_waitForUsableCharacter(player, timeoutSeconds)
 end
 
 function RespawnService:CompleteArenaRevive(player, options)
+    local userId = getUserId(player)
+    local reviveOptions = type(options) == "table" and options or self._arenaReviveOptionsByUserId[userId]
+    if type(reviveOptions) ~= "table" then
+        -- 已完成/取消的 CharacterAdded 延迟回调不能再启动一次入场。
+        return false
+    end
+    if type(reviveOptions) == "table" and reviveOptions.freeRespawnOperation then
+        return self:_completeFreeRespawnOperation(player, reviveOptions.freeRespawnOperation)
+    end
+    if self._freeRespawnOperationsByUserId[userId] then
+        return false
+    end
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._arenaService and self._playerStateService) then
         return false
     end
@@ -248,8 +262,6 @@ function RespawnService:CompleteArenaRevive(player, options)
         end
     end
 
-    local userId = getUserId(player)
-    local reviveOptions = type(options) == "table" and options or self._arenaReviveOptionsByUserId[userId]
     self._arenaReviveOptionsByUserId[userId] = nil
     if not (type(reviveOptions) == "table" and reviveOptions.preserveDefeatRecord == true) then
         self:_clearDefeatRecord(player)
@@ -271,6 +283,9 @@ end
 
 function RespawnService:_revivePlayerNow(player, options)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._arenaService and self._playerStateService) then
+        return false
+    end
+    if self._freeRespawnOperationsByUserId[getUserId(player)] then
         return false
     end
 
@@ -370,16 +385,152 @@ function RespawnService:_revivePlayerToLobby(player, defeatRecord)
     return false
 end
 
-function RespawnService:_tryGrantFreeRespawn(player, defeatRecord)
-    if not self:_revivePlayerToLobby(player, defeatRecord) then
-        return false
+function RespawnService:_isFreeRespawnOperationActive(player, operation)
+    return player.Parent ~= nil
+        and self._freeRespawnOperationsByUserId[getUserId(player)] == operation
+        and self:GetDefeatRecord(player) == operation.defeatRecord
+        and self:IsDefeatRecordForCurrentDeath(player, operation.defeatRecord)
+end
+
+function RespawnService:_reportFreeRespawnFailure(player)
+    local state = self._playerStateService:GetState(player)
+    state.Alive = false
+    state.IsInArena = false
+    if self._weaponService and self._weaponService.ClearPlayerWeapons then
+        self._weaponService:ClearPlayerWeapons(player)
     end
-    if self._gameAnalyticsService then
-        trackDefeatedFunnel(self._gameAnalyticsService, player, defeatRecord, "DefeatedFreeRespawn", 3, "FreeRespawnedToLobby", {
-            source = "defeated",
+    self._playerStateService:PushState(player)
+    if self._arenaTransitionFeedbackEvent then
+        self._arenaTransitionFeedbackEvent:FireClient(player, {
+            status = "Blocked",
+            spawnMode = "FreeRespawnFailed",
+            timestamp = os.clock(),
         })
     end
-    return true
+end
+
+function RespawnService:_finishFreeRespawnOperation(player, operation, succeeded)
+    if operation.finished then
+        return operation.succeeded == true
+    end
+    local isCurrent = self:_isFreeRespawnOperationActive(player, operation)
+    operation.finished = true
+    operation.succeeded = isCurrent and succeeded == true
+    local userId = getUserId(player)
+    if self._freeRespawnOperationsByUserId[userId] == operation then
+        self._freeRespawnOperationsByUserId[userId] = nil
+    end
+    for _, requests in ipairs({ self._arenaRevivePendingByUserId, self._arenaReviveOptionsByUserId }) do
+        local request = requests[userId]
+        if request and request.freeRespawnOperation == operation then
+            if requests ~= self._arenaRevivePendingByUserId or operation.succeeded or not isCurrent then
+                requests[userId] = nil
+            end
+            -- 未收到 CharacterAdded 的失败请求保留取消凭据，迟到事件不能被误判为大厅出生。
+            -- 新操作恢复进度前会清除旧凭据；已消费的回调由 MainServer 捕获对应 options。
+        end
+    end
+    if not isCurrent then
+        return false
+    end
+    if operation.succeeded then
+        self:_clearDefeatRecord(player)
+        trackDefeatedFunnel(self._gameAnalyticsService, player, operation.defeatRecord, "DefeatedFreeRespawn", 3, "FreeRespawnedSuccessfully", {
+            source = "defeated",
+        })
+        return true
+    end
+
+    -- 失败仍使用同一份死亡前快照；退出存档/再次点击都只减半一次。
+    self:_reportFreeRespawnFailure(player)
+    return false
+end
+
+function RespawnService:_completeFreeRespawnOperation(player, operation)
+    if operation.finished then
+        local userId = getUserId(player)
+        local pendingOptions = self._arenaReviveOptionsByUserId[userId]
+        if pendingOptions and pendingOptions.freeRespawnOperation == operation then
+            self._arenaReviveOptionsByUserId[userId] = nil
+        end
+        if not operation.succeeded and player.Parent and not self._freeRespawnOperationsByUserId[userId]
+            and self:GetDefeatRecord(player) == operation.defeatRecord
+            and self:IsDefeatRecordForCurrentDeath(player, operation.defeatRecord) then
+            -- 迟到 CharacterAdded 会将 Alive 改回 true；只回滚仍属于同一次死亡的取消操作。
+            self:_reportFreeRespawnFailure(player)
+        end
+        return operation.succeeded == true
+    end
+    if not self:_isFreeRespawnOperationActive(player, operation) then
+        return self:_finishFreeRespawnOperation(player, operation, false)
+    end
+    if operation.completing then
+        local deadline = os.clock() + 3
+        repeat
+            task.wait(0.05)
+        until operation.finished or os.clock() >= deadline or not self:_isFreeRespawnOperationActive(player, operation)
+        return operation.succeeded == true
+    end
+    operation.completing = true
+    local didComplete, enteredArena = pcall(function()
+        if not self:_waitForUsableCharacter(player, 3) or not self:_isFreeRespawnOperationActive(player, operation) then
+            return false
+        end
+        local state = self._playerStateService:GetState(player)
+        state.Alive = true
+        state.IsInArena = false
+        state.Buffs = {}
+        -- RestoreCombatProgress / OnCharacterAdded 已合并属性与事件加成，不能再用裸等级血量覆盖。
+        state.CurrentHealth = state.MaxHealth
+        self._playerStateService:SyncCharacterState(player)
+        self._playerStateService:UpdateOverheadHealthBar(player)
+        self._playerStateService:PushState(player)
+        return self._arenaService:TryEnterArena(player, {
+            IgnoreDebounce = true,
+            IsRevive = true,
+        }) == true
+    end)
+    if not didComplete then
+        warn("[RespawnService] 免费复活入场失败: " .. tostring(enteredArena))
+    end
+    return self:_finishFreeRespawnOperation(player, operation, didComplete and enteredArena)
+end
+
+function RespawnService:_tryGrantFreeRespawn(player, defeatRecord)
+    if not (ActorUtils.IsPlayer(player) and player.Parent and self._arenaService and self._playerStateService
+        and self:GetDefeatRecord(player) == defeatRecord and self:IsCurrentDefeatRecord(player, defeatRecord)) then
+        return false
+    end
+    local userId = getUserId(player)
+    if self._freeRespawnOperationsByUserId[userId] then
+        return false
+    end
+    local halfLevelSnapshot = buildHalfLevelRespawnSnapshot(defeatRecord.combatSnapshot)
+    if not halfLevelSnapshot then
+        return false
+    end
+    local operation = { defeatRecord = defeatRecord, finished = false }
+    self._freeRespawnOperationsByUserId[userId] = operation
+    local didRevive, revived = pcall(function()
+        local humanoid = ActorUtils.GetHumanoid(player)
+        local rootPart = ActorUtils.GetRootPart(player)
+        local needsCharacter = not (humanoid and rootPart and humanoid.Health > 0)
+        -- 这里只恢复场外进度，不传送大厅；LoadCharacter yield 前已是正确半等级。
+        if not self:_restoreLobbyProgress(player, halfLevelSnapshot) or not self:_isFreeRespawnOperationActive(player, operation) then
+            return false
+        end
+        local reviveOptions = { preserveDefeatRecord = true, freeRespawnOperation = operation }
+        if needsCharacter then
+            self:_setArenaRevivePending(player, reviveOptions)
+            self:_fireSkipSpawnCameraLook(player)
+            player:LoadCharacter()
+        end
+        return self:CompleteArenaRevive(player, reviveOptions)
+    end)
+    if not didRevive then
+        warn("[RespawnService] 免费复活失败: " .. tostring(revived))
+    end
+    return self:_finishFreeRespawnOperation(player, operation, didRevive and revived)
 end
 
 function RespawnService:_captureCombatSnapshot(actor, deathSerial)
@@ -470,7 +621,10 @@ function RespawnService:HandlePlayerDeath(actor)
 end
 
 function RespawnService:_onRequestDefeatedAction(player, action)
-    if not (player and player.Parent) then
+    if not (player and player.Parent) or type(action) ~= "string" then
+        return
+    end
+    if self._freeRespawnOperationsByUserId[getUserId(player)] then
         return
     end
 
@@ -559,6 +713,10 @@ end
 
 function RespawnService:GrantDefeatedRevivePurchase(player)
     if not (ActorUtils.IsPlayer(player) and player.Parent and self._playerStateService) then
+        return false
+    end
+    if self._freeRespawnOperationsByUserId[getUserId(player)] then
+        -- 不吞收据：免费复活进行中由购买服务稍后重试发货。
         return false
     end
 
@@ -663,6 +821,7 @@ function RespawnService:Init(dependencies)
     self._defeatRecordsByUserId = {}
     self._arenaRevivePendingByUserId = {}
     self._arenaReviveOptionsByUserId = {}
+    self._freeRespawnOperationsByUserId = {}
     self._offlineRespawnSaveSnapshotByUserId = {}
 
     if self._requestDefeatedActionConnection then
@@ -684,6 +843,9 @@ function RespawnService:OnPlayerRemoving(player)
     end
     self:_clearDefeatRecord(player)
     self:_clearArenaRevivePending(player)
+    if userId > 0 then
+        self._freeRespawnOperationsByUserId[userId] = nil
+    end
     if self._revengeService and self._revengeService.OnPlayerRemoving then
         self._revengeService:OnPlayerRemoving(player)
     end

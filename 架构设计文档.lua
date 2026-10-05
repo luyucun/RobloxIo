@@ -508,4 +508,32 @@ levelWeaponSkinAutoUpgrade、equippedSkinId映射为兵器库完整状态；nil�
 特殊皮肤装备期间自动开关只保存偏好，不钉最高档；摘要显示Special Skin，等级卡片仍可主动装备。
 卸下特殊皮肤且自动关闭/无手选时钉最高解锁档，保持固定模式；读档/状态归一化清除旧的双来源手选。
 解锁、外观来源、最高档固定和互斥全部由PlayerStateService决定；客户端不计算或写入装备结果。
+V6.29 被击败面板免费复活与大厅分流 / 2026-10-05（覆盖V6.5第4/6条的FreeRespawn目的地）
+RequestDefeatedAction.FreeRespawn由RespawnService按原死亡快照恢复半等级，使用既有ArenaRevive
+角色重建标记与CompleteArenaRevive -> TryEnterArena(IsRevive=true)直接入场；Lobby/Close仍回大厅。
+LoadCharacter前恢复半等级进度防退出存档掉Lv1；同次死亡复活进行中拒绝重复及交叉请求，
+仅成功入场后清理快照与记录FreeRespawnedSuccessfully；失败保留原快照并恢复可重试的死亡状态。
+ArenaTransitionFeedback沿用status=Blocked，新增spawnMode=FreeRespawnFailed供DefeatedController重开窗口。
+客户端绿色FreeRespawn与黄色Lobby两处Level标签同取DeathFeedback.freeRespawnLevel；
+正式StarterGui模板绿色按钮大、黄色按钮小，Lobby补第二行With Lv.XX；客户端只绑节点/刷新文案。
+无新Remote、持久化字段或数值变化；付费保级/复仇语义保持。
+V6.31 Armory 按需创建与局部刷新 / 2026-10-05
+StarterGui.Main.LevelWeaponSkins 仅保留原窗口结构及隐藏 LevelWeaponTemplate；
+LevelWeaponSkinController 在首次打开窗口时从正式模板克隆目录卡片，每卡只绑定一次装备事件，后续开关复用。
+状态接收与展示分离：关闭期间只记录最新服务端状态，打开时与上次已展示状态比较；
+相同专用/通用/反馈状态不重复渲染，装备只更新原/新选中卡，解锁仅更新所有权变化卡，摘要按字段刷新。
+窗口替换清理旧连接、卡片与展示快照引用，保持待打开意图；新窗口重新按需生成。正式模板可继续在 Studio 手调。
+不创建新 Remote/存档字段，不更改服务端装备校验与解锁规则，不引入持续逐帧轮询或虚拟列表。
+V6.32 Boneblade 转盘皮肤 / 2026-10-05
+数值源表武器数值新增10010/Skin010/Boneblade及常规图标；皮肤表新增10010转盘渠道，
+可选字段CustomizeIconImage仅供Customize列表展示，IsRetired用于停止获取但保留旧拥有记录。
+导表工具按皮肤表表头生成可选字段，转盘规划将Gift3的SkinId切到10010并从武器元数据生成奖品名称。
+SkinController在列表展示时优先使用CustomizeIconImage；普通外观/中奖图标继续使用IconImage。
+已退役且未拥有的皮肤不进入列表，已拥有仍走原Equip/Unequip；SkinService拒绝退役皮肤的新购买入口，
+GrantSkin与OwnedSkins归一化仍识别10009，历史存档不迁移也不丢弃。
+WheelService沿现有PendingWeaponSkin兼容分支真实发放10010，结果pending=false，重复判定按10010，
+不把拥有10009当成拥有10010。权重0.5/100、Gift3/30度、5000钻石补偿保持。
+正式StarterGui.Main.WheelBg与ReplicatedStorage.UI的中奖皮肤图由EnsureWheelSkinAssets核对更新；
+场景LuckyWheel为通用彩色分块模型，本次检查未发现独立皮肤图，不替换场景网格。
+模型使用用户已放置的ReplicatedStorage.Model.Weapon.Skin010，不新增Remote、请求参数或存档字段。
 ]]

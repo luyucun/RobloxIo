@@ -7,6 +7,7 @@ local HttpService = game:GetService("HttpService")
 local sourceOverrides = nil -- Local-source runner may replace this declaration.
 local passed, failed, warnings = {}, {}, {}
 local clockNow = 100
+local currentPlayersByUserId = {}
 local function forbidden()
     error("Regression fixture attempted an external side effect")
 end
@@ -24,7 +25,13 @@ local isolated = {}
 local fakeGame = {}
 function fakeGame:GetService(name)
     if name == "Players" then
-        return { GetPlayers = function() return {} end, GetPlayerByUserId = function() return nil end }
+        return {
+            GetPlayers = function() return {} end,
+            GetPlayerByUserId = function(_, userId)
+                local player = currentPlayersByUserId[userId]
+                return player and player.Parent and player or nil
+            end,
+        }
     elseif name == "DataStoreService" or name == "MarketplaceService" then
         return setmetatable({}, { __index = function() return forbidden end })
     end
@@ -100,6 +107,8 @@ local function cloneService(module)
 end
 local function fixture(score)
     local f = { player = { kind = "player", UserId = 17001, Name = "RegressionPlayer", Parent = true }, feedback = {}, saves = 0, pushes = 0 }
+    -- Match the post-load residency check, including replacement on rejoin.
+    currentPlayersByUserId[f.player.UserId] = f.player
     local ps = cloneService(PlayerState)
     f.ps = ps
     ps._syncLeaderstats = function() end

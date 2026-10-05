@@ -3,8 +3,8 @@
 脚本文件: LevelWeaponSkinController.lua
 脚本类型: ModuleScript
 Studio放置路径: StarterPlayer/StarterPlayerScripts/Controllers/LevelWeaponSkinController
-说明: V6.27 独立等级武器外观窗口（Main.LevelWeaponSkins）。
-绑定静态模板、按服务端 LevelWeaponSkinStateSync 渲染三态卡片；仅发送装备/复原/自动开关意图。
+说明: V6.31 独立等级武器外观窗口（Main.LevelWeaponSkins）。
+首次显示时克隆正式卡片模板，后续复用并按服务端状态增量刷新；仅发送装备/复原/自动开关意图。
 正式HUD入口：Main.Left.Armory（V6.27.1）；Studio GM /levelskin 玩家属性入口保留。
 旧静态入口 Main.Left.LevelWeaponSkinsButton 保持隐藏（V6.26 模板节点，未接线）。
 ]]
@@ -39,7 +39,7 @@ local WeaponTierConfig = requireSharedModule("WeaponTierConfig")
 local controllersRoot = script.Parent:FindFirstChild("Controllers") or script.Parent
 local ModalUiController = require(controllersRoot:WaitForChild("ModalUiController"))
 
-local LOCKED_ICON_COLOR = Color3.fromRGB(95, 95, 95)
+local LOCKED_ICON_COLOR = Color3.new(0, 0, 0)
 local LOCKED_BUTTON_BG = Color3.fromRGB(110, 110, 110)
 local LOCKED_BUTTON_STROKE = Color3.fromRGB(75, 75, 75)
 local LOCKED_TEXT_STROKE = Color3.fromRGB(65, 65, 65)
@@ -56,6 +56,8 @@ LevelWeaponSkinController._content = nil
 LevelWeaponSkinController._scroll = nil
 LevelWeaponSkinController._template = nil
 LevelWeaponSkinController._cardsByTierIndex = {}
+LevelWeaponSkinController._cardsReady = false
+LevelWeaponSkinController._renderedState = nil
 LevelWeaponSkinController._styleRefs = nil
 LevelWeaponSkinController._connections = {}
 LevelWeaponSkinController._connectionsByWindow = {}
@@ -101,7 +103,54 @@ local function setGuiButtonInteractable(button, enabled)
     button.AutoButtonColor = enabled
 end
 
-function LevelWeaponSkinController:_applyState(payload, skipUnchangedRender)
+local function statesMatch(left, right)
+    return left ~= nil and right ~= nil
+        and left.selectedTierIndex == right.selectedTierIndex
+        and left.equippedSkinId == right.equippedSkinId
+        and left.autoUpgrade == right.autoUpgrade
+        and left.highestLevelReached == right.highestLevelReached
+        and left.maxUnlockedTierIndex == right.maxUnlockedTierIndex
+end
+
+local function isLevelLookActive(state)
+    return state ~= nil and state.selectedTierIndex == nil
+        and state.equippedSkinId == nil and state.autoUpgrade == true
+end
+
+function LevelWeaponSkinController:_renderLevelLookButton()
+    local button = self._content and self._content:FindFirstChild("UseLevelLookButton") or nil
+    if not button then
+        return
+    end
+    local ready = self._state ~= nil and self._requestEquipEvent ~= nil
+    local active = ready and isLevelLookActive(self._state)
+    local textLabel = button:FindFirstChild("Text")
+    local label = not ready and "Loading..." or (active and "✓ Level Look" or "Use Level Look")
+    if textLabel and textLabel.Text ~= label then
+        textLabel.Text = label
+    end
+    setGuiButtonInteractable(button, ready and not active)
+    local background = button:FindFirstChild("ImageLabel")
+    local green = background and background:FindFirstChild("ButtonGreen") or nil
+    local yellow = background and background:FindFirstChild("ButtonYellow") or nil
+    if green and green:IsA("UIGradient") then
+        green.Enabled = active
+    end
+    if yellow and yellow:IsA("UIGradient") then
+        yellow.Enabled = not active
+    end
+end
+
+function LevelWeaponSkinController:_onUseLevelLookActivated()
+    -- A reset is meaningful only after the server confirms a custom appearance.
+    -- Avoid rebuilding weapons / dirtying the save when already using level look.
+    if not self._state or not self._requestEquipEvent or isLevelLookActive(self._state) then
+        return
+    end
+    self:_requestEquip("UseLevelLook")
+end
+
+function LevelWeaponSkinController:_applyState(payload)
     if type(payload) ~= "table" then
         return
     end
@@ -122,12 +171,9 @@ function LevelWeaponSkinController:_applyState(payload, skipUnchangedRender)
     }
     local previous = self._state
     self._state = state
-    if skipUnchangedRender and previous
-        and previous.selectedTierIndex == state.selectedTierIndex
-        and previous.equippedSkinId == state.equippedSkinId
-        and previous.autoUpgrade == state.autoUpgrade
-        and previous.highestLevelReached == state.highestLevelReached
-        and previous.maxUnlockedTierIndex == state.maxUnlockedTierIndex then
+    -- All three state sources share this dedupe, including the response to opening.
+    -- The latest timestamp is retained even when no displayed value changed.
+    if statesMatch(previous, state) then
         return
     end
     self:_render()
@@ -149,7 +195,7 @@ function LevelWeaponSkinController:_applyPlayerState(payload)
         highestLevelReached = highest,
         maxUnlockedTierIndex = loadout and loadout.TierIndex or 1,
         timestamp = payload.timestamp,
-    }, true)
+    })
 end
 
 function LevelWeaponSkinController:_requestState()
@@ -169,8 +215,10 @@ function LevelWeaponSkinController:_setOpen(isOpen)
     if self._isWindowOpen then
         self:_requestState()
         if self._window then
-            self:_render()
             ModalUiController:PlayPanelOpen(WINDOW_OWNER_ID, self._window)
+            -- Modal may defer opening during a cinematic. Its Visible signal will
+            -- flush the latest state when it actually makes the panel visible.
+            self:_render()
         end
         return
     end
@@ -276,7 +324,7 @@ function LevelWeaponSkinController:_configureCardNode(card, entry)
     card:SetAttribute("UnlockLevel", entry.unlockLevel)
     local nameLabel = card:FindFirstChild("Name")
     if nameLabel then
-        nameLabel.Text = entry.name
+        nameLabel.Text = "???"
     end
     local icon = card:FindFirstChild("ItemTemplate") and card.ItemTemplate:FindFirstChild("ItemIcon") or nil
     if icon then
@@ -289,18 +337,37 @@ function LevelWeaponSkinController:_configureCardNode(card, entry)
 end
 
 function LevelWeaponSkinController:_ensureCards()
+    if self._cardsReady then
+        return
+    end
     self._cardsByTierIndex = {}
+    local bindSerial = self._bindSerial
     for index, entry in ipairs(self._catalog) do
         if entry then
             local card = self._scroll:FindFirstChild("LevelWeapon_T" .. tostring(index))
             if not card and self._template then
                 card = self._template:Clone()
-                self:_configureCardNode(card, entry)
                 card.Parent = self._scroll
+            end
+            if card then
+                self:_configureCardNode(card, entry)
+                local equipButton = card:FindFirstChild("EquipButton")
+                if equipButton then
+                    table.insert(self._connectionsByWindow, equipButton.Activated:Connect(function()
+                        if bindSerial ~= self._bindSerial then
+                            return
+                        end
+                        local highest = self._state and self._state.highestLevelReached or 1
+                        if entry.unlockLevel <= highest then
+                            self:_requestEquip(entry.tierIndex)
+                        end
+                    end))
+                end
             end
             self._cardsByTierIndex[index] = card or nil
         end
     end
+    self._cardsReady = true
 end
 
 function LevelWeaponSkinController:_renderCard(card, entry, highestLevel, selectedTierIndex)
@@ -308,16 +375,12 @@ function LevelWeaponSkinController:_renderCard(card, entry, highestLevel, select
     local selected = selectedTierIndex == entry.tierIndex
     card:SetAttribute("PreviewState", selected and "Selected" or (owned and "Owned" or "Locked"))
     local nameLabel = card:FindFirstChild("Name")
-    if nameLabel then
-        nameLabel.Text = entry.name
-    end
-    local unlockLabel = card:FindFirstChild("UnlockLevelText")
-    if unlockLabel then
-        unlockLabel.Text = "Unlock at Lv. " .. tostring(entry.unlockLevel)
+    local displayName = owned and entry.name or "???"
+    if nameLabel and nameLabel.Text ~= displayName then
+        nameLabel.Text = displayName
     end
     local icon = card:FindFirstChild("ItemTemplate") and card.ItemTemplate:FindFirstChild("ItemIcon") or nil
     if icon then
-        icon.Image = entry.icon
         icon.ImageColor3 = owned and (self._styleRefs and self._styleRefs.iconColor or icon.ImageColor3) or LOCKED_ICON_COLOR
     end
     local equipButton = card:FindFirstChild("EquipButton")
@@ -331,6 +394,10 @@ function LevelWeaponSkinController:_renderCard(card, entry, highestLevel, select
     if badge then
         badge.Visible = selected
     end
+    local highlight = card:FindFirstChild("SelectionHighlight")
+    if highlight then
+        highlight.Visible = selected
+    end
     local stroke = card:FindFirstChild("SelectionStroke")
     if stroke then
         stroke.Enabled = selected
@@ -339,48 +406,81 @@ function LevelWeaponSkinController:_renderCard(card, entry, highestLevel, select
 end
 
 function LevelWeaponSkinController:_render()
-    if not (self._window and self._content and self._catalog) then
+    if not (self._isWindowOpen and self._window and self._window.Parent and self._window.Visible
+        and self._content and self._catalog) then
         return
     end
+    self:_ensureCards()
+    -- Readiness can change without changing the normalized appearance snapshot.
+    self:_renderLevelLookButton()
     local state = self._state or {
         selectedTierIndex = nil,
         autoUpgrade = true,
         highestLevelReached = 1,
+        maxUnlockedTierIndex = 1,
     }
+    local previous = self._renderedState
+    if statesMatch(previous, state) then
+        return
+    end
     local highest = state.highestLevelReached
-    local unlockedCount = 0
-    for _, entry in ipairs(self._catalog) do
-        if entry and entry.unlockLevel <= highest then
-            unlockedCount += 1
+    local dirtyCards = {}
+    if not previous or previous.highestLevelReached ~= highest then
+        local unlockedCount = 0
+        for index, entry in ipairs(self._catalog) do
+            if entry then
+                local owned = entry.unlockLevel <= highest
+                if owned then
+                    unlockedCount += 1
+                end
+                if not previous or owned ~= (entry.unlockLevel <= previous.highestLevelReached) then
+                    dirtyCards[index] = true
+                end
+            end
+        end
+        self._content:SetAttribute("PreviewHighestLevel", highest)
+        local progress = self._content:FindFirstChild("ProgressSummary")
+        if progress then
+            progress.Text = string.format("Best Lv. %d · %d/%d unlocked", highest, unlockedCount, #self._catalog)
         end
     end
 
-    self._content:SetAttribute("PreviewHighestLevel", highest)
-    self._content:SetAttribute("PreviewSelectedTierIndex", state.selectedTierIndex or 0)
+    if not previous or previous.selectedTierIndex ~= state.selectedTierIndex then
+        self._content:SetAttribute("PreviewSelectedTierIndex", state.selectedTierIndex or 0)
+        if previous and previous.selectedTierIndex then
+            dirtyCards[previous.selectedTierIndex] = true
+        end
+        if state.selectedTierIndex then
+            dirtyCards[state.selectedTierIndex] = true
+        end
+    end
+    if not previous or previous.selectedTierIndex ~= state.selectedTierIndex
+        or previous.equippedSkinId ~= state.equippedSkinId then
+        local selectedSummary = self._content:FindFirstChild("SelectedSkinSummary")
+        if selectedSummary then
+            local selectedEntry = state.selectedTierIndex and self._catalog[state.selectedTierIndex] or nil
+            selectedSummary.Text = state.equippedSkinId and "Chosen: Special Skin"
+                or (selectedEntry and ("Chosen: " .. selectedEntry.name) or "Chosen: Level Look")
+        end
+    end
+    if not previous or previous.autoUpgrade ~= state.autoUpgrade then
+        local autoRow = self._content:FindFirstChild("AutoUpgradeRow")
+        local checkbox = autoRow and autoRow:FindFirstChild("CheckboxButton") or nil
+        local checkmark = checkbox and checkbox:FindFirstChild("Checkmark") or nil
+        if checkmark then
+            checkmark.Visible = state.autoUpgrade == true
+        end
+    end
 
-    local progress = self._content:FindFirstChild("ProgressSummary")
-    if progress then
-        progress.Text = string.format("Best Lv. %d · %d/%d unlocked", highest, unlockedCount, #self._catalog)
-    end
-    local selectedSummary = self._content:FindFirstChild("SelectedSkinSummary")
-    if selectedSummary then
-        local selectedEntry = state.selectedTierIndex and self._catalog[state.selectedTierIndex] or nil
-        selectedSummary.Text = state.equippedSkinId and "Chosen: Special Skin"
-            or (selectedEntry and ("Chosen: " .. selectedEntry.name) or "Chosen: Level Look")
-    end
-    local autoRow = self._content:FindFirstChild("AutoUpgradeRow")
-    local checkbox = autoRow and autoRow:FindFirstChild("CheckboxButton") or nil
-    local checkmark = checkbox and checkbox:FindFirstChild("Checkmark") or nil
-    if checkmark then
-        checkmark.Visible = state.autoUpgrade == true
-    end
-
-    for index, card in pairs(self._cardsByTierIndex) do
+    for index in pairs(dirtyCards) do
+        local card = self._cardsByTierIndex[index]
         local entry = self._catalog[index]
         if card and entry and card.Parent then
             self:_renderCard(card, entry, highest, state.selectedTierIndex)
         end
     end
+    -- _applyState replaces normalized snapshots; never mutate this after rendering.
+    self._renderedState = state
 end
 
 function LevelWeaponSkinController:_bindWindow(window)
@@ -390,6 +490,14 @@ function LevelWeaponSkinController:_bindWindow(window)
     self._bindSerial += 1
     local bindSerial = self._bindSerial
     disconnectAll(self._connectionsByWindow)
+    self._window = nil
+    self._content = nil
+    self._scroll = nil
+    self._template = nil
+    self._styleRefs = nil
+    self._cardsByTierIndex = {}
+    self._cardsReady = false
+    self._renderedState = nil
 
     local content = window:FindFirstChild("Content")
     local scroll = content and content:FindFirstChild("ScrollingFrame") or nil
@@ -404,7 +512,13 @@ function LevelWeaponSkinController:_bindWindow(window)
     self._scroll = scroll
     self._template = template
     self:_captureTemplateStyle(template)
-    self:_ensureCards()
+    window.Visible = false
+
+    table.insert(self._connectionsByWindow, window:GetPropertyChangedSignal("Visible"):Connect(function()
+        if bindSerial == self._bindSerial and window.Visible then
+            self:_render()
+        end
+    end))
 
     local closeButton = window:FindFirstChild("Title") and window.Title:FindFirstChild("CloseButton") or nil
     setGuiButtonInteractable(closeButton, true)
@@ -415,10 +529,10 @@ function LevelWeaponSkinController:_bindWindow(window)
     end
 
     local useLevelLookButton = content:FindFirstChild("UseLevelLookButton")
-    setGuiButtonInteractable(useLevelLookButton, true)
+    self:_renderLevelLookButton()
     if useLevelLookButton then
         table.insert(self._connectionsByWindow, useLevelLookButton.Activated:Connect(function()
-            self:_requestEquip("UseLevelLook")
+            self:_onUseLevelLookActivated()
         end))
     end
 
@@ -432,31 +546,11 @@ function LevelWeaponSkinController:_bindWindow(window)
         end))
     end
 
-    for index, card in pairs(self._cardsByTierIndex) do
-        local entry = self._catalog and self._catalog[index] or nil
-        if card and entry then
-            local equipButton = card:FindFirstChild("EquipButton")
-            if equipButton then
-                table.insert(self._connectionsByWindow, equipButton.Activated:Connect(function()
-                    if bindSerial ~= self._bindSerial then
-                        return
-                    end
-                    local highest = self._state and self._state.highestLevelReached or 1
-                    if entry.unlockLevel <= highest then
-                        self:_requestEquip(entry.tierIndex)
-                    end
-                end))
-            end
-        end
-    end
-
-    window.Visible = false
-    self:_render()
     -- An open request (Armory click / GM attribute) may have arrived before the window
     -- existed; honor it now that the window is bound.
     if self._isWindowOpen then
-        self:_render()
         ModalUiController:PlayPanelOpen(WINDOW_OWNER_ID, window)
+        self:_render()
     end
 end
 
@@ -538,6 +632,7 @@ function LevelWeaponSkinController:_bindRemotes()
             end))
         end
         self:_requestState()
+        self:_render()
     end)
 end
 

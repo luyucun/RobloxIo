@@ -597,7 +597,9 @@ function SkinService:_handlePurchaseRequest(player, skinId, payload)
     end
 
     self:_trackSkinFunnel(player, 2, "SkinPurchaseClicked", skin, type(payload) == "table" and payload.source or "skin")
-    if SkinConfig.IsDiamondSkin(skin) then
+    if skin.IsRetired == true then
+        self:_fireFeedback(player, "Failed", "Unavailable", skin)
+    elseif SkinConfig.IsDiamondSkin(skin) then
         self:_tryDiamondPurchase(player, skin)
     elseif SkinConfig.IsGamePassSkin(skin) then
         self:_tryGamePassGrant(player, skin)

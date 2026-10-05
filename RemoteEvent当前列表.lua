@@ -436,7 +436,8 @@ V6.5 保留兼容注册，不再发送 Show，不再驱动确认弹框。旧 Joi
 字段：
 - action：`Join` 或 `Cancel`
 
-V6.5 RequestDefeatedAction：字段不变。FreeRespawn、Lobby、Close 均半等级回大厅；RevivePurchase、Revenge 目的地与收据规则不变。
+V6.29 RequestDefeatedAction：字段仍为action字符串，名称/数量不变。FreeRespawn半等级直接回场地（覆盖V6.5的回大厅规则）；Lobby、Close半等级回大厅；RevivePurchase、Revenge目的地与收据规则不变。同次死亡免费复活处理中拒绝重复及交叉请求。
+V6.29 ArenaTransitionFeedback：status=Blocked新增spawnMode=FreeRespawnFailed，表示免费场内复活失败，客户端重开Defeated供重试；LobbyReviveFailed语义不变。DeathFeedback.freeRespawnLevel同时用于绿色和黄色按钮的With Lv.XX展示，客户端不上传等级。
 
 九、ExperienceFeedback（S -> C）
 发送方：`ExperienceOrbService:_fireExperienceFeedback`

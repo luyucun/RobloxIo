@@ -368,7 +368,7 @@ local success, failure = pcall(function()
     local claimedRowColor = Color3.fromRGB(96, 128, 168)
     local mutedTextColor = Color3.fromRGB(214, 224, 238)
     check("V6.16 template nodes are installed", function()
-        assert(panelTemplate:GetAttribute("TaskUiStyleVersion") == 5, "TaskUiStyleVersion is not 5")
+        assert((tonumber(panelTemplate:GetAttribute("TaskUiStyleVersion")) or 0) >= 6, "Task UI typography migration v6 is not installed")
         for _, path in ipairs({
             "Tabs/DailyTab/Badge/Count",
             "Tabs/WeeklyTab/Badge/Count",

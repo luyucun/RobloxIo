@@ -400,9 +400,11 @@ function DefeatedController:_updateKillerInfo(payload)
         self._freeRespawnLevelDefaultText = freeRespawnLevel.Text
     end
     if freeRespawnLevel then
-        setText(freeRespawnLevel, string.format("Lobby at Lv.%d", freeRespawnReviveLevel))
+        setText(freeRespawnLevel, string.format("With Lv.%d", freeRespawnReviveLevel))
     end
-    setText(findNested(self._defeatedRoot, "FreeRespawn/Name"), "Free to Lobby")
+    setText(findNested(self._defeatedRoot, "FreeRespawn/Name"), "Free Respawn")
+    setText(findNested(self._defeatedRoot, "Lobby/Name"), "Free to Lobby")
+    setText(findNested(self._defeatedRoot, "Lobby/Level"), string.format("With Lv.%d", freeRespawnReviveLevel))
     if dailyFreeLabel and dailyFreeLabel:IsA("GuiObject") then
         dailyFreeLabel.Visible = false
     end
@@ -649,7 +651,8 @@ function DefeatedController:Init(dependencies)
             self:_setOpen(false, CinematicUiGate:IsBlocked())
             return
         end
-        if type(payload) == "table" and payload.status == "Blocked" and payload.spawnMode == "LobbyReviveFailed" then
+        if type(payload) == "table" and payload.status == "Blocked"
+            and (payload.spawnMode == "LobbyReviveFailed" or payload.spawnMode == "FreeRespawnFailed") then
             -- 服务端仍保留同一次死亡记录，允许再次点击，不再次扣减等级。
             self._isDead = true
             self:_setOpen(true)

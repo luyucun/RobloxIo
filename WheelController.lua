@@ -643,7 +643,7 @@ function WheelController:_presentWheelClaim(reward)
         resultNotice.Visible = duplicate
         resultNotice.ZIndex = self._wheelClaim.ZIndex + 2
         if duplicate then
-            setText(resultNotice, "Butter already owned" .. string.char(10) .. "Converted to " .. formatAmount(reward.awardedAmount) .. " Diamonds")
+            setText(resultNotice, tostring(reward.label or "Skin") .. " already owned" .. string.char(10) .. "Converted to " .. formatAmount(reward.awardedAmount) .. " Diamonds")
         end
     end
 
@@ -1076,7 +1076,7 @@ function WheelController:_bindUi(silent)
         for _, reward in ipairs(WheelConfig.Rewards) do
             local duplicateDiamonds = math.floor(tonumber(reward.DuplicateDiamonds) or 0)
             if duplicateDiamonds > 0 then
-                setText(duplicateNotice, "Butter duplicate: +" .. formatAmount(duplicateDiamonds) .. " Diamonds")
+                setText(duplicateNotice, tostring(reward.Label or "Skin") .. " duplicate: +" .. formatAmount(duplicateDiamonds) .. " Diamonds")
                 duplicateNotice.Visible = true
                 break
             end

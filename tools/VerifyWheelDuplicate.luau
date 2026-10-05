@@ -10,7 +10,7 @@ local deferred = {}
 local detached = Instance.new("Folder")
 local created = { detached }
 local fakeActors = { IsPlayer = function(player) return type(player) == "table" and player.UserId == 17 end }
-local fakeModal = { Acquire = function() end, Release = function() end }
+local fakeModal = { Acquire = function() end, Release = function() end, SetRestoredVisible = function() end }
 local function loadIsolated(instance, config)
     local source = sourceOverrides and sourceOverrides[instance.Name] or instance.Source
     local chunk, err = loadstring(source, "=" .. instance.Name)
@@ -31,6 +31,9 @@ local function loadIsolated(instance, config)
             if module.Name == "ActorUtils" then return fakeActors end
             if module.Name == "WheelConfig" and config then return config end
             if module.Name == "ModalUiController" then return fakeModal end
+            if module.Name == "CinematicUiGate" then
+                return { IsBlocked = function() return false end, Defer = function(_, _, callback) callback() end }
+            end
             if module.Name == "TouchRegionGate" then return {} end
             return require(module)
         end,
@@ -67,7 +70,7 @@ local function fixture(options)
     f.wheel._playerStateService = {
         GetState = function() return f.state end,
         OwnsSkin = function(_, _, skinId)
-            assert(skinId == 10009)
+            assert(skinId == 10010)
             return f.state.owned
         end,
         TryConsumeWheelSpin = function()
@@ -123,7 +126,7 @@ end
 local success, failure = xpcall(function()
     check("Workbook reward keeps 0.5% skin chance, original slot/rotation and 5,000 compensation", function()
         local skin = config.GetRewardBySlot(3)
-        assert(skin.SkinId == 10009 and skin.Weight == 0.5 and config.TotalWeight == 100)
+        assert(skin.SkinId == 10010 and skin.Label == "Boneblade" and skin.Weight == 0.5 and config.TotalWeight == 100)
         assert(skin.TargetRotation == 30 and skin.GiftName == "Gift3" and skin.DuplicateDiamonds == 5000)
         assert(config.GetRewardBySlot(5).Amount == 200)
     end)
@@ -231,7 +234,7 @@ local success, failure = xpcall(function()
         local item = c._wheelClaimGeneratedItem
         assert(item and item.Name == "Gift5" and item.Image == "rbxassetid://89590364394067")
         assert(item:FindFirstChild("Num", true).Text == "+5,000")
-        assert(c._wheelClaimResultNotice.Visible and c._wheelClaimResultNotice.Text == "Butter already owned\nConverted to 5,000 Diamonds")
+        assert(c._wheelClaimResultNotice.Visible and c._wheelClaimResultNotice.Text == "Boneblade already owned\nConverted to 5,000 Diamonds")
         assert(f.state.Diamonds == 5100 and f.diamondGrants == 1, "Client display may not grant a second reward")
         c:_hideWheelClaim()
         assert(not c._wheelClaim.Visible and not c._wheelClaimResultNotice.Visible)
@@ -240,15 +243,20 @@ local success, failure = xpcall(function()
         local c = clientFixture()
         c:_showWheelClaim({ giftName = "Gift3", duplicateCompensation = true, awardedRewardType = "Diamonds", awardedAmount = 5000, awardedGiftName = "Gift5" })
         c:_showWheelClaim({ giftName = "Gift5", amount = 200 })
+        assert(c._wheelClaimResultNotice.Visible, "Queued reward must not replace an active claim")
+        c:_hideWheelClaim()
         assert(not c._wheelClaimResultNotice.Visible and c._wheelClaimGeneratedItem.Num.Text == "+200")
         c:_showWheelClaim({ giftName = "Gift3", awardedRewardType = "Skin", awardedGiftName = "Gift3" })
+        c:_hideWheelClaim()
         assert(c._wheelClaimGeneratedItem.Name == "Gift3" and not c._wheelClaimResultNotice.Visible)
+        assert(c._wheelClaimGeneratedItem.Image == "rbxassetid://134985274966114")
     end)
     check("Fixed rule notice preserves the original skin probability and stays readable during spin", function()
         local gift = game.StarterGui.Main.WheelBg.WheelColorBg.Gift3
         local notice = game.StarterGui.Main.WheelBg.DuplicateNotice
         assert(gift.Probality.Text == "0.5%")
-        assert(notice:IsA("TextLabel") and notice.Text == "Butter duplicate: +5,000 Diamonds")
+        assert(gift.Image == "rbxassetid://134985274966114")
+        assert(notice:IsA("TextLabel") and notice.Text == "Boneblade duplicate: +5,000 Diamonds")
         assert(notice.Visible and notice.Rotation == 0 and notice.Parent == game.StarterGui.Main.WheelBg)
         assert(not game.StarterGui.Main.WheelClaim.ClipsDescendants)
     end)

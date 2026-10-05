@@ -1,4 +1,4 @@
--- V6.5 regression checks: run through execute_luau in Studio EDIT context only.
+-- V6.29 regression checks: run through execute_luau in Studio EDIT context only.
 -- Compiles isolated copies of module source with fake players/services.
 -- Does not call Init, start Playtest, create instances, grant rewards or write stores.
 local RunService = game:GetService("RunService")
@@ -32,6 +32,10 @@ local function loadIsolated(instance)
     setfenv(chunk, setmetatable({
         script = instance,
         game = fakeGame,
+        typeof = function(value)
+            if type(value) == "table" and value.kind == "player" then return "Instance" end
+            return typeof(value)
+        end,
         os = setmetatable({ clock = function() return clockNow end }, { __index = os }),
         task = {
             delay = function(_, callback) table.insert(deferred, callback) end,
@@ -192,7 +196,7 @@ test("Missing root retries; failed teleport never grants arena state", function(
 end)
 
 local function respawnFixture(level)
-    local f = { player = playerFixture(), restores = {}, events = {}, lobby = 0, paidArena = 0, feedback = {} }
+    local f = { player = playerFixture(), restores = {}, events = {}, lobby = 0, freeArena = 0, paidArena = 0, feedback = {} }
     f.state = { Alive = false, IsInArena = false, Level = 1, Diamonds = 1234 }
     f.record = { deathSerial = 1, analyticsSessionKey = "death_1", combatSnapshot = {
         preDeathLevel = level or 201, preDeathExperience = 77, preDeathKillCount = 12,
@@ -204,15 +208,22 @@ local function respawnFixture(level)
     r._defeatRecordsByUserId = { [17] = f.record }
     r._arenaRevivePendingByUserId = {}
     r._arenaReviveOptionsByUserId = {}
+    r._freeRespawnOperationsByUserId = {}
+    r._offlineRespawnSaveSnapshotByUserId = {}
     r._weaponService = { ClearPlayerWeapons = function() end }
     r._playerStateService = {
         GetState = function() return f.state end,
         PushState = function() end,
+        SyncCharacterState = function() end,
+        UpdateOverheadHealthBar = function() end,
         RestoreCombatProgress = function(_, _, snapshot, options)
             table.insert(f.restores, { snapshot = snapshot, options = options })
+            if f.restoreFailure then return false end
             f.state.Level = snapshot.preDeathLevel
             f.state.Experience = snapshot.preDeathExperience
             f.state.KillCount = snapshot.preDeathKillCount
+            f.state.MaxHealth = 12345 -- Includes derived attribute/event bonuses.
+            f.state.CurrentHealth = f.state.MaxHealth
             f.state.Alive = true
             f.state.IsInArena = options.restoreToLobby ~= true
             return true
@@ -224,6 +235,14 @@ local function respawnFixture(level)
             f.lobby += 1
             return f.teleportFailure ~= true
         end,
+        TryEnterArena = function(_, _, options)
+            assert(options.IgnoreDebounce and options.IsRevive)
+            f.freeArena += 1
+            if f.arenaException then error("fixture arena exception") end
+            if f.teleportFailure then return false end
+            f.state.IsInArena = true
+            return true
+        end,
     }
     r._revivePlayerNow = function()
         f.paidArena += 1
@@ -234,32 +253,56 @@ local function respawnFixture(level)
     r._arenaTransitionFeedbackEvent = { FireClient = function(_, _, payload) table.insert(f.feedback, payload) end }
     return f
 end
-test("FreeRespawn restores half level to lobby without arena revive", function()
+test("FreeRespawn restores half level through default arena revive without lobby teleport", function()
     local f = respawnFixture()
     f.service:_onRequestDefeatedAction(f.player, "FreeRespawn")
     assert(f.state.Level == 100 and f.state.Experience == 0 and f.state.KillCount == 0)
-    assert(f.state.Alive and not f.state.IsInArena and f.state.Diamonds == 1234)
-    assert(f.lobby == 1 and f.paidArena == 0 and f.prepared)
+    assert(f.state.Alive and f.state.IsInArena and f.state.Diamonds == 1234)
+    assert(f.state.MaxHealth == 12345 and f.state.CurrentHealth == 12345)
+    assert(f.lobby == 0 and f.freeArena == 1 and f.paidArena == 0 and not f.prepared)
     assert(f.restores[1].options.rebuildWeapons == false and f.restores[1].snapshot.attributeSnapshot == nil)
-    assert(f.events[#f.events].name == "FreeRespawnedToLobby")
+    assert(f.events[#f.events].name == "FreeRespawnedSuccessfully")
+    assert(f.service:GetDefeatRecord(f.player) == nil)
 end)
-test("Lobby and Close retain half-level rules; Lv1 remains Lv1", function()
+test("Lobby and Close retain half-level rules; every free action keeps at least Lv1", function()
     for _, action in ipairs({ "Lobby", "Close", "FreeRespawn" }) do
         local f = respawnFixture(1)
         f.service:_onRequestDefeatedAction(f.player, action)
-        assert(f.state.Level == 1 and not f.state.IsInArena and f.lobby == 1)
+        assert(f.state.Level == 1)
+        if action == "FreeRespawn" then
+            assert(f.state.IsInArena and f.freeArena == 1 and f.lobby == 0)
+        else
+            assert(not f.state.IsInArena and f.freeArena == 0 and f.lobby == 1 and f.prepared)
+        end
     end
 end)
-test("Character rebuild observes restored progress before it yields", function()
+test("CharacterAdded observes half level and completes the pending arena revive exactly once", function()
     local f = respawnFixture(201)
     f.player.humanoid.Health = 0
     f.player.LoadCharacter = function()
         assert(f.state.Level == 100 and not f.state.IsInArena)
         assert(f.service:GetDefeatRecord(f.player) == f.record)
+        assert(f.service:GetOfflineRespawnSaveSnapshot(f.player).level == 100)
+        assert(#f.events == 0)
+        assert(f.service:ConsumeArenaReviveRequest(f.player))
+        f.player.humanoid.Health = 100
+        assert(f.service:CompleteArenaRevive(f.player))
+    end
+    assert(f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(f.state.Level == 100 and f.freeArena == 1 and f.lobby == 0 and #f.events == 1)
+    assert(not f.service:CompleteArenaRevive(f.player))
+    assert(f.freeArena == 1 and not f.service._freeRespawnOperationsByUserId[17])
+end)
+test("Deferred CharacterAdded completion cannot grant a second entry or reward", function()
+    local f = respawnFixture()
+    f.player.humanoid.Health = 0
+    f.player.LoadCharacter = function()
+        assert(f.service:ConsumeArenaReviveRequest(f.player))
         f.player.humanoid.Health = 100
     end
     assert(f.service:_tryGrantFreeRespawn(f.player, f.record))
-    assert(f.state.Level == 100 and f.lobby == 1)
+    assert(not f.service:CompleteArenaRevive(f.player))
+    assert(f.freeArena == 1 and f.lobby == 0 and #f.events == 1)
 end)
 test("Failed character load retains original snapshot and reports failure", function()
     local f = respawnFixture()
@@ -267,18 +310,146 @@ test("Failed character load retains original snapshot and reports failure", func
     f.player.LoadCharacter = function() error("fixture load failure") end
     assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
     assert(f.service:GetDefeatRecord(f.player) == f.record and not f.state.Alive)
-    assert(f.lobby == 0 and #f.events == 0 and f.feedback[1].spawnMode == "LobbyReviveFailed")
+    assert(f.lobby == 0 and f.freeArena == 0 and #f.events == 0)
+    assert(f.feedback[#f.feedback].spawnMode == "FreeRespawnFailed")
+    assert(f.service:GetOfflineRespawnSaveSnapshot(f.player).level == 100)
+    assert(f.service._arenaRevivePendingByUserId[17].freeRespawnOperation.finished)
+    assert(not f.service._freeRespawnOperationsByUserId[17])
 end)
-test("Failed lobby teleport retries once without halving twice", function()
+test("Late CharacterAdded consumes the failed operation without returning to lobby", function()
+    local f = respawnFixture()
+    f.player.root = nil
+    f.player.LoadCharacter = function() end
+    assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
+    local shouldRevive, options = f.service:ConsumeArenaReviveRequest(f.player)
+    assert(shouldRevive and options.freeRespawnOperation.finished)
+    f.player.root = {}
+    f.state.Alive = true -- PlayerStateService:OnCharacterAdded runs before the deferred completion.
+    assert(not f.service:CompleteArenaRevive(f.player, options))
+    assert(not f.state.Alive and not f.state.IsInArena and f.state.Level == 100)
+    assert(f.freeArena == 0 and f.lobby == 0 and #f.events == 0)
+    assert(f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(f.freeArena == 1 and f.state.Level == 100)
+end)
+test("An old deferred completion cannot finish or cancel a newer free operation", function()
+    local f = respawnFixture()
+    local oldOptions
+    f.player.root = nil
+    f.player.LoadCharacter = function()
+        local shouldRevive
+        shouldRevive, oldOptions = f.service:ConsumeArenaReviveRequest(f.player)
+        assert(shouldRevive)
+    end
+    assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
+    f.player.root = {}
+    f.player.humanoid.Health = 0
+    f.player.LoadCharacter = function()
+        local shouldRevive, newOptions = f.service:ConsumeArenaReviveRequest(f.player)
+        assert(shouldRevive and newOptions ~= oldOptions)
+        f.player.humanoid.Health = 100
+        assert(not f.service:CompleteArenaRevive(f.player, oldOptions))
+        assert(f.state.Alive and f.freeArena == 0 and not newOptions.freeRespawnOperation.finished)
+        assert(f.service._arenaReviveOptionsByUserId[17] == newOptions)
+        assert(f.service:CompleteArenaRevive(f.player, newOptions))
+    end
+    assert(f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(f.freeArena == 1 and f.state.Level == 100 and #f.events == 1)
+end)
+test("Failed arena teleport retries without halving twice or premature success", function()
     local f = respawnFixture(201)
     f.teleportFailure = true
     assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
-    assert(not f.state.Alive and #f.events == 0)
+    assert(not f.state.Alive and not f.state.IsInArena and #f.events == 0)
+    assert(f.service:GetDefeatRecord(f.player) == f.record and f.service:GetOfflineRespawnSaveSnapshot(f.player).level == 100)
     f.teleportFailure = false
     assert(f.service:_tryGrantFreeRespawn(f.player, f.record))
     assert(f.state.Level == 100 and #f.events == 1)
     assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
-    assert(f.lobby == 2)
+    assert(f.lobby == 0 and f.freeArena == 2 and f.state.IsInArena)
+end)
+test("Lobby teleport failure remains retryable with the same half-level snapshot", function()
+    local f = respawnFixture(201)
+    f.teleportFailure = true
+    assert(not f.service:_revivePlayerToLobby(f.player, f.record))
+    assert(not f.state.Alive and f.service:GetDefeatRecord(f.player) == f.record)
+    assert(f.feedback[#f.feedback].spawnMode == "LobbyReviveFailed")
+    f.teleportFailure = false
+    assert(f.service:_revivePlayerToLobby(f.player, f.record))
+    assert(f.state.Level == 100 and f.lobby == 2 and f.freeArena == 0 and #f.events == 0)
+end)
+test("Character readiness timeout releases the free operation and preserves retry", function()
+    local f = respawnFixture()
+    f.player.root = nil
+    f.player.LoadCharacter = function() assert(f.service:ConsumeArenaReviveRequest(f.player)) end
+    assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(not f.state.Alive and f.service:GetDefeatRecord(f.player) == f.record and #f.events == 0)
+    f.player.root = {}
+    assert(f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(f.state.Level == 100 and f.freeArena == 1)
+end)
+test("Restore or arena exceptions cannot wedge free respawn or clear the death record", function()
+    local f = respawnFixture()
+    f.restoreFailure = true
+    assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(not f.service._freeRespawnOperationsByUserId[17] and #f.events == 0)
+    f.restoreFailure = false
+    f.arenaException = true
+    assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(not f.state.Alive and f.service:GetDefeatRecord(f.player) == f.record and #f.events == 0)
+    f.arenaException = false
+    assert(f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(f.state.Level == 100 and #f.events == 1)
+end)
+test("Concurrent free/lobby/paid requests cannot replace a free respawn in flight", function()
+    local f = respawnFixture()
+    f.player.humanoid.Health = 0
+    f.record.revivePurchasePending = true
+    f.player.LoadCharacter = function()
+        assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
+        for _, action in ipairs({ "FreeRespawn", "Lobby", "Close", "RevivePurchaseCancel" }) do
+            f.service:_onRequestDefeatedAction(f.player, action)
+        end
+        assert(not f.service:GrantDefeatedRevivePurchase(f.player))
+        assert(not Respawn._revivePlayerNow(f.service, f.player))
+        assert(f.record.revivePurchasePending and #f.restores == 1 and f.lobby == 0 and f.paidArena == 0)
+        assert(f.service:ConsumeArenaReviveRequest(f.player))
+        f.player.humanoid.Health = 100
+    end
+    assert(f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(f.freeArena == 1 and #f.events == 1)
+end)
+test("Disconnect during LoadCharacter retains a half-level offline save and never enters arena", function()
+    local f = respawnFixture()
+    f.player.humanoid.Health = 0
+    f.player.LoadCharacter = function()
+        f.service:OnPlayerRemoving(f.player)
+        f.player.Parent = nil
+    end
+    assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(f.service:GetOfflineRespawnSaveSnapshot(17).level == 100)
+    assert(f.freeArena == 0 and f.lobby == 0 and #f.events == 0)
+end)
+test("A newer death supersedes a yielding free respawn without losing its snapshot", function()
+    local f = respawnFixture()
+    local nextRecord = { deathSerial = 2, combatSnapshot = { preDeathLevel = 77 } }
+    f.player.humanoid.Health = 0
+    f.player.LoadCharacter = function()
+        f.service._deathSerialByActorId[17] = 2
+        f.service._defeatRecordsByUserId[17] = nextRecord
+        f.state.Level = 1
+        f.state.Alive = false
+        f.player.humanoid.Health = 100
+    end
+    assert(not f.service:_tryGrantFreeRespawn(f.player, f.record))
+    assert(f.service:GetDefeatRecord(f.player) == nextRecord and f.state.Level == 1 and not f.state.Alive)
+    assert(f.service:GetOfflineRespawnSaveSnapshot(f.player).level == 38)
+    assert(f.freeArena == 0 and #f.events == 0)
+end)
+test("Malformed defeated requests are rejected without restoring progress", function()
+    local f = respawnFixture()
+    f.service:_onRequestDefeatedAction(f.player, {})
+    f.service:_onRequestDefeatedAction(f.player, "unknown")
+    assert(#f.restores == 0 and f.freeArena == 0 and f.lobby == 0)
 end)
 test("Paid keep-level revive still uses full snapshot and arena route", function()
     local f = respawnFixture()

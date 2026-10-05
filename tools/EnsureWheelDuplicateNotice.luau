@@ -2,6 +2,17 @@
 -- Idempotent: preserve later manual styling on existing labels. No live PlayerGui writes.
 local RunService = game:GetService("RunService")
 assert(RunService:IsStudio() and not RunService:IsRunning(), "Edit mode only")
+local wheelConfig = assert(loadstring(game.ReplicatedStorage.Shared.WheelConfig.Source))()
+local skinReward
+for _, reward in ipairs(wheelConfig.Rewards) do
+    if reward.SkinId and (tonumber(reward.DuplicateDiamonds) or 0) > 0 then
+        skinReward = reward
+        break
+    end
+end
+assert(skinReward, "No configured duplicate skin compensation")
+local rewardName = tostring(skinReward.Label or "Skin")
+local duplicateAmount = tostring(math.floor(skinReward.DuplicateDiamonds)):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
 local StarterGui = game:GetService("StarterGui")
 local main = StarterGui:FindFirstChild("Main")
 assert(main and main:IsA("ScreenGui") and main.Parent == StarterGui, "Expected StarterGui.Main ScreenGui")
@@ -55,12 +66,12 @@ end
 local duplicateNotice, createdDuplicate = ensureLabel(
     wheelBg, "DuplicateNotice", UDim2.fromScale(0.5, 0.91), UDim2.fromScale(0.5, 0.04), 20
 )
-duplicateNotice.Text = "Butter duplicate: +5,000 Diamonds"
+duplicateNotice.Text = rewardName .. " duplicate: +" .. duplicateAmount .. " Diamonds"
 duplicateNotice.Visible = true
 local resultNotice, createdResult = ensureLabel(
     wheelClaim, "ResultNotice", UDim2.fromScale(0.5, 1.15), UDim2.fromScale(1.7, 0.34), 20
 )
-resultNotice.Text = "Butter already owned\nConverted to 5,000 Diamonds"
+resultNotice.Text = rewardName .. " already owned\nConverted to " .. duplicateAmount .. " Diamonds"
 resultNotice.Visible = false
 
 return game:GetService("HttpService"):JSONEncode({

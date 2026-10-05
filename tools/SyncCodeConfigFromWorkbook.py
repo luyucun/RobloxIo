@@ -698,6 +698,7 @@ def build_wheel_reward_id(reward: dict) -> str:
 
 def read_wheel_reward_rows() -> tuple[list[dict], list[dict]]:
     workbook = openpyxl.load_workbook(WORKBOOK_PATH, data_only=True)
+    skin_metadata = read_weapon_skin_metadata(workbook)
     worksheet = get_sheet(workbook, WHEEL_SHEET_NAME, 11)
     headers = build_header_map(worksheet, WHEEL_HEADER_ROW)
     required_headers = ["转盘位置", "奖励内容", "对应权重", "对应转盘子节点", "对应旋转角度"]
@@ -728,6 +729,10 @@ def read_wheel_reward_rows() -> tuple[list[dict], list[dict]]:
             "TargetRotation": math_safe_int(cell_by_header(worksheet, row_index, headers, "对应旋转角度"), 0),
         })
         if row["RewardType"] == "PendingWeaponSkin":
+            skin = skin_metadata.get(math_safe_int(row.get("SkinId"), 0))
+            if not skin or not skin["Name"] or not skin["TemplateName"]:
+                raise RuntimeError(f"Wheel skin reward row {row_index} has no weapon metadata")
+            row["Label"] = skin["Name"]
             duplicate_diamonds = cell_by_header(worksheet, row_index, headers, "重复皮肤补偿钻石")
             if is_blank(duplicate_diamonds) or math_safe_int(duplicate_diamonds, 0) <= 0:
                 raise RuntimeError(f"Wheel skin reward row {row_index} requires positive duplicate compensation diamonds")
@@ -1385,6 +1390,8 @@ def read_skin_rows():
             "TemplateName": info["TemplateName"],
             "TemplatePath": info["TemplatePath"],
             "IconImage": info["IconImage"],
+            "CustomizeIconImage": str(cell_by_header(skin_sheet, row_index, headers, "皮肤界面展示图标") or "").strip(),
+            "IsRetired": math_safe_int(cell_by_header(skin_sheet, row_index, headers, "是否绝版"), 0) == 1,
             "PurchaseChannel": channel,
             "SortOrder": math_safe_int(cell_by_header(skin_sheet, row_index, headers, "排序"), len(rows) + 1),
             "DiamondPrice": math_safe_int(cell_by_header(skin_sheet, row_index, headers, "钻石价格"), 0),
@@ -1421,8 +1428,12 @@ def build_skin_generated_block(rows) -> str:
             f"        DiamondPrice = {row['DiamondPrice']},",
             f"        RobuxPrice = {row['RobuxPrice']},",
             f"        GamePassId = {row['GamePassId']},",
-            "    },",
         ])
+        if row["CustomizeIconImage"]:
+            lines.append(f"        CustomizeIconImage = {lua_value(row['CustomizeIconImage'])},")
+        if row["IsRetired"]:
+            lines.append("        IsRetired = true,")
+        lines.append("    },")
     lines.extend(["}", SKIN_END_MARKER])
     return "\n".join(lines)
 

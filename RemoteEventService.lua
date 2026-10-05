@@ -108,6 +108,7 @@ function RemoteEventService:Init()
         { Key = "RequestRebirth", Parent = systemEvents, Name = RemoteNames.System.RequestRebirth },
         { Key = "RebirthFeedback", Parent = systemEvents, Name = RemoteNames.System.RebirthFeedback },
         -- FreeRespawn/Lobby/Close now restore to the lobby; paid actions retain their behavior.
+        -- V6.29: FreeRespawn -> arena; Lobby/Close -> lobby. Blocked/FreeRespawnFailed reopens Defeated.
         { Key = "RequestDefeatedAction", Parent = systemEvents, Name = RemoteNames.System.RequestDefeatedAction },
         { Key = "RequestPotionAction", Parent = systemEvents, Name = RemoteNames.System.RequestPotionAction },
         { Key = "PotionFeedback", Parent = systemEvents, Name = RemoteNames.System.PotionFeedback },

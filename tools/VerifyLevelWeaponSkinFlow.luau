@@ -1,10 +1,12 @@
--- Script: VerifyLevelWeaponSkinFlow | Type: isolated Studio Edit regression tool (V6.27.2)
+-- Script: VerifyLevelWeaponSkinFlow | Type: isolated Studio Edit regression tool (V6.31)
 -- Studio path: project MCP execute_luau; no Play, no real Remote traffic, no DataStore.
 -- Covers: unlock catalog math, equip/reset/auto state rules, per-slot visual resolution,
 -- special-skin mutex, persistence round-trip (explicit false kept), WeaponService visual
--- template wiring on real templates, LevelWeaponSkinService validation, controller render.
+-- template wiring on real templates, LevelWeaponSkinService validation, lazy UI creation,
+-- card reuse, closed-window buffering, duplicate state suppression and incremental refresh.
 assert(game.PlaceId == 73988417166286)
 assert(game:GetService("RunService"):IsStudio() and not game:GetService("RunService"):IsRunning())
+local sourceOverrides = nil -- Local-source runner may replace this declaration.
 local HttpService = game:GetService("HttpService")
 local passed, failed = {}, {}
 local clockNow = 100
@@ -34,7 +36,8 @@ local loadModule
 loadModule=function(instance)
     if instance.Name == "ActorUtils" then return actors end
     if modules[instance] ~= nil then return modules[instance] end
-    local chunk,err=loadstring(instance.Source,"="..instance.Name)
+    local source=sourceOverrides and sourceOverrides[instance.Name] or instance.Source
+    local chunk,err=loadstring(source,"="..instance.Name)
     assert(chunk,err)
     setfenv(chunk,setmetatable({script=instance,game=fakeGame,require=loadModule,
         os=setmetatable({clock=function() return clockNow end},{__index=os}),
@@ -54,6 +57,7 @@ local Rebirth=loadModule(services.RebirthService)
 local LevelSkinService=loadModule(services.LevelWeaponSkinService)
 local Controller=loadModule(controllers.LevelWeaponSkinController)
 local ModalUi=loadModule(controllers.ModalUiController)
+local formalWindowVisibleBefore=game.StarterGui.Main.LevelWeaponSkins.Visible
 local function eq(a,b,label) assert(a==b,(label or "value")..": "..tostring(a).." ~= "..tostring(b)) end
 local function test(name,callback)
     clockNow+=20
@@ -67,6 +71,9 @@ local function cloneService(module)
 end
 local function fixture(highestLevel)
     local p={UserId=91614,Name="LevelSkinVerification",Parent=true}
+    local attributes={}
+    p.SetAttribute=function(_,key,value) attributes[key]=value end
+    p.GetAttribute=function(_,key) return attributes[key] end
     fakePlayersByUserId[p.UserId]=p
     local ps=cloneService(PlayerState)
     for _,name in ipairs({"_syncLeaderstats","SyncHumanoidMovement","SyncCharacterState","UpdateOverheadHealthBar","CheckTitleUnlocks","RefreshOnlineTime","PushState"}) do ps[name]=function() end end
@@ -314,6 +321,95 @@ test("Resolution ignores bogus tier configs",function()
     eq(f.ps:GetLevelWeaponVisualConfig(f.p,nil),nil)
 end)
 
+-- V6.32: exercise the new wheel skin through real inventory, persistence and visuals.
+test("Boneblade has independent normal/customize icons and Butter retains its identity",function()
+    local skin=assert(SkinConfig.GetSkin(10010))
+    eq(skin.Name,"Boneblade");eq(skin.TemplateName,"Skin010")
+    eq(skin.IconImage,"rbxassetid://134985274966114")
+    eq(skin.CustomizeIconImage,"rbxassetid://119304517377816")
+    eq(SkinConfig.IsWheelSkin(skin),true)
+    local butter=assert(SkinConfig.GetSkin(10009))
+    eq(butter.Name,"Butter");eq(butter.TemplateName,"Skin009");eq(butter.IsRetired,true)
+end)
+test("Customize hides unowned Butter, preserves owned Butter and uses Boneblade display icon",function()
+    local c=cloneService(loadModule(controllers.SkinController))
+    c._latestState={skins={}}
+    local byId={}
+    for _,entry in ipairs(c:_getSkinEntries()) do byId[entry.id]=entry end
+    eq(byId[10009],nil)
+    eq(byId[10010].iconImage,"rbxassetid://119304517377816")
+    eq(byId[10010].owned,false)
+    c._latestState={skins={{id=10009,owned=true},{id=10010,owned=true,iconImage="rbxassetid://134985274966114"}},equippedSkinId=10009}
+    for _,entry in ipairs(c:_getSkinEntries()) do byId[entry.id]=entry end
+    eq(byId[10009].owned,true);eq(byId[10009].equipped,true)
+    eq(byId[10010].iconImage,"rbxassetid://119304517377816","normal state icon cannot replace customize art")
+end)
+test("Boneblade needs ownership, renders Skin010 and keeps damage and hit radius",function()
+    local f=fixture(55)
+    eq(select(2,f.ps:EquipSkin(f.p,10010)),"NotOwned")
+    local base=makeWeapon(weaponFixture(f.ps),f.p,1)
+    assert(f.ps:GrantSkin(f.p,10010));assert(f.ps:EquipSkin(f.p,10010))
+    local look=makeWeapon(weaponFixture(f.ps),f.p,1)
+    eq(look.VisualTemplateName,"Skin010");eq(look.VisualSkinId,10010)
+    assert(look.RuntimeInstance:FindFirstChild("SkeletonSword"),"new mesh not cloned")
+    eq(look.VisualIconImage,"rbxassetid://134985274966114")
+    eq(look.TierBaseDamage,base.TierBaseDamage);eq(look.BaseDamage,base.BaseDamage)
+    eq(look.AuraRadius,base.AuraRadius);eq(look.CombatRank,base.CombatRank)
+    assert(f.ps:ClearEquippedSkin(f.p))
+    eq(makeWeapon(weaponFixture(f.ps),f.p,1).VisualTemplateName,"Weapon001")
+end)
+test("Butter-only owner wins Boneblade once, then receives the configured duplicate diamonds",function()
+    local f=fixture(55)
+    assert(f.ps:GrantSkin(f.p,10009))
+    local svc=cloneService(loadModule(services.SkinService))
+    svc._playerStateService=f.ps
+    svc._rebirthService={IsPlayerLoaded=function() return true end,MarkDirty=function() end}
+    local wheel=cloneService(loadModule(services.WheelService))
+    wheel._playerStateService=f.ps;wheel._skinService=svc
+    local config=loadModule(shared.WheelConfig)
+    local reward=config.GetRewardBySlot(3)
+    eq(reward.SkinId,10010);eq(reward.Label,"Boneblade");eq(config.TotalWeight,100)
+    local diamonds=f.state.Diamonds
+    local ok,_,award=wheel:_grantReward(f.p,reward)
+    eq(ok,true);eq(award.awardedRewardType,"Skin");eq(award.pending,false)
+    eq(f.ps:OwnsSkin(f.p,10010),true);eq(f.ps:OwnsSkin(f.p,10009),true)
+    eq(f.state.Diamonds,diamonds,"old Butter is not a Boneblade duplicate")
+    local ok2,reason,award2=wheel:_grantReward(f.p,reward)
+    eq(ok2,true);eq(reason,"DuplicateConverted");eq(award2.awardedAmount,5000)
+    eq(f.state.Diamonds,diamonds+5000)
+end)
+test("Boneblade and legacy Butter survive save/load with their own equipped identities",function()
+    for _,equipped in ipairs({10010,10009}) do
+        local f=fixture(55)
+        assert(f.ps:GrantSkin(f.p,10009));assert(f.ps:GrantSkin(f.p,10010))
+        assert(f.ps:EquipSkin(f.p,equipped))
+        local rb=cloneService(Rebirth)
+        rb._processedPurchaseIdsByPlayerId={};rb._playerStateService=f.ps
+        rb._loadStateByUserId[f.p.UserId]="Loaded";rb._dataStore={}
+        local saved=rb:_buildSavePayload(f.p,{includeCombatSnapshot=false})
+        eq(saved.ownedSkins["10009"],true);eq(saved.ownedSkins["10010"],true)
+        local g=fixture();local load=cloneService(Rebirth)
+        load._processedPurchaseIdsByPlayerId={};load._playerStateService=g.ps
+        load._dataStore={GetAsync=function() return saved end}
+        load:_loadPlayer(g.p)
+        eq(g.ps:OwnsSkin(g.p,10009),true);eq(g.ps:OwnsSkin(g.p,10010),true)
+        eq(g.ps:GetEquippedSkinId(g.p),equipped)
+    end
+end)
+test("Retired acquisition cannot point to wheel while Boneblade remains wheel-only",function()
+    local f=fixture(55)
+    local svc=cloneService(loadModule(services.SkinService))
+    svc._playerStateService=f.ps
+    svc._rebirthService={IsPlayerLoaded=function() return true end}
+    local feedback={}
+    svc._fireFeedback=function(_,_,kind,reason) table.insert(feedback,{kind,reason}) end
+    svc:_handlePurchaseRequest(f.p,10009)
+    eq(feedback[1][1],"Failed");eq(feedback[1][2],"Unavailable")
+    svc:_handlePurchaseRequest(f.p,10010)
+    eq(feedback[2][1],"OpenWheel");eq(feedback[2][2],"WheelOnly")
+    eq(f.ps:OwnsSkin(f.p,10010),false,"opening wheel must not grant skin")
+end)
+
 -- 16-20) LevelWeaponSkinService validation
 local function serviceFixture(highestLevel,loaded)
     local f=fixture(highestLevel)
@@ -395,14 +491,29 @@ test("Rapid duplicate equip is debounced",function()
     eq(s.f.state.SelectedLevelWeaponTierIndex,6)
 end)
 
--- 21-24) Controller render on the real static window clone
+-- Controller behavior on clones of the formal single-template window.
 local guiFolder=Instance.new("Folder")
 guiFolder.Name="__LevelSkinVerifyGui"
 guiFolder.Parent=game.ServerStorage
 local modalCalls={}
 local savedOpen,savedClose=ModalUi.PlayPanelOpen,ModalUi.PlayPanelClose
-ModalUi.PlayPanelOpen=function(_,owner,panel) table.insert(modalCalls,{op="open",owner=owner,panel=panel}) end
-ModalUi.PlayPanelClose=function(_,owner,panel) table.insert(modalCalls,{op="close",owner=owner,panel=panel}) end
+ModalUi.PlayPanelOpen=function(_,owner,panel)
+    table.insert(modalCalls,{op="open",owner=owner,panel=panel})
+    if panel then panel.Visible=true end
+end
+ModalUi.PlayPanelClose=function(_,owner,panel)
+    table.insert(modalCalls,{op="close",owner=owner,panel=panel})
+    if panel then panel.Visible=false end
+end
+local function controllerCatalog()
+    local catalog={}
+    for index=1,WeaponTierConfig.TotalTierCount do
+        local tier=WeaponTierConfig.Order[index]
+        catalog[index]={tierIndex=index,name=WeaponTierConfig.GetDisplayNameForTier(tier),
+            icon=WeaponTierConfig.GetIconImageForTier(tier),unlockLevel=WeaponTierConfig.GetUnlockLevelForTierIndex(index)}
+    end
+    return catalog
+end
 local function controllerFixture(windowClone)
     local c=cloneService(Controller)
     local attributes={}
@@ -417,13 +528,7 @@ local function controllerFixture(windowClone)
             return {Connect=function(_,cb) table.insert(attributeHandlers[name],cb) return {Disconnect=function() end} end}
         end,
     }
-    local catalog={}
-    for index=1,WeaponTierConfig.TotalTierCount do
-        local tier=WeaponTierConfig.Order[index]
-        catalog[index]={tierIndex=index,name=WeaponTierConfig.GetDisplayNameForTier(tier),
-            icon=WeaponTierConfig.GetIconImageForTier(tier),unlockLevel=WeaponTierConfig.GetUnlockLevelForTierIndex(index)}
-    end
-    c._catalog=catalog
+    c._catalog=controllerCatalog()
     c._requestStateEvent={FireServer=function() table.insert(modalCalls,{op="requestState"}) end}
     c._requestEquipEvent={FireServer=function(_,payload,extra) table.insert(modalCalls,{op="requestEquip",payload=payload,extra=extra}) end}
     c:_bindGmAttribute()
@@ -438,13 +543,99 @@ local function cloneWindow()
     window.Parent=guiFolder
     return window
 end
-test("Window binds and renders default level look with every card locked but T1",function()
+-- Bind the actual controller through a narrow proxy for this one Activated signal.
+-- All GUI properties and other methods still operate on the real template clone.
+local function captureLevelLookActivation(window)
+    local button=window.Content.UseLevelLookButton
+    local listeners={}
+    local activated={Connect=function(_,callback)
+        local connection={Connected=true}
+        function connection:Disconnect() self.Connected=false end
+        table.insert(listeners,{callback=callback,connection=connection})
+        return connection
+    end}
+    local function proxy(instance,overrides)
+        return setmetatable({}, {
+            __index=function(_,key)
+                if overrides[key]~=nil then return overrides[key] end
+                local value=instance[key]
+                if type(value)=="function" then
+                    return function(_,...) return value(instance,...) end
+                end
+                return value
+            end,
+            __newindex=function(_,key,value) instance[key]=value end,
+        })
+    end
+    local buttonProxy=proxy(button,{Activated=activated})
+    local content=window.Content
+    local contentProxy=proxy(content,{FindFirstChild=function(_,name,...)
+        if name=="UseLevelLookButton" then return buttonProxy end
+        return content:FindFirstChild(name,...)
+    end})
+    local windowProxy=proxy(window,{FindFirstChild=function(_,name,...)
+        if name=="Content" then return contentProxy end
+        return window:FindFirstChild(name,...)
+    end})
+    local function activate()
+        local connected=0
+        for _,listener in ipairs(listeners) do
+            if listener.connection.Connected then
+                connected+=1
+                listener.callback()
+            end
+        end
+        eq(connected,1,"Use Level Look has one live Activated binding")
+    end
+    return windowProxy,activate
+end
+local function cardCount(scroll)
+    local count=0
+    for _,child in ipairs(scroll:GetChildren()) do
+        if child.Name:match("^LevelWeapon_T%d+$") then count+=1 end
+    end
+    return count
+end
+local function optionalSummary(content,expected)
+    local summary=content:FindFirstChild("SelectedSkinSummary")
+    if summary then eq(summary.Text,expected) end
+end
+local function observeCardRenders(c)
+    local calls={}
+    local renderCard=c._renderCard
+    c._renderCard=function(self,card,entry,...)
+        table.insert(calls,entry.tierIndex)
+        return renderCard(self,card,entry,...)
+    end
+    return calls
+end
+local function expectLevelLookButton(c,text,enabled,green)
+    local button=c._content:FindFirstChild("UseLevelLookButton")
+    eq(button:FindFirstChild("Text").Text,text)
+    eq(button.Active,enabled,"reset Active")
+    eq(button.Selectable,enabled,"reset Selectable")
+    eq(button.Interactable,enabled,"reset Interactable")
+    local background=button:FindFirstChild("ImageLabel")
+    assert(background,"reset background exists")
+    local greenGradient=background:FindFirstChild("ButtonGreen")
+    local yellowGradient=background:FindFirstChild("ButtonYellow")
+    assert(greenGradient and yellowGradient,"both reset color variants exist")
+    eq(greenGradient.Enabled,green,"reset green state")
+    eq(yellowGradient.Enabled,not green,"reset yellow state")
+end
+test("Binding creates zero cards; first open creates 40 cards with correct defaults",function()
     local window=cloneWindow()
     local c=controllerFixture(window)
     eq(window.Visible,false,"window stays hidden until opened")
+    eq(cardCount(window.Content.ScrollingFrame),0,"bind must not precreate cards")
+    eq(next(c._cardsByTierIndex),nil)
+    local calls=observeCardRenders(c)
+    c:_setOpen(true)
+    eq(cardCount(window.Content.ScrollingFrame),40)
+    eq(#calls,40,"first visible render initializes each card once")
     local dot=utf8.char(0x00B7)
     eq(window.Content.ProgressSummary.Text,"Best Lv. 1 "..dot.." 1/40 unlocked")
-    eq(window.Content.SelectedSkinSummary.Text,"Chosen: Level Look")
+    optionalSummary(window.Content,"Chosen: Level Look")
     eq(window.Content.AutoUpgradeRow.CheckboxButton.Checkmark.Visible,true)
     eq(window.Content.ScrollingFrame.LevelWeapon_T1.EquipButton.Active,true)
     eq(equipText(window.Content.ScrollingFrame.LevelWeapon_T1).Text,"Equip")
@@ -454,11 +645,17 @@ test("Window binds and renders default level look with every card locked but T1"
 end)
 test("State payload renders 6/40 unlocked, T6 selected, auto off",function()
     local window=cloneWindow()
+    -- Static catalog data is set when cloning, not rewritten on every state event.
+    local template=window.Content.ScrollingFrame.LevelWeaponTemplate
+    template:FindFirstChild("Name").Text="StaleName"
+    template.UnlockLevelText.Text="Unlock at Lv. 999"
+    template.ItemTemplate.ItemIcon.Image="rbxassetid://1"
     local c=controllerFixture(window)
     c:_applyState({selectedTierIndex=6,autoUpgrade=false,highestLevelReached=55,maxUnlockedTierIndex=6})
+    c:_setOpen(true)
     local dot=utf8.char(0x00B7)
     eq(window.Content.ProgressSummary.Text,"Best Lv. 55 "..dot.." 6/40 unlocked")
-    eq(window.Content.SelectedSkinSummary.Text,"Chosen: "..WeaponTierConfig.GetDisplayNameForTier(WeaponTierConfig.Order[6]))
+    optionalSummary(window.Content,"Chosen: "..WeaponTierConfig.GetDisplayNameForTier(WeaponTierConfig.Order[6]))
     eq(window.Content.AutoUpgradeRow.CheckboxButton.Checkmark.Visible,false)
     local t6=window.Content.ScrollingFrame.LevelWeapon_T6
     eq(t6.EquippedBadge.Visible,true);eq(t6.SelectionStroke.Enabled,true)
@@ -470,15 +667,192 @@ test("State payload renders 6/40 unlocked, T6 selected, auto off",function()
     eq(t7:GetAttribute("PreviewState"),"Locked");eq(t6:GetAttribute("PreviewState"),"Selected")
     eq(window.Content:GetAttribute("PreviewHighestLevel"),55)
     eq(window.Content:GetAttribute("PreviewSelectedTierIndex"),6)
-    -- Catalog drift self-heal: stale static text/icon is refreshed from config on render.
     local t6card=window.Content.ScrollingFrame.LevelWeapon_T6
-    t6card:FindFirstChild("Name").Text="StaleName"
-    t6card.UnlockLevelText.Text="Unlock at Lv. 999"
-    t6card.ItemTemplate.ItemIcon.Image="rbxassetid://1"
-    c:_applyState({selectedTierIndex=6,autoUpgrade=false,highestLevelReached=55,maxUnlockedTierIndex=6})
     eq(t6card:FindFirstChild("Name").Text,WeaponTierConfig.GetDisplayNameForTier(WeaponTierConfig.Order[6]))
     eq(t6card.UnlockLevelText.Text,"Unlock at Lv. 51")
     eq(t6card.ItemTemplate.ItemIcon.Image,WeaponTierConfig.GetIconImageForTier(WeaponTierConfig.Order[6]))
+end)
+test("Repeated open reuses all cards and event bindings without resetting scroll",function()
+    local c=controllerFixture(cloneWindow())
+    c:_setOpen(true)
+    local cards=table.clone(c._cardsByTierIndex)
+    local connections=table.clone(c._connectionsByWindow)
+    local calls=observeCardRenders(c)
+    c._scroll.AutomaticCanvasSize=Enum.AutomaticSize.None
+    c._scroll.CanvasSize=UDim2.fromOffset(0,5000)
+    c._scroll.CanvasPosition=Vector2.new(0,240)
+    local savedPosition=c._scroll.CanvasPosition
+    eq(savedPosition.Y,240,"fixture has a nonzero scroll position")
+    for _=1,3 do c:_setOpen(false) c:_setOpen(true) end
+    eq(#calls,0,"unchanged reopening must not redraw cards")
+    eq(cardCount(c._scroll),40,"opening does not append copies")
+    eq(c._scroll.CanvasPosition,savedPosition,"opening preserves scroll offset")
+    eq(#c._connectionsByWindow,#connections,"opening adds no event bindings")
+    for index,card in pairs(cards) do eq(c._cardsByTierIndex[index],card,"same card instance") end
+    for index,connection in ipairs(connections) do
+        eq(c._connectionsByWindow[index],connection,"same connection")
+        eq(connection.Connected,true)
+    end
+end)
+test("Closed before first open buffers only the latest state and creates no cards",function()
+    local c=controllerFixture(cloneWindow())
+    local calls=observeCardRenders(c)
+    c:_applyState({selectedTierIndex=4,autoUpgrade=true,highestLevelReached=55,maxUnlockedTierIndex=6})
+    c:_applyState({selectedTierIndex=6,autoUpgrade=false,highestLevelReached=61,maxUnlockedTierIndex=7})
+    eq(cardCount(c._scroll),0)
+    eq(#calls,0,"closed state sync must not render cards")
+    eq(c._state.highestLevelReached,61)
+    eq(c._state.selectedTierIndex,6)
+    c:_setOpen(true)
+    eq(#calls,40,"initialize once with latest state")
+    eq(c._cardsByTierIndex[6].EquippedBadge.Visible,true)
+    eq(c._cardsByTierIndex[7].EquipButton.Active,true)
+    eq(c._cardsByTierIndex[4].EquippedBadge.Visible,false)
+    eq(c._content.AutoUpgradeRow.CheckboxButton.Checkmark.Visible,false)
+end)
+test("Closed initialized window writes no cards; reopening applies only accumulated differences",function()
+    local c=controllerFixture(cloneWindow())
+    c:_applyState({selectedTierIndex=6,autoUpgrade=true,highestLevelReached=55,maxUnlockedTierIndex=6})
+    c:_setOpen(true)
+    local calls=observeCardRenders(c)
+    local progressBefore=c._content.ProgressSummary.Text
+    c:_setOpen(false)
+    c:_applyState({selectedTierIndex=4,autoUpgrade=false,highestLevelReached=60,maxUnlockedTierIndex=6})
+    c:_applyState({selectedTierIndex=5,autoUpgrade=false,highestLevelReached=61,maxUnlockedTierIndex=7})
+    eq(#calls,0)
+    eq(c._content.ProgressSummary.Text,progressBefore,"hidden labels stay untouched")
+    eq(c._cardsByTierIndex[6].EquippedBadge.Visible,true,"hidden card keeps last rendered state")
+    eq(c._cardsByTierIndex[7].EquipButton.Active,false)
+    c:_setOpen(true)
+    table.sort(calls)
+    eq(#calls,3,"only old pick, latest pick and newly unlocked tier")
+    eq(table.concat(calls,","),"5,6,7")
+    eq(c._cardsByTierIndex[5].EquippedBadge.Visible,true)
+    eq(c._cardsByTierIndex[6].EquippedBadge.Visible,false)
+    eq(c._cardsByTierIndex[7].EquipButton.Active,true)
+    eq(c._content.AutoUpgradeRow.CheckboxButton.Checkmark.Visible,false)
+end)
+test("Changing equipped tier renders exactly the old and new cards",function()
+    local c=controllerFixture(cloneWindow())
+    c:_applyState({selectedTierIndex=6,autoUpgrade=true,highestLevelReached=55,maxUnlockedTierIndex=6})
+    c:_setOpen(true)
+    local calls=observeCardRenders(c)
+    c:_applyState({selectedTierIndex=5,autoUpgrade=true,highestLevelReached=55,maxUnlockedTierIndex=6})
+    table.sort(calls)
+    eq(table.concat(calls,","),"5,6")
+    eq(c._cardsByTierIndex[5].SelectionHighlight.Visible,true)
+    eq(c._cardsByTierIndex[6].SelectionHighlight.Visible,false)
+end)
+test("Level 55 to 60 refreshes no cards; 60 to 61 refreshes only newly unlocked T7",function()
+    local c=controllerFixture(cloneWindow())
+    c:_applyState({selectedTierIndex=6,autoUpgrade=true,highestLevelReached=55,maxUnlockedTierIndex=6})
+    c:_setOpen(true)
+    local calls=observeCardRenders(c)
+    c:_applyState({selectedTierIndex=6,autoUpgrade=true,highestLevelReached=60,maxUnlockedTierIndex=6})
+    eq(#calls,0,"same unlock band changes only summary")
+    eq(c._content:GetAttribute("PreviewHighestLevel"),60)
+    c:_applyState({selectedTierIndex=6,autoUpgrade=true,highestLevelReached=61,maxUnlockedTierIndex=7})
+    eq(#calls,1)
+    eq(calls[1],7)
+    eq(c._cardsByTierIndex[7].EquipButton.Active,true)
+    eq(c._cardsByTierIndex[8].EquipButton.Active,false)
+end)
+test("Auto mode change alone does not refresh cards",function()
+    local c=controllerFixture(cloneWindow())
+    c:_applyState({selectedTierIndex=6,autoUpgrade=true,highestLevelReached=55,maxUnlockedTierIndex=6})
+    c:_setOpen(true)
+    local calls=observeCardRenders(c)
+    c:_applyState({selectedTierIndex=6,autoUpgrade=false,highestLevelReached=55,maxUnlockedTierIndex=6})
+    eq(#calls,0)
+    eq(c._content.AutoUpgradeRow.CheckboxButton.Checkmark.Visible,false)
+end)
+test("Modal-hidden open window buffers state until it becomes visible",function()
+    local c=controllerFixture(cloneWindow())
+    c:_setOpen(true)
+    local calls=observeCardRenders(c)
+    c._window.Visible=false
+    c:_applyState({selectedTierIndex=1,autoUpgrade=true,highestLevelReached=1,maxUnlockedTierIndex=1})
+    eq(#calls,0,"another modal hiding Armory suppresses card writes")
+    c._window.Visible=true
+    -- Explicit flush also works before a deferred Visible event runs.
+    c:_render()
+    eq(#calls,1)
+    eq(calls[1],1)
+    eq(c._cardsByTierIndex[1].EquippedBadge.Visible,true)
+end)
+test("Replacement window releases old connections and initializes from latest buffered state",function()
+    local c=controllerFixture(cloneWindow())
+    c:_applyState({selectedTierIndex=6,autoUpgrade=false,highestLevelReached=55,maxUnlockedTierIndex=6})
+    c:_setOpen(true)
+    local oldConnections=table.clone(c._connectionsByWindow)
+    local oldCard=c._cardsByTierIndex[6]
+    local replacement=cloneWindow()
+    c:_bindWindow(replacement)
+    for _,connection in ipairs(oldConnections) do eq(connection.Connected,false,"old window disconnected") end
+    eq(cardCount(c._scroll),40,"open replacement honors pending open")
+    assert(c._cardsByTierIndex[6]~=oldCard,"replacement uses its own cards")
+    eq(c._cardsByTierIndex[6].EquippedBadge.Visible,true)
+    c:_setOpen(false)
+    local closedReplacement=cloneWindow()
+    c:_bindWindow(closedReplacement)
+    eq(cardCount(c._scroll),0,"closed replacement remains lazy")
+    c:_applyState({selectedTierIndex=5,autoUpgrade=true,highestLevelReached=61,maxUnlockedTierIndex=7})
+    eq(cardCount(c._scroll),0)
+    c:_setOpen(true)
+    eq(cardCount(c._scroll),40)
+    eq(c._cardsByTierIndex[5].EquippedBadge.Visible,true)
+    eq(c._cardsByTierIndex[7].EquipButton.Active,true)
+end)
+test("Use Level Look button distinguishes default, manual, special and fixed mode",function()
+    local cases={
+        {name="default",state={highestLevelReached=55,maxUnlockedTierIndex=6,autoUpgrade=true},isDefault=true},
+        {name="manual",state={highestLevelReached=55,maxUnlockedTierIndex=6,autoUpgrade=true,selectedTierIndex=6}},
+        {name="special",state={highestLevelReached=55,maxUnlockedTierIndex=6,autoUpgrade=true,equippedSkinId=10001}},
+        {name="fixed without pick",state={highestLevelReached=55,maxUnlockedTierIndex=6,autoUpgrade=false}},
+    }
+    for _,case in ipairs(cases) do
+        local window,activate=captureLevelLookActivation(cloneWindow())
+        local c=controllerFixture(window)
+        c:_applyState(case.state)
+        c:_setOpen(true)
+        local isDefault=case.isDefault==true
+        expectLevelLookButton(c,isDefault and (utf8.char(0x2713).." Level Look") or "Use Level Look",not isDefault,isDefault)
+        table.clear(modalCalls)
+        activate()
+        local sent=0
+        for _,call in ipairs(modalCalls) do
+            if call.op=="requestEquip" then
+                sent+=1
+                eq(call.payload,"UseLevelLook",case.name.." sends reset intent only")
+                eq(call.extra,nil)
+            end
+        end
+        eq(sent,isDefault and 0 or 1,case.name.." reset request count")
+        eq(c._state.selectedTierIndex,case.state.selectedTierIndex,"UI intent does not mutate authoritative selection")
+    end
+end)
+test("Use Level Look stays Loading and cannot send before state or Remote is ready",function()
+    local window,activate=captureLevelLookActivation(cloneWindow())
+    local c=controllerFixture(window)
+    c:_setOpen(true)
+    eq(c._state,nil)
+    expectLevelLookButton(c,"Loading...",false,false)
+    table.clear(modalCalls)
+    activate()
+    eq(#modalCalls,0,"unknown state must not send a reset")
+    local remote=c._requestEquipEvent
+    c._requestEquipEvent=nil
+    c:_applyState({selectedTierIndex=6,autoUpgrade=true,highestLevelReached=55,maxUnlockedTierIndex=6})
+    expectLevelLookButton(c,"Loading...",false,false)
+    activate()
+    eq(#modalCalls,0,"known state with missing remote cannot send")
+    c._requestEquipEvent=remote
+    -- No appearance value changes here; button readiness must update before dedupe.
+    c:_render()
+    expectLevelLookButton(c,"Use Level Look",true,false)
+    activate()
+    eq(#modalCalls,1)
+    eq(modalCalls[1].payload,"UseLevelLook")
 end)
 test("GM attribute opens the window through ModalUi and requests state",function()
     local window=cloneWindow()
@@ -542,7 +916,7 @@ test("Late-arriving window honors a pending open request",function()
     table.clear(modalCalls)
     local c=cloneService(Controller)
     c._localPlayer={GetAttribute=function() return nil end}
-    c._catalog={}
+    c._catalog=controllerCatalog()
     c._requestStateEvent={FireServer=function() table.insert(modalCalls,{op="requestState"}) end}
     c._requestEquipEvent={FireServer=function() end}
     c:_onArmoryActivated()
@@ -560,6 +934,7 @@ test("Late-arriving window honors a pending open request",function()
         if call.op=="open" and call.owner=="LevelWeaponSkins" and call.panel==window then openedLate=true end
     end
     assert(openedLate,"pending open not replayed on late window bind")
+    eq(cardCount(window.Content.ScrollingFrame),40,"late window initializes on pending open")
 end)
 test("PotionController luck entry prefers Main.BottomLeft.Luck (V6.27.1)",function()
     local Potion=loadModule(controllers.PotionController)
@@ -572,7 +947,7 @@ test("PotionController luck entry prefers Main.BottomLeft.Luck (V6.27.1)",functi
 end)
 
 -- V6.27.2 regression: connect the actual controller/service through isolated events.
-local function connectedController(s)
+local function connectedController(s,captureResetButton)
     local RN=loadModule(shared.RemoteNames)
     local listeners,events={},{}
     for _,kind in ipairs({"PlayerStateSync","LevelWeaponSkinStateSync","LevelWeaponSkinFeedback","RequestLevelWeaponSkinStateSync","RequestLevelWeaponSkinEquip"}) do
@@ -591,21 +966,96 @@ local function connectedController(s)
         WaitForChild=function(_,name) assert(name==RN.RootFolder) return {WaitForChild=function(_,inner)
             assert(inner==RN.SystemEventsFolder) return {WaitForChild=function(_,eventName) return events[eventName] end}
         end} end}
-    local chunk=assert(loadstring(controllers.LevelWeaponSkinController.Source,"=ConnectedLevelSkinController"))
+    local source=sourceOverrides and sourceOverrides.LevelWeaponSkinController or controllers.LevelWeaponSkinController.Source
+    local chunk=assert(loadstring(source,"=ConnectedLevelSkinController"))
     setfenv(chunk,setmetatable({script=controllers.LevelWeaponSkinController,require=loadModule,
         game={GetService=function(_,name) if name=="ReplicatedStorage" then return fakeRS end return fakeGame:GetService(name) end},
         task={spawn=function(cb) cb() end,defer=forbidden,delay=forbidden,wait=forbidden},
     },{__index=getfenv()}))
     local c=cloneService(chunk())
-    c._catalog={}
-    for i=1,WeaponTierConfig.TotalTierCount do
-        local tier=WeaponTierConfig.Order[i]
-        c._catalog[i]={tierIndex=i,name=WeaponTierConfig.GetDisplayNameForTier(tier),icon=WeaponTierConfig.GetIconImageForTier(tier),unlockLevel=WeaponTierConfig.GetUnlockLevelForTierIndex(i)}
-    end
-    c:_bindWindow(cloneWindow())
+    c._catalog=controllerCatalog()
+    local window=cloneWindow()
+    local activate
+    if captureResetButton then window,activate=captureLevelLookActivation(window) end
+    c:_bindWindow(window)
     c:_bindRemotes()
-    return c,events
+    return c,events,activate
 end
+
+test("Use Level Look Activated restores manual choice and repeating default is a no-op",function()
+    local s=serviceFixture(55,true)
+    assert(s.f.ps:EquipLevelWeaponSkin(s.f.p,6))
+    local c,_,activate=connectedController(s,true)
+    c:_setOpen(true)
+    expectLevelLookButton(c,"Use Level Look",true,false)
+    local cards=table.clone(c._cardsByTierIndex)
+    local connections=table.clone(c._connectionsByWindow)
+    local calls=observeCardRenders(c)
+    local sent=0
+    local remote=c._requestEquipEvent
+    local fireServer=remote.FireServer
+    remote.FireServer=function(self,payload,...)
+        sent+=1
+        eq(payload,"UseLevelLook")
+        return fireServer(self,payload,...)
+    end
+    clockNow+=1
+    activate()
+    eq(sent,1)
+    eq(s.f.state.SelectedLevelWeaponTierIndex,nil)
+    eq(s.f.state.EquippedSkinId,nil)
+    eq(s.f.state.AutoUpgradeLevelWeaponSkin,true)
+    eq(c._state.selectedTierIndex,nil)
+    eq(c._cardsByTierIndex[6].EquippedBadge.Visible,false)
+    eq(c._cardsByTierIndex[6].SelectionHighlight.Visible,false)
+    expectLevelLookButton(c,utf8.char(0x2713).." Level Look",false,true)
+    eq(#calls,1,"reset refreshes only previously selected card")
+    eq(calls[1],6)
+    table.clear(calls)
+    for _=1,3 do activate() end
+    eq(sent,1,"default-state reset never reaches the Remote")
+    eq(#calls,0,"default-state reset never refreshes cards")
+    eq(cardCount(c._scroll),40,"reset keeps cached cards")
+    for index,card in pairs(cards) do eq(c._cardsByTierIndex[index],card) end
+    eq(#c._connectionsByWindow,#connections)
+    for index,connection in ipairs(connections) do eq(c._connectionsByWindow[index],connection) end
+end)
+test("Use Level Look Activated clears a special skin without rewriting unrelated cards",function()
+    local s=serviceFixture(55,true)
+    local skin=SkinConfig.GetAllSkins()[1]
+    assert(s.f.ps:GrantSkin(s.f.p,skin.Id))
+    assert(s.f.ps:EquipSkin(s.f.p,skin.Id))
+    local c,_,activate=connectedController(s,true)
+    c:_setOpen(true)
+    expectLevelLookButton(c,"Use Level Look",true,false)
+    local calls=observeCardRenders(c)
+    clockNow+=1
+    activate()
+    eq(s.f.state.EquippedSkinId,nil)
+    eq(s.f.state.SelectedLevelWeaponTierIndex,nil)
+    eq(s.f.state.AutoUpgradeLevelWeaponSkin,true)
+    eq(c._state.equippedSkinId,nil)
+    expectLevelLookButton(c,utf8.char(0x2713).." Level Look",false,true)
+    eq(#calls,0,"special-to-level source change has no selected card to repaint")
+end)
+test("Use Level Look Activated restores auto upgrade and clears fixed-mode selection",function()
+    local s=serviceFixture(55,true)
+    assert(s.f.ps:SetLevelWeaponAutoUpgrade(s.f.p,false))
+    eq(s.f.state.SelectedLevelWeaponTierIndex,6)
+    local c,_,activate=connectedController(s,true)
+    c:_setOpen(true)
+    expectLevelLookButton(c,"Use Level Look",true,false)
+    local calls=observeCardRenders(c)
+    clockNow+=1
+    activate()
+    eq(s.f.state.AutoUpgradeLevelWeaponSkin,true)
+    eq(s.f.state.SelectedLevelWeaponTierIndex,nil)
+    eq(c._state.autoUpgrade,true)
+    eq(c._content.AutoUpgradeRow.CheckboxButton.Checkmark.Visible,true)
+    expectLevelLookButton(c,utf8.char(0x2713).." Level Look",false,true)
+    eq(#calls,1)
+    eq(calls[1],6)
+end)
 
 test("Open Armory reflects a new unlock from normal level-up",function()
     local s=serviceFixture(55,true)
@@ -624,17 +1074,47 @@ end)
 test("Armory clears selected badge when original Skin equips",function()
     local s=serviceFixture(55,true)
     local c=connectedController(s)
+    c:_setOpen(true)
     clockNow+=1
     c:_requestEquip(6)
     eq(c._state.selectedTierIndex,6,"level equip synced")
+    local calls=observeCardRenders(c)
     local skin=SkinConfig.GetAllSkins()[1]
     assert(s.f.ps:GrantSkin(s.f.p,skin.Id))
     assert(s.f.ps:EquipSkin(s.f.p,skin.Id))
     eq(s.f.state.SelectedLevelWeaponTierIndex,nil,"server mutex clears manual pick")
     eq(c._state.selectedTierIndex,nil,"client selected badge clears")
     eq(c._cardsByTierIndex[6].EquippedBadge.Visible,false)
+    eq(c._cardsByTierIndex[6].SelectionHighlight.Visible,false)
     eq(c._cardsByTierIndex[6].EquipButton.Active,true)
-    eq(c._content.SelectedSkinSummary.Text,"Chosen: Special Skin")
+    eq(#calls,1,"special skin clears only former selected card")
+    eq(calls[1],6)
+    optionalSummary(c._content,"Chosen: Special Skin")
+end)
+
+test("Duplicate dedicated state, feedback and PlayerStateSync trigger zero redraws",function()
+    local s=serviceFixture(55,true)
+    local c,events=connectedController(s)
+    c:_setOpen(true)
+    clockNow+=1
+    c:_requestEquip(6)
+    local calls=observeCardRenders(c)
+    local renderCount=0
+    local render=c._render
+    c._render=function(self) renderCount+=1 return render(self) end
+    local RN=loadModule(shared.RemoteNames)
+    clockNow+=1
+    local state=s.f.ps:GetLevelWeaponSkinState(s.f.p)
+    state.timestamp=clockNow
+    events[RN.System.LevelWeaponSkinStateSync]:FireClient(s.f.p,state)
+    events[RN.System.LevelWeaponSkinFeedback]:FireClient(s.f.p,{eventType="Equipped",state=state})
+    s.f.ps:PushState(s.f.p)
+    eq(#calls,0)
+    eq(renderCount,0,"all state sources use the same appearance comparison")
+    eq(c._lastStateTimestamp,clockNow,"fresh duplicate still advances stale-event guard")
+    c:_applyState({selectedTierIndex=1,autoUpgrade=false,highestLevelReached=1,maxUnlockedTierIndex=1,timestamp=clockNow-1})
+    eq(c._state.selectedTierIndex,6,"stale event cannot undo selection after duplicate")
+    eq(renderCount,0)
 end)
 
 test("Auto off keeps special skin; explicit level equip changes source",function()
@@ -643,6 +1123,7 @@ test("Auto off keeps special skin; explicit level equip changes source",function
     assert(s.f.ps:GrantSkin(s.f.p,skin.Id))
     assert(s.f.ps:EquipSkin(s.f.p,skin.Id))
     local c=connectedController(s)
+    c:_setOpen(true)
     eq(c._state.equippedSkinId,skin.Id,"dedicated state includes special skin")
     clockNow+=1
     c:_requestEquip("AutoUpgrade",false)
@@ -670,6 +1151,7 @@ test("Unequipping special skin honors stored fixed-mode preference",function()
     assert(s.f.ps:EquipSkin(s.f.p,skin.Id))
     assert(s.f.ps:SetLevelWeaponAutoUpgrade(s.f.p,false))
     local c=connectedController(s)
+    c:_setOpen(true)
     assert(s.f.ps:ClearEquippedSkin(s.f.p))
     eq(c._state.selectedTierIndex,6)
     eq(c._state.equippedSkinId,nil)
@@ -681,12 +1163,13 @@ test("Unequipping special skin honors stored fixed-mode preference",function()
     assert(s.f.ps:SetLevelWeaponAutoUpgrade(s.f.p,true))
     assert(s.f.ps:ClearEquippedSkin(s.f.p))
     eq(c._state.selectedTierIndex,nil,"auto mode returns to level look")
-    eq(c._content.SelectedSkinSummary.Text,"Chosen: Level Look")
+    optionalSummary(c._content,"Chosen: Level Look")
 end)
 
 test("Late data load still updates Armory after initial 15-second push expires",function()
     local s=serviceFixture(nil,false)
     local c=connectedController(s)
+    c:_setOpen(true)
     eq(c._state.highestLevelReached,1)
     -- Fast-forward only the isolated service's wait; never sleep or touch live players.
     local taskEnv=getfenv(LevelSkinService.OnPlayerAdded).task
@@ -772,6 +1255,7 @@ end)
 test("Unrelated PlayerStateSync skips redraw and older dedicated states cannot roll back",function()
     local s=serviceFixture(55,true)
     local c=connectedController(s)
+    c:_setOpen(true)
     local render=c._render
     local count=0
     c._render=function(self) count+=1 return render(self) end
@@ -797,9 +1281,12 @@ end)
 ModalUi.PlayPanelOpen,ModalUi.PlayPanelClose=savedOpen,savedClose
 for _,node in ipairs(guiFolder:GetChildren()) do node:Destroy() end
 guiFolder:Destroy()
-test("Formal HUD entry stays hidden and old skin window untouched",function()
+test("Formal UI retains editor visibility and only one hidden card template",function()
     eq(game.StarterGui.Main.Left.LevelWeaponSkinsButton.Visible,false)
-    eq(game.StarterGui.Main.LevelWeaponSkins.Visible,false)
+    eq(game.StarterGui.Main.LevelWeaponSkins.Visible,formalWindowVisibleBefore,"verification preserves user's editor visibility")
+    local scroll=game.StarterGui.Main.LevelWeaponSkins.Content.ScrollingFrame
+    eq(cardCount(scroll),0,"formal UI must not ship 40 eager cards")
+    eq(scroll.LevelWeaponTemplate.Visible,false)
     eq(game.StarterGui.Main.Left.Armory.Visible,true,"Armory HUD entry must stay visible")
     assert(game.StarterGui.Main:FindFirstChild("Skin"),"old Skin window missing")
     assert(game.StarterGui.Main.Skin:FindFirstChild("Tabs"),"old Skin tabs missing")

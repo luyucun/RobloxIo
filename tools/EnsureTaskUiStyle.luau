@@ -1,6 +1,7 @@
 -- V6.12 / V6.16 task UI template migrations for StarterGui.Main.TaskBgNew.
 -- v4 (V6.12): refine the original task UI using existing Shop/Chest/Claim styles.
 -- v5 (V6.16): opaque Shop-style content cards, row progress, tab badges, status chip and effect nodes.
+-- v6: let text scale with its containers instead of capping desktop labels at 11-30 px.
 -- Run only through the project Studio health/identity gate. No runtime UI construction.
 local RunService = game:GetService("RunService")
 assert(RunService:IsStudio() and not RunService:IsRunning(), "Studio Edit mode required")
@@ -8,7 +9,7 @@ assert(game.PlaceId == 73988417166286, "Wrong place")
 local main = game:GetService("StarterGui"):WaitForChild("Main")
 local panel = main:WaitForChild("TaskBgNew")
 assert(panel:IsA("Frame"))
-local VERSION = 5
+local VERSION = 6
 local installedVersion = tonumber(panel:GetAttribute("TaskUiStyleVersion")) or 0
 if installedVersion >= VERSION then
     return "Task UI style v" .. tostring(installedVersion) .. " already installed; preserving manual edits"
@@ -531,10 +532,101 @@ local function applyTaskUiV4()
     end
 end
 
+-- Typography and text layout migration. Keep the established fonts, colors, window geometry and effects.
+local function applyTaskUiV6(panel)
+    local row = panel.Content.TaskList.ScrollingFrame.Template
+    local detail = panel.Content.TaskDetail
+    local textNodes = {
+        panel.TitleBg.Title,
+        panel.Tabs.DailyTab.ButtonLabel,
+        panel.Tabs.WeeklyTab.ButtonLabel,
+        panel.Tabs.DailyTab.Badge.Count,
+        panel.Tabs.WeeklyTab.Badge.Count,
+        panel.CountdownPill.Label,
+        panel.CountdownTime,
+        row.PeriodTag,
+        row.TaskTitle,
+        row.TaskSubtitle,
+        row.ProgressText,
+        detail.TaskTitle,
+        detail.StatusText,
+        detail.ProgressBg.Num,
+        detail.ProgressTrack.Percent,
+        detail.RewardTitle,
+        detail.ClaimButton.Text,
+        detail.Complete,
+    }
+    for _, reward in ipairs(detail.RewardList:GetChildren()) do
+        if reward.Name == "RewardTemplate" and reward:IsA("Frame") then
+            table.insert(textNodes, reward.RewardNum)
+        end
+    end
+    -- Validate the complete migration target before touching an installed v5 template.
+    assert(row:IsA("TextButton") and row.TaskRowSizeLimit:IsA("UISizeConstraint"))
+    assert(row.ProgressTrack:IsA("Frame"))
+    assert(detail.StatusText.Padding:IsA("UIPadding"))
+    for _, node in ipairs(textNodes) do
+        assert(node:IsA("TextLabel"), node:GetFullName() .. " must be a TextLabel")
+    end
+
+    for _, node in ipairs(textNodes) do
+        node.TextWrapped = true
+        node.TextScaled = true
+        local hasLimit = false
+        for _, child in ipairs(node:GetChildren()) do
+            if child:IsA("UITextSizeConstraint") then
+                -- The label's proportional height now defines the hierarchy. A generous
+                -- ceiling allows large viewports to grow; TextScaled still fits long text.
+                child.MaxTextSize = 100
+                child.MinTextSize = 9
+                hasLimit = true
+            end
+        end
+        if not hasLimit then
+            local limit = Instance.new("UITextSizeConstraint")
+            limit.Name = "TextSizeLimit"
+            limit.MaxTextSize = 100
+            limit.MinTextSize = 9
+            limit.Parent = node
+        end
+    end
+
+    -- Keep desktop row proportions, but reserve enough space for wrapped descriptions
+    -- in smaller viewports. Overflow remains accessible through the existing scrolling list.
+    local rowSizeLimit = row.TaskRowSizeLimit
+    rowSizeLimit.MinSize = Vector2.new(rowSizeLimit.MinSize.X, math.max(100, rowSizeLimit.MinSize.Y))
+    row.PeriodTag.Position = UDim2.fromScale(0.045, 0.05)
+    row.PeriodTag.Size = UDim2.fromScale(0.40, 0.16)
+    row.TaskTitle.Position = UDim2.fromScale(0.045, 0.23)
+    row.TaskTitle.Size = UDim2.fromScale(0.86, 0.27)
+    row.TaskSubtitle.Position = UDim2.fromScale(0.045, 0.51)
+    row.TaskSubtitle.Size = UDim2.fromScale(0.91, 0.30)
+    row.ProgressTrack.Position = UDim2.fromScale(0.045, 0.91)
+    row.ProgressTrack.Size = UDim2.fromScale(0.43, 0.065)
+    row.ProgressText.Position = UDim2.fromScale(0.955, 0.91)
+    row.ProgressText.Size = UDim2.fromScale(0.43, 0.16)
+    -- Keep weekly counters, the status chip and reward quantities above the minimum
+    -- readable size even in a 640 px landscape viewport.
+    detail.StatusText.Size = UDim2.fromScale(0.3, 0.12)
+    detail.StatusText.Padding.PaddingLeft = UDim.new(0.04, 0)
+    detail.StatusText.Padding.PaddingRight = UDim.new(0.04, 0)
+    detail.StatusText.Padding.PaddingTop = UDim.new(0.08, 0)
+    detail.StatusText.Padding.PaddingBottom = UDim.new(0.08, 0)
+    for _, reward in ipairs(detail.RewardList:GetChildren()) do
+        if reward.Name == "RewardTemplate" and reward:IsA("Frame") then
+            reward.RewardNum.Size = UDim2.fromScale(0.9, 0.45)
+        end
+    end
+end
+
 if installedVersion < 4 then
     applyTaskUiV4()
     panel:SetAttribute("TaskUiStyleVersion", 4)
 end
-applyTaskUiV5(panel)
+if installedVersion < 5 then
+    applyTaskUiV5(panel)
+    panel:SetAttribute("TaskUiStyleVersion", 5)
+end
+applyTaskUiV6(panel)
 panel:SetAttribute("TaskUiStyleVersion", VERSION)
 return "Task UI style migrated from v" .. tostring(installedVersion) .. " to v" .. tostring(VERSION)

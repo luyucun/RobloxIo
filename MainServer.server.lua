@@ -663,11 +663,11 @@ local function onPlayerAdded(player)
     LevelWeaponSkinService:OnPlayerAdded(player)
 
     local function handleCharacterAdded()
-        local shouldReviveInArena = RespawnService:ConsumeArenaReviveRequest(player)
+        local shouldReviveInArena, arenaReviveOptions = RespawnService:ConsumeArenaReviveRequest(player)
         PlayerStateService:OnCharacterAdded(player)
         task.defer(function()
             if shouldReviveInArena then
-                RespawnService:CompleteArenaRevive(player)
+                RespawnService:CompleteArenaRevive(player, arenaReviveOptions)
             else
                 ArenaService:TeleportPlayerToSpawnLocation(player)
                 if not RebirthService.IsPlayerLoaded or RebirthService:IsPlayerLoaded(player) then

@@ -1255,10 +1255,14 @@ function SkinController:_getSkinEntries()
     local entries = {}
     for _, skin in ipairs(SkinConfig.GetAllSkins()) do
         local stateEntry = byId[skin.Id] or {}
+        -- Keep legacy inventory usable without advertising a retired reward.
+        if skin.IsRetired == true and stateEntry.owned ~= true then
+            continue
+        end
         table.insert(entries, {
             id = skin.Id,
             name = stateEntry.name or skin.Name,
-            iconImage = stateEntry.iconImage or skin.IconImage,
+            iconImage = skin.CustomizeIconImage or stateEntry.iconImage or skin.IconImage,
             purchaseChannel = tonumber(stateEntry.purchaseChannel) or skin.PurchaseChannel,
             sortOrder = math.max(0, math.floor(tonumber(stateEntry.sortOrder) or tonumber(skin.SortOrder) or skin.Id)),
             diamondPrice = tonumber(stateEntry.diamondPrice) or skin.DiamondPrice,
