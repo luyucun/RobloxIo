@@ -1,4 +1,4 @@
--- Script: VerifyLevelWeaponSkinFlow | Type: isolated Studio Edit regression tool (V6.27)
+-- Script: VerifyLevelWeaponSkinFlow | Type: isolated Studio Edit regression tool (V6.27.2)
 -- Studio path: project MCP execute_luau; no Play, no real Remote traffic, no DataStore.
 -- Covers: unlock catalog math, equip/reset/auto state rules, per-slot visual resolution,
 -- special-skin mutex, persistence round-trip (explicit false kept), WeaponService visual
@@ -570,6 +570,230 @@ test("PotionController luck entry prefers Main.BottomLeft.Luck (V6.27.1)",functi
     eq(entry.Name,"Luck")
     assert(game.StarterGui.Main.Left:FindFirstChild("Luck"),"legacy hidden node expected for fallback check")
 end)
+
+-- V6.27.2 regression: connect the actual controller/service through isolated events.
+local function connectedController(s)
+    local RN=loadModule(shared.RemoteNames)
+    local listeners,events={},{}
+    for _,kind in ipairs({"PlayerStateSync","LevelWeaponSkinStateSync","LevelWeaponSkinFeedback","RequestLevelWeaponSkinStateSync","RequestLevelWeaponSkinEquip"}) do
+        listeners[kind]={}
+        events[RN.System[kind]]={
+            OnClientEvent={Connect=function(_,cb) table.insert(listeners[kind],cb) return {Connected=true,Disconnect=function() end} end},
+            FireServer=function(_,...) if s.handlers[kind] then s.handlers[kind](s.f.p,...) end end,
+            FireClient=function(_,_,payload) for _,cb in ipairs(listeners[kind]) do cb(payload) end end,
+        }
+    end
+    s.svc._stateSyncEvent=events[RN.System.LevelWeaponSkinStateSync]
+    s.svc._feedbackEvent=events[RN.System.LevelWeaponSkinFeedback]
+    s.f.ps._playerStateSyncEvent=events[RN.System.PlayerStateSync]
+    s.f.ps.PushState=PlayerState.PushState
+    local fakeRS={FindFirstChild=function(_,name) return game.ReplicatedStorage:FindFirstChild(name) end,
+        WaitForChild=function(_,name) assert(name==RN.RootFolder) return {WaitForChild=function(_,inner)
+            assert(inner==RN.SystemEventsFolder) return {WaitForChild=function(_,eventName) return events[eventName] end}
+        end} end}
+    local chunk=assert(loadstring(controllers.LevelWeaponSkinController.Source,"=ConnectedLevelSkinController"))
+    setfenv(chunk,setmetatable({script=controllers.LevelWeaponSkinController,require=loadModule,
+        game={GetService=function(_,name) if name=="ReplicatedStorage" then return fakeRS end return fakeGame:GetService(name) end},
+        task={spawn=function(cb) cb() end,defer=forbidden,delay=forbidden,wait=forbidden},
+    },{__index=getfenv()}))
+    local c=cloneService(chunk())
+    c._catalog={}
+    for i=1,WeaponTierConfig.TotalTierCount do
+        local tier=WeaponTierConfig.Order[i]
+        c._catalog[i]={tierIndex=i,name=WeaponTierConfig.GetDisplayNameForTier(tier),icon=WeaponTierConfig.GetIconImageForTier(tier),unlockLevel=WeaponTierConfig.GetUnlockLevelForTierIndex(i)}
+    end
+    c:_bindWindow(cloneWindow())
+    c:_bindRemotes()
+    return c,events
+end
+
+test("Open Armory reflects a new unlock from normal level-up",function()
+    local s=serviceFixture(55,true)
+    local c=connectedController(s)
+    eq(c._state.highestLevelReached,55,"initial sync")
+    c:_setOpen(true)
+    local GameConfig=loadModule(shared.GameConfig)
+    local xp=0
+    for level=55,60 do xp+=GameConfig.GetNextLevelExperience(level) end
+    assert(s.f.ps:AddExperience(s.f.p,xp))
+    eq(s.f.state.HighestLevelReached,61,"authoritative highest")
+    eq(c._state.highestLevelReached,61,"client highest after PlayerStateSync")
+    eq(c._cardsByTierIndex[7].EquipButton.Active,true,"T7 selectable without reopening")
+end)
+
+test("Armory clears selected badge when original Skin equips",function()
+    local s=serviceFixture(55,true)
+    local c=connectedController(s)
+    clockNow+=1
+    c:_requestEquip(6)
+    eq(c._state.selectedTierIndex,6,"level equip synced")
+    local skin=SkinConfig.GetAllSkins()[1]
+    assert(s.f.ps:GrantSkin(s.f.p,skin.Id))
+    assert(s.f.ps:EquipSkin(s.f.p,skin.Id))
+    eq(s.f.state.SelectedLevelWeaponTierIndex,nil,"server mutex clears manual pick")
+    eq(c._state.selectedTierIndex,nil,"client selected badge clears")
+    eq(c._cardsByTierIndex[6].EquippedBadge.Visible,false)
+    eq(c._cardsByTierIndex[6].EquipButton.Active,true)
+    eq(c._content.SelectedSkinSummary.Text,"Chosen: Special Skin")
+end)
+
+test("Auto off keeps special skin; explicit level equip changes source",function()
+    local s=serviceFixture(55,true)
+    local skin=SkinConfig.GetAllSkins()[1]
+    assert(s.f.ps:GrantSkin(s.f.p,skin.Id))
+    assert(s.f.ps:EquipSkin(s.f.p,skin.Id))
+    local c=connectedController(s)
+    eq(c._state.equippedSkinId,skin.Id,"dedicated state includes special skin")
+    clockNow+=1
+    c:_requestEquip("AutoUpgrade",false)
+    eq(s.f.state.AutoUpgradeLevelWeaponSkin,false)
+    eq(s.f.state.SelectedLevelWeaponTierIndex,nil,"auto toggle cannot equip a hidden level pick")
+    eq(s.f.state.EquippedSkinId,skin.Id)
+    eq(c._state.autoUpgrade,false)
+    eq(c._state.selectedTierIndex,nil)
+    eq(c._cardsByTierIndex[6].EquipButton.Visible,true)
+    local ws=weaponFixture(s.f.ps)
+    eq(makeWeapon(ws,s.f.p,1).VisualSkinId,skin.Id,"visual stays on special skin")
+    clockNow+=1
+    c:_requestEquip(6)
+    eq(s.f.state.EquippedSkinId,nil)
+    eq(s.f.state.SelectedLevelWeaponTierIndex,6)
+    eq(c._state.equippedSkinId,nil)
+    eq(c._state.autoUpgrade,false,"stored preference survives explicit equip")
+    eq(makeWeapon(ws,s.f.p,1).VisualTemplateName,"Weapon006")
+end)
+
+test("Unequipping special skin honors stored fixed-mode preference",function()
+    local s=serviceFixture(55,true)
+    local skin=SkinConfig.GetAllSkins()[1]
+    assert(s.f.ps:GrantSkin(s.f.p,skin.Id))
+    assert(s.f.ps:EquipSkin(s.f.p,skin.Id))
+    assert(s.f.ps:SetLevelWeaponAutoUpgrade(s.f.p,false))
+    local c=connectedController(s)
+    assert(s.f.ps:ClearEquippedSkin(s.f.p))
+    eq(c._state.selectedTierIndex,6)
+    eq(c._state.equippedSkinId,nil)
+    eq(c._state.autoUpgrade,false)
+    eq(c._cardsByTierIndex[6].EquippedBadge.Visible,true)
+    local tier7=WeaponTierConfig.Tiers[WeaponTierConfig.Order[7]]
+    eq(s.f.ps:GetLevelWeaponVisualConfig(s.f.p,tier7).TemplateName,"Weapon006")
+    assert(s.f.ps:EquipSkin(s.f.p,skin.Id))
+    assert(s.f.ps:SetLevelWeaponAutoUpgrade(s.f.p,true))
+    assert(s.f.ps:ClearEquippedSkin(s.f.p))
+    eq(c._state.selectedTierIndex,nil,"auto mode returns to level look")
+    eq(c._content.SelectedSkinSummary.Text,"Chosen: Level Look")
+end)
+
+test("Late data load still updates Armory after initial 15-second push expires",function()
+    local s=serviceFixture(nil,false)
+    local c=connectedController(s)
+    eq(c._state.highestLevelReached,1)
+    -- Fast-forward only the isolated service's wait; never sleep or touch live players.
+    local taskEnv=getfenv(LevelSkinService.OnPlayerAdded).task
+    local oldSpawn,oldWait=taskEnv.spawn,taskEnv.wait
+    taskEnv.spawn=function(cb) cb() end
+    taskEnv.wait=function(seconds) clockNow+=seconds end
+    local ok,err=pcall(function() s.svc:OnPlayerAdded(s.f.p) end)
+    taskEnv.spawn,taskEnv.wait=oldSpawn,oldWait
+    assert(ok,err)
+    eq(c._state.highestLevelReached,1,"no loaded push was available")
+    clockNow+=1
+    local rb=cloneService(Rebirth)
+    rb._playerStateService=s.f.ps
+    rb._dataStore={GetAsync=function() return {highestLevelReached=55,selectedLevelWeaponTierIndex=6,autoUpgradeLevelWeaponSkin=false} end}
+    rb:_loadPlayer(s.f.p)
+    eq(c._state.highestLevelReached,55)
+    eq(c._state.selectedTierIndex,6)
+    eq(c._state.autoUpgrade,false,"explicit false from late load preserved")
+    eq(c._cardsByTierIndex[6].EquippedBadge.Visible,true)
+end)
+
+test("Old dual-source save keeps special skin and repairs selected level pick",function()
+    local f=fixture()
+    local skin=SkinConfig.GetAllSkins()[1]
+    local rb=cloneService(Rebirth)
+    rb._processedPurchaseIdsByPlayerId={}
+    rb._playerStateService=f.ps
+    rb._dataStore={GetAsync=function() return {
+        highestLevelReached=55,ownedSkins={[tostring(skin.Id)]=true},equippedSkinId=skin.Id,
+        selectedLevelWeaponTierIndex=6,autoUpgradeLevelWeaponSkin=false,
+    } end}
+    rb:_loadPlayer(f.p)
+    eq(f.state.EquippedSkinId,skin.Id)
+    eq(f.state.SelectedLevelWeaponTierIndex,nil)
+    eq(f.state.AutoUpgradeLevelWeaponSkin,false)
+    local saved=rb:_buildSavePayload(f.p,{includeCombatSnapshot=false})
+    eq(saved.equippedSkinId,skin.Id)
+    eq(saved.selectedLevelWeaponTierIndex,nil,"next save contains one appearance source")
+    eq(saved.autoUpgradeLevelWeaponSkin,false)
+end)
+
+test("Death reset and new character retain fixed T6 look at actual level 1",function()
+    local f=fixture(55)
+    assert(f.ps:EquipLevelWeaponSkin(f.p,6))
+    assert(f.ps:SetLevelWeaponAutoUpgrade(f.p,false))
+    f.ps:ResetCombatState(f.p)
+    f.ps:OnCharacterAdded(f.p)
+    eq(f.state.Level,1)
+    eq(f.state.HighestLevelReached,55)
+    eq(f.state.SelectedLevelWeaponTierIndex,6)
+    eq(f.state.AutoUpgradeLevelWeaponSkin,false)
+    f.state.IsInArena=true
+    local ws=weaponFixture(f.ps)
+    ws:RebuildWeaponsForPlayer(f.p)
+    local weapons=ws._weaponsByCombatUserId[f.p.UserId]
+    eq(#weapons,1,"actual level 1 grants one weapon")
+    eq(weapons[1].Tier,"T1")
+    eq(weapons[1].VisualTemplateName,"Weapon006")
+end)
+
+test("Changing level appearance preserves missing weapons, recovery timer and real stats",function()
+    local f=fixture(55)
+    local ws=weaponFixture(f.ps)
+    f.ps._weaponService=ws
+    ws:_rebuildWeaponsForActorToCount(f.p,7)
+    local before={}
+    for i,w in ipairs(ws._weaponsByCombatUserId[f.p.UserId]) do
+        before[i]={tier=w.Tier,damage=w.BaseDamage,rank=w.CombatRank,radius=w.AuraRadius}
+    end
+    local restoreAt=ws._weaponRestorationByCombatUserId[f.p.UserId].NextRestoreAt
+    assert(f.ps:EquipLevelWeaponSkin(f.p,6))
+    assert(f.ps:SetLevelWeaponAutoUpgrade(f.p,false))
+    local weapons=ws._weaponsByCombatUserId[f.p.UserId]
+    eq(#weapons,7,"appearance cannot restore three missing weapons")
+    eq(ws._weaponRestorationByCombatUserId[f.p.UserId].NextRestoreAt,restoreAt)
+    for i,w in ipairs(weapons) do
+        eq(w.Tier,before[i].tier);eq(w.BaseDamage,before[i].damage)
+        eq(w.CombatRank,before[i].rank);eq(w.AuraRadius,before[i].radius)
+        eq(w.VisualTemplateName,"Weapon006")
+    end
+end)
+
+test("Unrelated PlayerStateSync skips redraw and older dedicated states cannot roll back",function()
+    local s=serviceFixture(55,true)
+    local c=connectedController(s)
+    local render=c._render
+    local count=0
+    c._render=function(self) count+=1 return render(self) end
+    clockNow+=1
+    s.f.ps:PushState(s.f.p)
+    eq(count,0,"same appearance snapshot does not redraw 40 cards")
+    local timestamp=clockNow
+    c:_applyState({highestLevelReached=1,autoUpgrade=true,timestamp=timestamp-1})
+    eq(c._state.highestLevelReached,55,"older dedicated state ignored")
+    eq(count,0)
+    clockNow+=1
+    assert(s.f.ps:SetLevelWeaponAutoUpgrade(s.f.p,false))
+    eq(count,1,"changed appearance triggers one general-state redraw")
+    eq(c._state.autoUpgrade,false)
+    eq(c._state.selectedTierIndex,6)
+    clockNow+=1
+    s.f.ps:PushState(s.f.p)
+    eq(count,1)
+    c:_applyPlayerState({highestLevelReached=1,timestamp=clockNow+1})
+    eq(c._state.selectedTierIndex,6,"partial legacy state cannot clear a selection")
+end)
+
 ModalUi.PlayPanelOpen,ModalUi.PlayPanelClose=savedOpen,savedClose
 for _,node in ipairs(guiFolder:GetChildren()) do node:Destroy() end
 guiFolder:Destroy()

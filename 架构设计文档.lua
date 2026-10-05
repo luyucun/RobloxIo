@@ -500,4 +500,12 @@ GM /levelskin保留；旧静态Main.Left.LevelWeaponSkinsButton继续隐藏不�
 Luck经验倍率入口由用户迁移至Main.BottomLeft.Luck（旧Main.Left.Luck隐藏保留），
 PotionController._findLuckEntry优先BottomLeft.Luck/Lucky、回退Left旧位置；
 倍率来源仍是服务端totalExperienceMultiplier，无Remote/数值/存档变化。
+V6.27.2 兵器库同步与外观互斥修复 / 2026-10-04
+LevelWeaponSkinController同时订阅PlayerStateSync，将highestLevelReached、selectedLevelWeaponTierIndex、
+levelWeaponSkinAutoUpgrade、equippedSkinId映射为兵器库完整状态；nil手选表示清除，false开关必须保留。
+专用状态和Feedback.state增加只读equippedSkinId（复用已存EquippedSkinId，不新增持久化字段）。
+两路使用服务端timestamp过滤旧状态；通用同步仅相关字段变更时重绘，专用请求仍允许完整刷新模板。
+特殊皮肤装备期间自动开关只保存偏好，不钉最高档；摘要显示Special Skin，等级卡片仍可主动装备。
+卸下特殊皮肤且自动关闭/无手选时钉最高解锁档，保持固定模式；读档/状态归一化清除旧的双来源手选。
+解锁、外观来源、最高档固定和互斥全部由PlayerStateService决定；客户端不计算或写入装备结果。
 ]]

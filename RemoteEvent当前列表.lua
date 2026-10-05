@@ -273,9 +273,12 @@ LevelWeaponSkinStateSync（S -> C）
 用途：同步服务端权威的等级武器外观状态；进服加载完成后、每次装备/复原/自动开关变更后推送，拒绝路径也回推权威状态。外观目录（40 档名称/图标/解锁等级）不随事件下发，客户端直接读 `ReplicatedStorage/Shared/WeaponTierConfig`。
 字段：
 - selectedTierIndex：nil（默认等级外观）或 1-40 的手选基础外观档序号。
+- equippedSkinId：nil 或有效特殊皮肤 ID；非 nil 时 selectedTierIndex 必须 nil，摘要显示 Special Skin。
 - autoUpgrade：boolean，缺省 true；显式 false 必须保留。
 - highestLevelReached：服务端历史最高等级，解锁目录由此派生，不接受客户端自报。
-- timestamp
+- maxUnlockedTierIndex、totalTierCount：已解锁最高档与总档数。
+- timestamp：服务端 os.clock；控制器过滤两路同步的旧快照。
+补充（V6.27.2）：控制器同时消费既有 PlayerStateSync 的 highestLevelReached / selectedLevelWeaponTierIndex / levelWeaponSkinAutoUpgrade / equippedSkinId，覆盖升级、特殊皮肤变更及晚到读档；相关字段未变不重复重绘。
 
 RequestLevelWeaponSkinStateSync（C -> S）
 发送方：`LevelWeaponSkinController`
@@ -290,7 +293,7 @@ RequestLevelWeaponSkinEquip（C -> S）
 字段（三种互斥形态）：
 - tierIndex：number，装备该档为手选基础外观；同时清除特殊皮肤装备状态（不清拥有）。
 - action = "UseLevelLook"：清除手选基础外观并恢复自动开启，同时清除特殊皮肤装备状态。
-- action = "AutoUpgrade", enabled：boolean，切换自动升级；enabled=false 且无手选时服务端把当前已解锁最高档设为基础外观。
+- action = "AutoUpgrade", enabled：boolean，切换自动升级；enabled=false 且无手选、未装备特殊皮肤时服务端把当前已解锁最高档设为基础外观。特殊皮肤装备期间只保存偏好，不改变来源。
 说明：
 - 等级外观的视觉模板由服务端 `WeaponService._createWeaponState` 在 EquippedSkinId（特殊皮肤优先）之后解析，经既有 `WeaponStateSync.visualTemplateName` 广播，其他客户端无需新事件。
 - 伤害、数量、CombatRank、Aura 判定继续来自实际档位模板（copyAuraShape 用实际档模板），外观不影响判定范围。

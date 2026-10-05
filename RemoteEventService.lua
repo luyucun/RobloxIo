@@ -167,6 +167,7 @@ function RemoteEventService:Init()
         { Key = "RequestChestOpen", Parent = systemEvents, Name = RemoteNames.System.RequestChestOpen },
         { Key = "RequestChestRewardClaim", Parent = systemEvents, Name = RemoteNames.System.RequestChestRewardClaim },
         -- V6.27 level weapon skins: state sync + equip intent + feedback; appearance is server-resolved.
+        -- V6.27.2 state/feedback include equippedSkinId; PlayerStateSync also refreshes Armory.
         { Key = "LevelWeaponSkinStateSync", Parent = systemEvents, Name = RemoteNames.System.LevelWeaponSkinStateSync },
         { Key = "RequestLevelWeaponSkinStateSync", Parent = systemEvents, Name = RemoteNames.System.RequestLevelWeaponSkinStateSync },
         { Key = "RequestLevelWeaponSkinEquip", Parent = systemEvents, Name = RemoteNames.System.RequestLevelWeaponSkinEquip },

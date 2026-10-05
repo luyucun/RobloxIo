@@ -93,8 +93,8 @@ local RemoteNames = {
         RequestChestStateSync = "RequestChestStateSync",
         RequestChestOpen = "RequestChestOpen",
         RequestChestRewardClaim = "RequestChestRewardClaim",
-        -- V6.27 level weapon skins: payload {selectedTierIndex=nil|number, autoUpgrade=boolean,
-        -- highestLevelReached=number, timestamp}; unlock catalog derived client-side from WeaponTierConfig.
+        -- V6.27.2 payload {selectedTierIndex=nil|number, equippedSkinId=nil|number, autoUpgrade=boolean,
+        -- highestLevelReached, maxUnlockedTierIndex, totalTierCount, timestamp}; also consumes PlayerStateSync.
         LevelWeaponSkinStateSync = "LevelWeaponSkinStateSync",
         RequestLevelWeaponSkinStateSync = "RequestLevelWeaponSkinStateSync",
         -- Equip: FireServer(tierIndex:number); reset: FireServer("UseLevelLook");

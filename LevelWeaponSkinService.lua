@@ -84,6 +84,7 @@ function LevelWeaponSkinService:BuildStatePayload(player)
     local skinState = self._playerStateService:GetLevelWeaponSkinState(player)
     return {
         selectedTierIndex = skinState.selectedTierIndex,
+        equippedSkinId = skinState.equippedSkinId,
         autoUpgrade = skinState.autoUpgrade,
         highestLevelReached = skinState.highestLevelReached,
         maxUnlockedTierIndex = skinState.maxUnlockedTierIndex,

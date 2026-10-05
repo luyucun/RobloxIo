@@ -2882,6 +2882,9 @@ function PlayerStateService:ClearEquippedSkin(actor)
     end
 
     state.EquippedSkinId = nil
+    if state.AutoUpgradeLevelWeaponSkin == false and state.SelectedLevelWeaponTierIndex == nil then
+        state.SelectedLevelWeaponTierIndex = self:GetMaxUnlockedLevelWeaponTierIndex(actor)
+    end
     self:PushState(actor)
     if self._rebirthService then
         self._rebirthService:MarkDirty(actor)
@@ -2912,13 +2915,19 @@ end
 
 function PlayerStateService:GetLevelWeaponSkinState(actor)
     local state = self:_getOrCreateState(actor)
+    local equippedSkinId = self:GetEquippedSkinId(actor)
     state.SelectedLevelWeaponTierIndex = normalizeSelectedLevelWeaponTierIndex(
         state.SelectedLevelWeaponTierIndex,
         state.HighestLevelReached
     )
+    if equippedSkinId then
+        -- Repair old dual-source saves while preserving the appearance actually in use.
+        state.SelectedLevelWeaponTierIndex = nil
+    end
     state.AutoUpgradeLevelWeaponSkin = normalizeLevelWeaponAutoUpgrade(state.AutoUpgradeLevelWeaponSkin)
     return {
         selectedTierIndex = state.SelectedLevelWeaponTierIndex,
+        equippedSkinId = equippedSkinId,
         autoUpgrade = state.AutoUpgradeLevelWeaponSkin,
         highestLevelReached = state.HighestLevelReached,
         maxUnlockedTierIndex = self:GetMaxUnlockedLevelWeaponTierIndex(actor),
@@ -3002,10 +3011,11 @@ function PlayerStateService:SetLevelWeaponAutoUpgrade(actor, enabled)
         return false, "InvalidArgument"
     end
     local state = self:_getOrCreateState(actor)
+    local appearance = self:GetLevelWeaponSkinState(actor)
     state.AutoUpgradeLevelWeaponSkin = enabled
-    if not enabled and state.SelectedLevelWeaponTierIndex == nil then
+    if not enabled and state.SelectedLevelWeaponTierIndex == nil and not appearance.equippedSkinId then
         -- Turning auto off without a manual pick still needs something to pin;
-        -- pin the highest unlocked tier as the base appearance.
+        -- special skins only store the preference and keep their existing appearance.
         state.SelectedLevelWeaponTierIndex = self:GetMaxUnlockedLevelWeaponTierIndex(actor)
     end
     self:PushState(actor)
@@ -3736,10 +3746,7 @@ function PlayerStateService:SetRebirthData(actor, rebirth, rebirthScore, highest
         end
         -- Snapshot restore may raise HighestLevelReached after the initial read; re-check the
         -- manual selection against the final value so equips stay within unlocked tiers.
-        state.SelectedLevelWeaponTierIndex = normalizeSelectedLevelWeaponTierIndex(
-            state.SelectedLevelWeaponTierIndex,
-            state.HighestLevelReached
-        )
+        self:GetLevelWeaponSkinState(actor)
         state.ActivePotions = normalizeActivePotions(savedProgress.activePotions or savedProgress.ActivePotions, savedProgress.activePotion or savedProgress.ActivePotion)
         state.ActivePotion = nil
     end

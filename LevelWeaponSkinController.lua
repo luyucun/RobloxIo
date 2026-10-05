@@ -64,6 +64,7 @@ LevelWeaponSkinController._isWindowOpen = false
 LevelWeaponSkinController._requestStateEvent = nil
 LevelWeaponSkinController._requestEquipEvent = nil
 LevelWeaponSkinController._state = nil
+LevelWeaponSkinController._lastStateTimestamp = nil
 LevelWeaponSkinController._catalog = nil
 
 local function buildCatalog()
@@ -100,17 +101,55 @@ local function setGuiButtonInteractable(button, enabled)
     button.AutoButtonColor = enabled
 end
 
-function LevelWeaponSkinController:_applyState(payload)
+function LevelWeaponSkinController:_applyState(payload, skipUnchangedRender)
     if type(payload) ~= "table" then
         return
     end
-    self._state = {
-        selectedTierIndex = tonumber(payload.selectedTierIndex) or nil,
+    local timestamp = tonumber(payload.timestamp)
+    if timestamp and self._lastStateTimestamp and timestamp < self._lastStateTimestamp then
+        return
+    end
+    if timestamp then
+        self._lastStateTimestamp = timestamp
+    end
+    local equippedSkinId = tonumber(payload.equippedSkinId)
+    local state = {
+        selectedTierIndex = not equippedSkinId and tonumber(payload.selectedTierIndex) or nil,
+        equippedSkinId = equippedSkinId,
         autoUpgrade = payload.autoUpgrade ~= false,
         highestLevelReached = math.max(1, math.floor(tonumber(payload.highestLevelReached) or 1)),
         maxUnlockedTierIndex = math.max(1, math.floor(tonumber(payload.maxUnlockedTierIndex) or 1)),
     }
+    local previous = self._state
+    self._state = state
+    if skipUnchangedRender and previous
+        and previous.selectedTierIndex == state.selectedTierIndex
+        and previous.equippedSkinId == state.equippedSkinId
+        and previous.autoUpgrade == state.autoUpgrade
+        and previous.highestLevelReached == state.highestLevelReached
+        and previous.maxUnlockedTierIndex == state.maxUnlockedTierIndex then
+        return
+    end
     self:_render()
+end
+
+function LevelWeaponSkinController:_applyPlayerState(payload)
+    if type(payload) ~= "table" or type(payload.levelWeaponSkinAutoUpgrade) ~= "boolean"
+        or payload.highestLevelReached == nil then
+        return
+    end
+    local highest = math.max(1, math.floor(tonumber(payload.highestLevelReached) or 1))
+    local loadout = WeaponTierConfig.ResolveLoadoutForLevel(highest)
+    -- PlayerStateSync is a complete snapshot: nil selection clears the old badge.
+    -- Skip unrelated health/experience updates, but keep the latest server timestamp.
+    self:_applyState({
+        selectedTierIndex = payload.selectedLevelWeaponTierIndex,
+        equippedSkinId = payload.equippedSkinId,
+        autoUpgrade = payload.levelWeaponSkinAutoUpgrade,
+        highestLevelReached = highest,
+        maxUnlockedTierIndex = loadout and loadout.TierIndex or 1,
+        timestamp = payload.timestamp,
+    }, true)
 end
 
 function LevelWeaponSkinController:_requestState()
@@ -326,7 +365,8 @@ function LevelWeaponSkinController:_render()
     local selectedSummary = self._content:FindFirstChild("SelectedSkinSummary")
     if selectedSummary then
         local selectedEntry = state.selectedTierIndex and self._catalog[state.selectedTierIndex] or nil
-        selectedSummary.Text = selectedEntry and ("Chosen: " .. selectedEntry.name) or "Chosen: Level Look"
+        selectedSummary.Text = state.equippedSkinId and "Chosen: Special Skin"
+            or (selectedEntry and ("Chosen: " .. selectedEntry.name) or "Chosen: Level Look")
     end
     local autoRow = self._content:FindFirstChild("AutoUpgradeRow")
     local checkbox = autoRow and autoRow:FindFirstChild("CheckboxButton") or nil
@@ -474,6 +514,12 @@ function LevelWeaponSkinController:_bindRemotes()
         local systemEventsFolder = eventsRoot and eventsRoot:WaitForChild(RemoteNames.SystemEventsFolder, 10)
         if not systemEventsFolder then
             return
+        end
+        local playerStateSyncEvent = systemEventsFolder:WaitForChild(RemoteNames.System.PlayerStateSync, 10)
+        if playerStateSyncEvent then
+            table.insert(self._connections, playerStateSyncEvent.OnClientEvent:Connect(function(payload)
+                self:_applyPlayerState(payload)
+            end))
         end
         local stateSyncEvent = systemEventsFolder:WaitForChild(RemoteNames.System.LevelWeaponSkinStateSync, 10)
         self._requestStateEvent = systemEventsFolder:WaitForChild(RemoteNames.System.RequestLevelWeaponSkinStateSync, 10)
