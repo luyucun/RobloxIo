@@ -84,14 +84,12 @@
 - 对 UI、场景和资源的改动，优先检查真实节点及现有属性；用户已手调的值优先。
 - 完成后读取关键结果并运行适用的分析或检查；把验证范围与结果写入 `开发记录.md`。
 
-## Rojo Script Sync 流程
+## 脚本同步流程
 
-- 本项目提供 `default.project.json`，用于 VS Code 的 `Rojo - Roblox Studio Sync` / Studio Rojo 插件把本地 Lua 脚本实时同步到 Studio。
-- `default.project.json` 由 `tools/BuildRojoProject.py` 根据脚本头部的 `Studio放置路径` 自动生成；新增脚本时必须写清脚本类型和 Studio 放置路径，然后运行 `py -X utf8 tools\BuildRojoProject.py` 刷新映射。
-- 当前映射只接管脚本和共享配置：`ReplicatedStorage/Shared`、`ServerScriptService/MainServer`、`ServerScriptService/Services`、`StarterPlayer/StarterPlayerScripts/MainClient`、`StarterPlayer/StarterPlayerScripts/Controllers`；Studio 里的 UI 模板、场景模型和手调节点仍以 Studio 当前状态为准。
-- 使用方式：在 VS Code 打开本目录，运行 Rojo 菜单/Script Sync，或在命令行运行 `rojo serve default.project.json`，再在 Roblox Studio 的 Rojo 插件中 Connect。
-- 本地验证命令：`rojo sourcemap default.project.json` 和 `rojo build default.project.json --output <临时rbxlx路径>`；当前已验证可解析并构建 113+ 个脚本映射。
-- Rojo 负责提高本地代码写入 Studio 的效率，但完成改动后仍要用固定 Studio MCP 做读回和 `get_script_analysis` 校验，不能只凭同步成功就认为功能已验证。
+- 本地文件是代码真源；脚本通过固定 Studio MCP 写入 Studio（写入前先过 `Assert-StudioProject` 健康门与 Place 核对），写入后必须逐字读回并运行 `get_script_analysis`。
+- 脚本放置位置由脚本头部的 `Studio放置路径` 决定；新增脚本必须写清脚本类型和 Studio 放置路径。
+- 脚本与共享配置的放置目录：`ReplicatedStorage/Shared`、`ServerScriptService/MainServer`、`ServerScriptService/Services`、`StarterPlayer/StarterPlayerScripts/MainClient`、`StarterPlayer/StarterPlayerScripts/Controllers`；Studio 里的 UI 模板、场景模型和手调节点以 Studio 当前状态为准。
+- 同步成功不等于验证通过，完成改动后仍要做读回和脚本分析。
 
 ## 文档索引
 
@@ -117,7 +115,7 @@
 
 1. 实现范围与用户需求一致，没有自行扩展需求。
 2. 改动只覆盖必要文件和必要 Studio 对象。
-3. 已运行与风险相称的检查（Rojo sourcemap/build、MCP 读回、get_script_analysis、导表核对等），并给出实际结果。
+3. 已运行与风险相称的检查（MCP 读回、get_script_analysis、导表核对等），并给出实际结果。
 4. 架构、Remote、Studio 独立变动和待人工测试项已登记（文档链 + `开发记录.md`）。
 5. 明确区分"已验证""待用户验证"和"推断"。
 

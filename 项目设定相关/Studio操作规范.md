@@ -99,8 +99,8 @@ Get-Process -Name RobloxStudioBeta,node,StudioMCP -ErrorAction SilentlyContinue
 3. 在 `开发记录.md` 登记 Studio 独立变动、验证证据、风险与待人工测试项。
 4. 涉及 Remote、协议、状态字段或权威边界时，先更新 `RemoteEvent当前列表.lua`、`架构设计文档.lua`、`RemoteNames.lua`、`RemoteEventService.lua` 四处（README 规则 4）。
 
-## 7. 本项目与 Rojo 的关系
+## 7. 脚本同步与 Studio 独立对象
 
-- 本项目脚本与共享配置通过 Rojo（`default.project.json`，由 `tools/BuildRojoProject.py` 生成）同步到 Studio；Rojo 负责提高写入效率。
-- **完成改动后仍必须用本文件的 MCP 流程做读回与 `get_script_analysis` 校验**，不能只凭 Rojo 同步成功就认为功能已验证（README 规则 17）。
+- 本项目脚本与共享配置以本地文件为真源，经固定 Studio MCP 写入 Studio。
+- **完成改动后必须用本文件的 MCP 流程做读回与 `get_script_analysis` 校验**，不能只凭同步成功就认为功能已验证。
 - Studio 里的 UI 模板、场景模型和手调节点以 Studio 当前状态为准；对这些对象的改动属于"Studio 独立对象"，走本文第 6 节流程并登记。
